@@ -121,6 +121,61 @@ spec array expected by `LoadingOverlay:setActions`. The default retry behaviour
 clears caches and re-invokes the loader with `refresh = true`, but you can
 supply your own handler to integrate with a custom boot flow.
 
+## Verification timeline
+
+![Verification dashboard showing the staged status ladder](docs/verification-dashboard.png)
+
+While the loader streams modules, AutoParry's orchestrator emits granular
+updates through `AutoParry.onInitStatus`. The loading overlay renders those
+events with the neon verification dashboard above so players can follow each
+stage:
+
+- **Player Sync** — waits for `Players.LocalPlayer` and the character rig.
+- **Remotes** — locates `ReplicatedStorage.Remotes` and validates the parry
+  remote (`ParryButtonPress` or the legacy `ParryAttempt`).
+- **Success Events** — wires listeners for `ParrySuccess` / `ParrySuccessAll`
+  so the core can reset cooldowns as soon as Blade Ball confirms a parry.
+- **Ball Telemetry** — verifies the configured workspace folder (defaults to
+  `workspace.Balls`) before enabling the heartbeat loop.
+
+Every stage reports a status ladder (`pending`/`waiting`, `ok`, `warning`, or
+`failed`). If any resource disappears after AutoParry is ready (for example, the
+parry remote is removed or the balls folder is deleted) the orchestrator emits a
+`restarting` update, tears down listeners, and re-runs the verification flow
+before allowing parries again.
+
+### Verification configuration
+
+The runtime exposes several tuning knobs via `configure` (or the `parry`
+sub-table passed to the loader):
+
+| key | type | default | description |
+| --- | ---- | ------- | ----------- |
+| `playerTimeout` | `number` | `10` | Seconds to wait for `Players.LocalPlayer` |
+| `remotesTimeout` | `number` | `10` | Seconds to wait for `ReplicatedStorage.Remotes` |
+| `parryRemoteTimeout` | `number` | `10` | Seconds to wait for the parry remote candidate list |
+| `ballsFolderTimeout` | `number` | `5` | Seconds to wait for the configured balls folder (`nil` disables the wait) |
+| `verificationRetryInterval` | `number` | `0` | Delay between verification retries (set >0 to pace polling) |
+| `ballsFolderName` | `string` | `"Balls"` | Workspace folder searched during ball telemetry verification |
+
+These options sit alongside the parry timing controls listed below. Most users
+can keep the defaults, but hub authors can stretch the timeouts for slower
+setups or point `ballsFolderName` at custom projectile folders.
+
+### Troubleshooting verification issues
+
+- **Timeout** — if a stage reports `timeout` the dashboard and loader emit a
+  blocking error with the offending resource (`local-player`, `remotes-folder`,
+  `parry-remote`, or `balls-folder`). Check that Blade Ball finished loading or
+  increase the corresponding timeout.
+- **Warning on Ball Telemetry** — a `warning` status means AutoParry could not
+  locate the balls folder before the timeout. AutoParry will keep running but
+  cannot pre-emptively analyse projectiles; verify the folder name or increase
+  the timeout.
+- **Restarting** — if the dashboard flashes `restarting` mid-match, Blade Ball
+  removed a required remote. AutoParry will automatically rescan and re-arm the
+  parry remote once the resource returns.
+
 ## Runtime API
 
 The loader returns the AutoParry API table:
@@ -160,6 +215,11 @@ print(api.getVersion())
 | `safeRadius` | `number` | `10` | Instant parry radius around the player |
 | `targetHighlightName` | `string?` | `"Highlight"` | Character child required to parry (set to `nil` to skip the check) |
 | `ballsFolderName` | `string` | `"Balls"` | Workspace folder that holds the Blade Ball projectiles |
+| `playerTimeout` | `number` | `10` | Upper bound for LocalPlayer discovery |
+| `remotesTimeout` | `number` | `10` | Upper bound for locating `ReplicatedStorage.Remotes` |
+| `parryRemoteTimeout` | `number` | `10` | Upper bound for finding the parry remote |
+| `ballsFolderTimeout` | `number` | `5` | Upper bound for finding the balls folder |
+| `verificationRetryInterval` | `number` | `0` | Delay between verification polls |
 
 Call `resetConfig()` to restore defaults at runtime.
 
@@ -170,6 +230,9 @@ Call `resetConfig()` to restore defaults at runtime.
   Blade Ball is not ready yet.
 - Config overrides are validated to prevent invalid values from breaking the
   parry window.
+- Verification watchers monitor the remotes folder, success events, and the
+  balls folder; if any disappear AutoParry emits a `restarting` status and
+  re-runs the verification ladder before attempting another parry.
 - `destroy()` tears down events, detaches the UI, resets the configuration to
   defaults, and leaves the environment clean for subsequent reloads.
 

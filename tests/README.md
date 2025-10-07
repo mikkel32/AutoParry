@@ -161,6 +161,20 @@ the mounted interface against the baseline stored in
 [`tests/fixtures/ui_snapshot.json`](../tests/fixtures/ui_snapshot.json) and fails
 when any properties drift.
 
+Additional verification-focused specs complement the snapshot harness:
+
+- [`tests/autoparry/verification_status.spec.lua`](../tests/autoparry/verification_status.spec.lua)
+  runs the orchestrator through simulated failures (missing balls folder,
+  absent success remotes, parry remote removal) and asserts the emitted status
+  ladder plus the enable gating behaviour.
+- [`tests/ui/verification_dashboard.spec.lua`](../tests/ui/verification_dashboard.spec.lua)
+  mounts the verification dashboard and feeds synthetic status updates to verify
+  the step cards reflect `AutoParry.onInitStatus` transitions, including warning
+  tooltips when ball telemetry times out.
+
+Include these specs in local runs whenever you touch bootstrap logic or the
+loading overlay so CI stays green.
+
 When a legitimate UI change is made:
 
 1. Rebuild the harness place so the updated sources and fixture file are packed
