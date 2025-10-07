@@ -27,7 +27,7 @@ return function(t)
 
         local stubPlayer = { Name = "LocalPlayer" }
         scheduler:schedule(3, function()
-            players.LocalPlayer = stubPlayer
+            players:_setLocalPlayer(stubPlayer)
         end)
 
         local autoparry = Harness.loadAutoparry({
@@ -48,6 +48,9 @@ return function(t)
         expect(ready.elapsed):toBeCloseTo(3, 1e-3)
         expect(stages[1].stage):toEqual("waiting-player")
         expect(stages[#stages].stage):toEqual("ready")
+        expect(ready.successEvents ~= nil):toEqual(true)
+        expect(ready.successEvents.ParrySuccess):toEqual(false)
+        expect(ready.successEvents.ParrySuccessAll):toEqual(false)
 
         local snapshot = autoparry.getInitProgress()
         snapshot.stage = "mutated"
@@ -84,6 +87,10 @@ return function(t)
         expect(remotes:FindFirstChild("ParryButtonPress") ~= nil):toBeTruthy()
         expect(scheduler:clock()):toBeCloseTo(4, 1e-3)
         expect(ready.elapsed):toBeCloseTo(4, 1e-3)
+        expect(ready.remoteName):toEqual("ParryButtonPress")
+        expect(ready.remoteVariant):toEqual("modern")
+        expect(ready.successEvents.ParrySuccess):toEqual(false)
+        expect(ready.successEvents.ParrySuccessAll):toEqual(false)
 
         local sawRemoteStage = false
         for _, item in ipairs(stages) do
@@ -175,6 +182,115 @@ return function(t)
         end)
 
         expect(ok):toEqual(false)
-        expect(err):toEqual("AutoParry: ParryButtonPress remote missing")
+        expect(err):toEqual("AutoParry: parry remote missing (ParryButtonPress/ParryAttempt)")
+    end)
+
+    t.test("errors when the parry remote lacks a supported fire method", function(expect)
+        local scheduler = Scheduler.new(1)
+        local services, remotes = Harness.createBaseServices(scheduler, {
+            initialLocalPlayer = { Name = "LocalPlayer" },
+        })
+
+        local invalidRemote = { Name = "ParryButtonPress", ClassName = "Folder" }
+        remotes:Add(invalidRemote)
+
+        local autoparry = Harness.loadAutoparry({
+            scheduler = scheduler,
+            services = services,
+        })
+
+        local progress = waitForStage(scheduler, autoparry, "error", 20)
+
+        expect(progress.stage):toEqual("error")
+        expect(progress.target):toEqual("remote")
+        expect(progress.reason):toEqual("parry-remote-unsupported")
+        expect(progress.className):toEqual("Folder")
+        expect(progress.message):toEqual("AutoParry: parry remote unsupported type (Folder)")
+
+        local ok, err = pcall(function()
+            autoparry.enable()
+        end)
+
+        expect(ok):toEqual(false)
+        expect(err):toEqual("AutoParry: parry remote unsupported type (Folder)")
+    end)
+
+    t.test("listens for parry success events when they exist", function(expect)
+        local scheduler = Scheduler.new(1)
+        local services, remotes = Harness.createBaseServices(scheduler, {
+            initialLocalPlayer = { Name = "LocalPlayer" },
+        })
+
+        local parryRemote = Harness.createRemote()
+        remotes:Add(parryRemote)
+        local successRemote = Harness.createRemote({ name = "ParrySuccess" })
+        remotes:Add(successRemote)
+        local successAllRemote = Harness.createRemote({ name = "ParrySuccessAll" })
+        remotes:Add(successAllRemote)
+
+        local autoparry = Harness.loadAutoparry({
+            scheduler = scheduler,
+            services = services,
+        })
+
+        local ready = waitForStage(scheduler, autoparry, "ready")
+
+        expect(ready.successEvents.ParrySuccess):toEqual(true)
+        expect(ready.successEvents.ParrySuccessAll):toEqual(true)
+        expect(autoparry.getLastParrySuccessTime()):toEqual(0)
+        expect(autoparry.getLastParryBroadcastTime()):toEqual(0)
+
+        local successLog = {}
+        local broadcastLog = {}
+
+        local successConnection = autoparry.onParrySuccess(function(...)
+            table.insert(successLog, { time = scheduler:clock(), payload = { ... } })
+        end)
+
+        local broadcastConnection = autoparry.onParryBroadcast(function(...)
+            table.insert(broadcastLog, { time = scheduler:clock(), payload = { ... } })
+        end)
+
+        Harness.fireRemoteClient(successRemote, "local")
+        scheduler:wait()
+
+        expect(#successLog):toEqual(1)
+        expect(autoparry.getLastParrySuccessTime()):toBeCloseTo(successLog[1].time, 1e-3)
+
+        Harness.fireRemoteClient(successAllRemote, "broadcast")
+        scheduler:wait()
+
+        expect(#broadcastLog):toEqual(1)
+        expect(autoparry.getLastParryBroadcastTime()):toBeCloseTo(broadcastLog[1].time, 1e-3)
+        expect(autoparry.getLastParryBroadcastTime()):toBeGreaterThanOrEqual(autoparry.getLastParrySuccessTime())
+
+        if successConnection then
+            successConnection:Disconnect()
+        end
+
+        if broadcastConnection then
+            broadcastConnection:Disconnect()
+        end
+
+        autoparry.destroy()
+    end)
+
+    t.test("falls back to the legacy parry attempt remote when the button press is missing", function(expect)
+        local scheduler = Scheduler.new(1)
+        local services, remotes = Harness.createBaseServices(scheduler, {
+            initialLocalPlayer = { Name = "LocalPlayer" },
+        })
+
+        remotes:Add(Harness.createRemote({ name = "ParryAttempt" }))
+
+        local autoparry = Harness.loadAutoparry({
+            scheduler = scheduler,
+            services = services,
+        })
+
+        local ready = waitForStage(scheduler, autoparry, "ready")
+
+        expect(ready.remoteName):toEqual("ParryAttempt")
+        expect(ready.remoteVariant):toEqual("legacy")
     end)
 end
