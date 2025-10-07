@@ -33,7 +33,8 @@ jobs:
           set -o pipefail
           run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/spec.server.lua | tee tests/spec-output.log
 
-      - name: Extract ping metrics artifact
+      - name: Collect spec artifacts
+        if: always()
         run: |
           python - <<'PY'
 import json
@@ -51,16 +52,29 @@ with open(log_path, 'r', encoding='utf-8') as handle:
             name, payload = match.groups()
             artifacts[name] = json.loads(payload)
 
-if "ping-tti" not in artifacts:
-    raise SystemExit("ping-tti artifact missing from spec output")
-
 os.makedirs("tests/artifacts", exist_ok=True)
-with open("tests/artifacts/ping_tti.json", "w", encoding="utf-8") as handle:
-    json.dump(artifacts["ping-tti"], handle, indent=2)
+
+def write_artifact(key, filename):
+    data = artifacts.get(key)
+    if data is None:
+        raise SystemExit(f"{key} artifact missing from spec output")
+    with open(filename, "w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+
+write_artifact("ping-tti", "tests/artifacts/ping_tti.json")
+write_artifact("ui-snapshot", "tests/artifacts/ui_snapshot.json")
 PY
 
       - name: Upload ping metrics artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ping-tti-metrics
           path: tests/artifacts/ping_tti.json
+
+      - name: Upload UI snapshot artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ui-snapshot
+          path: tests/artifacts/ui_snapshot.json

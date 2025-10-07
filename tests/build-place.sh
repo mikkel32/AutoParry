@@ -23,6 +23,7 @@ files = [
     ('src/core/autoparry.lua', os.path.join(root, 'src', 'core', 'autoparry.lua')),
     ('src/ui/init.lua', os.path.join(root, 'src', 'ui', 'init.lua')),
     ('src/shared/util.lua', os.path.join(root, 'src', 'shared', 'util.lua')),
+    ('tests/fixtures/ui_snapshot.json', os.path.join(root, 'tests', 'fixtures', 'ui_snapshot.json')),
 ]
 
 contents = {}

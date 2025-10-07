@@ -85,6 +85,14 @@
                 "$path": "../ui/lifecycle.spec.lua"
               }
             }
+          },
+          "UiSnapshotSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../ui/snapshot.spec.lua"
+              }
+            }
           }
         }
       }
