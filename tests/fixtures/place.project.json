@@ -1,0 +1,53 @@
+{
+  "name": "AutoParryHarness",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "$className": "ReplicatedStorage",
+      "Remotes": {
+        "$className": "Folder",
+        "ParryButtonPress": {
+          "$className": "RemoteEvent"
+        }
+      },
+      "TestHarness": {
+        "$className": "Folder",
+        "AutoParrySourceMap": {
+          "$className": "ModuleScript",
+          "$properties": {
+            "Source": {
+              "$path": "AutoParrySourceMap.lua"
+            }
+          }
+        }
+      }
+    },
+    "Players": {
+      "$className": "Players",
+      "LocalPlayer": {
+        "$className": "Player"
+      }
+    },
+    "Workspace": {
+      "$className": "Workspace",
+      "Balls": {
+        "$className": "Folder"
+      }
+    },
+    "CoreGui": {
+      "$className": "CoreGui"
+    },
+    "Stats": {
+      "$className": "Stats",
+      "Network": {
+        "$className": "Folder",
+        "ServerStatsItem": {
+          "$className": "Folder",
+          "Data Ping": {
+            "$className": "Folder"
+          }
+        }
+      }
+    }
+  }
+}
