@@ -1,2 +1,2 @@
 # AutoParry
-A code to AutoParry a ball
+A code to Parry a ball
