@@ -22,49 +22,49 @@ local STATUS_PRIORITY = {
 local STEP_DEFINITIONS = {
     {
         id = "player",
-        title = "Player Sync",
-        description = "Locking on to your avatar and character rig.",
-        tooltip = "AutoParry waits for the LocalPlayer and character to spawn before continuing.",
+        title = "Player Readiness",
+        description = "Waiting for your avatar and character rig.",
+        tooltip = "Ensures the LocalPlayer and character are available before continuing.",
     },
     {
         id = "remotes",
-        title = "Remotes",
-        description = "Scanning Blade Ball network remotes.",
-        tooltip = "Detects the parry remote and required folders inside ReplicatedStorage.Remotes.",
+        title = "Game Remotes",
+        description = "Connecting to Blade Ball remote events.",
+        tooltip = "Verifies that the required remote folders exist within ReplicatedStorage.Remotes.",
     },
     {
         id = "success",
-        title = "Success Events",
-        description = "Tracking parry success broadcasts.",
-        tooltip = "Watches ParrySuccess events so AutoParry can react instantly to successes.",
+        title = "Success Feedback",
+        description = "Listening for parry confirmation events.",
+        tooltip = "Subscribes to ParrySuccess events so AutoParry can track every confirmation.",
     },
     {
         id = "balls",
-        title = "Ball Telemetry",
-        description = "Locating live balls for prediction.",
-        tooltip = "Ensures the configured balls folder exists so projectiles can be analysed.",
+        title = "Ball Tracking",
+        description = "Tracking live balls for prediction.",
+        tooltip = "Validates the balls folder to keep projectile telemetry up to date.",
     },
 }
 
 local DEFAULT_THEME = {
-    accentColor = Color3.fromRGB(0, 210, 255),
+    accentColor = Color3.fromRGB(82, 156, 255),
     backgroundTransparency = 1,
-    cardColor = Color3.fromRGB(22, 28, 48),
-    cardTransparency = 0.08,
-    cardStrokeColor = Color3.fromRGB(0, 150, 255),
-    cardStrokeTransparency = 0.45,
-    connectorColor = Color3.fromRGB(0, 170, 255),
-    connectorTransparency = 0.55,
-    pendingColor = Color3.fromRGB(95, 112, 140),
-    activeColor = Color3.fromRGB(0, 195, 255),
-    okColor = Color3.fromRGB(0, 230, 180),
-    warningColor = Color3.fromRGB(255, 196, 0),
-    failedColor = Color3.fromRGB(255, 70, 95),
-    tooltipBackground = Color3.fromRGB(12, 16, 32),
+    cardColor = Color3.fromRGB(28, 32, 40),
+    cardTransparency = 0.04,
+    cardStrokeColor = Color3.fromRGB(100, 126, 172),
+    cardStrokeTransparency = 0.4,
+    connectorColor = Color3.fromRGB(82, 156, 255),
+    connectorTransparency = 0.45,
+    pendingColor = Color3.fromRGB(150, 160, 184),
+    activeColor = Color3.fromRGB(82, 156, 255),
+    okColor = Color3.fromRGB(88, 206, 157),
+    warningColor = Color3.fromRGB(246, 178, 74),
+    failedColor = Color3.fromRGB(229, 96, 102),
+    tooltipBackground = Color3.fromRGB(26, 30, 40),
     tooltipTransparency = 0.05,
-    tooltipTextColor = Color3.fromRGB(215, 230, 255),
-    titleFont = Enum.Font.GothamBlack,
-    titleTextSize = 20,
+    tooltipTextColor = Color3.fromRGB(224, 232, 248),
+    titleFont = Enum.Font.GothamSemibold,
+    titleTextSize = 22,
     subtitleFont = Enum.Font.Gotham,
     subtitleTextSize = 16,
     stepTitleFont = Enum.Font.GothamSemibold,
@@ -73,49 +73,49 @@ local DEFAULT_THEME = {
     stepStatusTextSize = 14,
     tooltipFont = Enum.Font.Gotham,
     tooltipTextSize = 14,
-    actionFont = Enum.Font.GothamBold,
+    actionFont = Enum.Font.GothamSemibold,
     actionTextSize = 16,
-    actionHeight = 36,
-    actionCorner = UDim.new(0, 10),
-    actionPrimaryColor = Color3.fromRGB(0, 210, 255),
-    actionPrimaryTextColor = Color3.fromRGB(10, 12, 20),
-    actionSecondaryColor = Color3.fromRGB(30, 40, 60),
-    actionSecondaryTextColor = Color3.fromRGB(215, 230, 255),
+    actionHeight = 38,
+    actionCorner = UDim.new(0, 8),
+    actionPrimaryColor = Color3.fromRGB(82, 156, 255),
+    actionPrimaryTextColor = Color3.fromRGB(12, 16, 26),
+    actionSecondaryColor = Color3.fromRGB(44, 50, 62),
+    actionSecondaryTextColor = Color3.fromRGB(224, 232, 248),
     logo = {
-        width = 230,
+        width = 240,
         text = "AutoParry",
         font = Enum.Font.GothamBlack,
         textSize = 28,
         textGradient = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(0, 210, 255)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 236, 173)),
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(82, 156, 255)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(88, 206, 157)),
         }),
-        textGradientRotation = 15,
-        textStrokeColor = Color3.fromRGB(10, 12, 24),
-        textStrokeTransparency = 0.6,
-        primaryColor = Color3.fromRGB(235, 245, 255),
-        tagline = "Neural shield online",
+        textGradientRotation = 18,
+        textStrokeColor = Color3.fromRGB(10, 14, 26),
+        textStrokeTransparency = 0.65,
+        primaryColor = Color3.fromRGB(235, 240, 248),
+        tagline = "Precision parry automation",
         taglineFont = Enum.Font.Gotham,
         taglineTextSize = 15,
-        taglineColor = Color3.fromRGB(188, 206, 255),
-        taglineTransparency = 0,
-        backgroundColor = Color3.fromRGB(16, 20, 36),
-        backgroundTransparency = 0.08,
-        strokeColor = Color3.fromRGB(0, 180, 255),
-        strokeTransparency = 0.35,
+        taglineColor = Color3.fromRGB(188, 202, 230),
+        taglineTransparency = 0.05,
+        backgroundColor = Color3.fromRGB(24, 28, 36),
+        backgroundTransparency = 0.1,
+        strokeColor = Color3.fromRGB(94, 148, 214),
+        strokeTransparency = 0.45,
         gradient = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 18, 30)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 195, 255)),
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(30, 36, 48)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(82, 156, 255)),
         }),
         gradientTransparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.55),
-            NumberSequenceKeypoint.new(0.4, 0.35),
-            NumberSequenceKeypoint.new(1, 0.15),
+            NumberSequenceKeypoint.new(0, 0.6),
+            NumberSequenceKeypoint.new(0.5, 0.3),
+            NumberSequenceKeypoint.new(1, 0.18),
         }),
-        gradientRotation = 120,
+        gradientRotation = 115,
         glyphImage = "rbxassetid://12148062841",
-        glyphColor = Color3.fromRGB(0, 230, 200),
-        glyphTransparency = 0.2,
+        glyphColor = Color3.fromRGB(82, 156, 255),
+        glyphTransparency = 0.15,
     },
     iconography = {
         pending = "rbxassetid://6031071050",
@@ -125,110 +125,140 @@ local DEFAULT_THEME = {
         error = "rbxassetid://6031094678",
     },
     telemetry = {
-        titleFont = Enum.Font.GothamBold,
+        titleFont = Enum.Font.GothamSemibold,
         titleTextSize = 16,
-        valueFont = Enum.Font.GothamBlack,
+        valueFont = Enum.Font.GothamBold,
         valueTextSize = 24,
         labelFont = Enum.Font.Gotham,
-        labelTextSize = 14,
-        cardColor = Color3.fromRGB(18, 24, 40),
-        cardTransparency = 0.08,
-        cardStrokeColor = Color3.fromRGB(0, 160, 255),
+        labelTextSize = 13,
+        cardColor = Color3.fromRGB(26, 30, 40),
+        cardTransparency = 0.05,
+        cardStrokeColor = Color3.fromRGB(94, 148, 214),
         cardStrokeTransparency = 0.45,
-        accentColor = Color3.fromRGB(0, 210, 255),
+        accentColor = Color3.fromRGB(82, 156, 255),
     },
     controls = {
-        headerFont = Enum.Font.GothamBold,
+        headerFont = Enum.Font.GothamSemibold,
         headerTextSize = 16,
-        headerColor = Color3.fromRGB(220, 234, 255),
+        headerColor = Color3.fromRGB(226, 232, 244),
         descriptionFont = Enum.Font.Gotham,
         descriptionTextSize = 14,
-        descriptionColor = Color3.fromRGB(178, 194, 230),
-        toggleOnColor = Color3.fromRGB(0, 210, 255),
-        toggleOffColor = Color3.fromRGB(32, 42, 64),
-        toggleOnTextColor = Color3.fromRGB(12, 16, 20),
-        toggleOffTextColor = Color3.fromRGB(220, 234, 255),
+        descriptionColor = Color3.fromRGB(178, 190, 214),
+        toggleOnColor = Color3.fromRGB(82, 156, 255),
+        toggleOffColor = Color3.fromRGB(40, 46, 62),
+        toggleOnTextColor = Color3.fromRGB(12, 16, 26),
+        toggleOffTextColor = Color3.fromRGB(226, 232, 244),
         toggleCorner = UDim.new(0, 12),
-        toggleStrokeColor = Color3.fromRGB(0, 210, 255),
-        toggleStrokeTransparency = 0.4,
+        toggleStrokeColor = Color3.fromRGB(82, 156, 255),
+        toggleStrokeTransparency = 0.55,
         toggleBadgeFont = Enum.Font.GothamSemibold,
         toggleBadgeSize = 13,
-        toggleBadgeColor = Color3.fromRGB(170, 200, 255),
-        sectionBackground = Color3.fromRGB(14, 18, 32),
-        sectionTransparency = 0.08,
-        sectionStrokeColor = Color3.fromRGB(0, 170, 255),
+        toggleBadgeColor = Color3.fromRGB(188, 202, 230),
+        sectionBackground = Color3.fromRGB(24, 28, 36),
+        sectionTransparency = 0.05,
+        sectionStrokeColor = Color3.fromRGB(82, 156, 255),
         sectionStrokeTransparency = 0.5,
         sectionGradient = ColorSequence.new({
-            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 18, 30)),
-            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 120, 200)),
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(20, 24, 32)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(82, 156, 255)),
         }),
         sectionGradientTransparency = NumberSequence.new({
-            NumberSequenceKeypoint.new(0, 0.85),
-            NumberSequenceKeypoint.new(1, 0.3),
+            NumberSequenceKeypoint.new(0, 0.9),
+            NumberSequenceKeypoint.new(1, 0.35),
         }),
+    },
+    summary = {
+        chipBackground = Color3.fromRGB(32, 38, 48),
+        chipTransparency = 0.08,
+        chipStrokeColor = Color3.fromRGB(82, 156, 255),
+        chipStrokeTransparency = 0.6,
+        labelFont = Enum.Font.Gotham,
+        labelTextSize = 12,
+        labelColor = Color3.fromRGB(160, 174, 198),
+        valueFont = Enum.Font.GothamSemibold,
+        valueTextSize = 16,
+        valueColor = Color3.fromRGB(235, 240, 248),
     },
 }
 
 local DEFAULT_TELEMETRY = {
     {
         id = "latency",
-        label = "Latency",
+        label = "Network Latency",
         value = "-- ms",
-        hint = "Ping to Blade Ball server",
+        hint = "Round-trip time to the Blade Ball server.",
     },
     {
         id = "uptime",
-        label = "Session",
+        label = "Session Length",
         value = "00:00",
-        hint = "Runtime since activation",
+        hint = "Elapsed runtime since activation.",
     },
     {
         id = "autotune",
-        label = "Auto-Tune",
+        label = "Assistance Model",
         value = "Calibrating",
-        hint = "Adaptive neural mesh status",
+        hint = "Status of AutoParry's adaptive timing engine.",
     },
 }
 
 local CONTROL_DEFINITIONS = {
     {
         id = "adaptive",
-        title = "Adaptive Reaction",
-        description = "Auto-learns opponent speed to retime parries in real-time.",
+        title = "Adaptive Timing",
+        description = "Continuously adjusts parry timing from recent plays.",
         default = true,
-        badge = "AI",
+        badge = "SMART",
     },
     {
         id = "failsafe",
-        title = "Failsafe Recall",
-        description = "Instantly revert to manual control if anomalies are detected.",
+        title = "Safety Net",
+        description = "Returns control to you if abnormal behaviour is detected.",
         default = true,
         badge = "SAFE",
     },
     {
         id = "edge",
-        title = "Edge Prediction",
-        description = "Predict ricochet vectors and pre-aim at the next ball handoff.",
+        title = "Advanced Prediction",
+        description = "Forecasts ricochet paths to prepare for handoffs.",
         default = false,
     },
     {
         id = "audible",
-        title = "Audible Cues",
-        description = "Emit positional pings for high-priority parry windows.",
+        title = "Audio Alerts",
+        description = "Play positional pings for critical parry windows.",
         default = true,
     },
     {
         id = "ghost",
-        title = "Ghost Anticipation",
-        description = "Simulate incoming trajectories to pre-charge counter windows.",
+        title = "Trajectory Simulation",
+        description = "Pre-simulates trajectories to charge counter windows early.",
         default = false,
     },
     {
         id = "autosync",
-        title = "Autosync Party",
-        description = "Synchronise teammates with shared parry telemetry.",
+        title = "Team Sync",
+        description = "Broadcasts timing cues to linked teammates.",
         default = true,
         badge = "TEAM",
+    },
+}
+
+local DEFAULT_HEADER_SUMMARY = {
+    {
+        id = "status",
+        label = "Status",
+        value = "Operational",
+    },
+    {
+        id = "mode",
+        label = "Mode",
+        value = "Assist",
+    },
+    {
+        id = "profile",
+        label = "Profile",
+        value = "Balanced",
     },
 }
 
@@ -237,15 +267,15 @@ local STATUS_STYLE = {
         return {
             icon = theme.iconography.pending,
             color = theme.pendingColor,
-            label = "Pending",
-            strokeTransparency = 0.7,
+            label = "Waiting",
+            strokeTransparency = 0.65,
         }
     end,
     active = function(theme)
         return {
             icon = theme.iconography.active or theme.iconography.pending,
             color = theme.activeColor,
-            label = "Scanning…",
+            label = "In progress",
             strokeTransparency = 0.35,
         }
     end,
@@ -254,15 +284,15 @@ local STATUS_STYLE = {
             icon = theme.iconography.check,
             color = theme.okColor,
             label = "Ready",
-            strokeTransparency = 0.2,
+            strokeTransparency = 0.25,
         }
     end,
     warning = function(theme)
         return {
             icon = theme.iconography.warning,
             color = theme.warningColor,
-            label = "Warning",
-            strokeTransparency = 0.25,
+            label = "Check",
+            strokeTransparency = 0.3,
         }
     end,
     failed = function(theme)
@@ -270,7 +300,7 @@ local STATUS_STYLE = {
             icon = theme.iconography.error,
             color = theme.failedColor,
             label = "Failed",
-            strokeTransparency = 0.15,
+            strokeTransparency = 0.22,
         }
     end,
 }
@@ -378,6 +408,168 @@ local function createLogoBadge(parent, theme)
     }
 end
 
+local function createSummaryChip(parent, theme, definition, index)
+    local summaryTheme = mergeTable(DEFAULT_THEME.summary, theme.summary or {})
+    local identifier = definition.id or definition.Id or definition.key or definition.Key or definition.label or definition.title or tostring(index)
+
+    local chip = Instance.new("Frame")
+    chip.Name = string.format("%sChip", tostring(identifier):gsub("%s+", ""))
+    chip.AutomaticSize = Enum.AutomaticSize.XY
+    chip.Size = UDim2.new(0, 132, 0, 34)
+    chip.BackgroundColor3 = summaryTheme.chipBackground or DEFAULT_THEME.summary.chipBackground
+    chip.BackgroundTransparency = summaryTheme.chipTransparency or DEFAULT_THEME.summary.chipTransparency
+    chip.BorderSizePixel = 0
+    chip.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 10)
+    corner.Parent = chip
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Color = summaryTheme.chipStrokeColor or DEFAULT_THEME.summary.chipStrokeColor
+    stroke.Transparency = summaryTheme.chipStrokeTransparency or DEFAULT_THEME.summary.chipStrokeTransparency or 0.6
+    stroke.Parent = chip
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 6)
+    padding.PaddingBottom = UDim.new(0, 6)
+    padding.PaddingLeft = UDim.new(0, 10)
+    padding.PaddingRight = UDim.new(0, 10)
+    padding.Parent = chip
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.VerticalAlignment = Enum.VerticalAlignment.Top
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 2)
+    layout.Parent = chip
+
+    local defaultLabel = definition.label or definition.title or definition.name or definition.id or ""
+    local defaultValue = definition.value
+    if defaultValue == nil then
+        defaultValue = definition.text or definition.display or definition.default or ""
+    end
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Font = summaryTheme.labelFont or DEFAULT_THEME.summary.labelFont
+    label.TextSize = summaryTheme.labelTextSize or DEFAULT_THEME.summary.labelTextSize
+    label.TextColor3 = summaryTheme.labelColor or DEFAULT_THEME.summary.labelColor
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = string.upper(tostring(defaultLabel))
+    label.Size = UDim2.new(1, 0, 0, (summaryTheme.labelTextSize or DEFAULT_THEME.summary.labelTextSize) + 2)
+    label.LayoutOrder = 1
+    label.Parent = chip
+
+    local value = Instance.new("TextLabel")
+    value.Name = "Value"
+    value.BackgroundTransparency = 1
+    value.Font = summaryTheme.valueFont or DEFAULT_THEME.summary.valueFont
+    value.TextSize = summaryTheme.valueTextSize or DEFAULT_THEME.summary.valueTextSize
+    value.TextColor3 = summaryTheme.valueColor or DEFAULT_THEME.summary.valueColor
+    value.TextXAlignment = Enum.TextXAlignment.Left
+    value.Text = tostring(defaultValue)
+    value.Size = UDim2.new(1, 0, 0, (summaryTheme.valueTextSize or DEFAULT_THEME.summary.valueTextSize) + 4)
+    value.LayoutOrder = 2
+    value.Parent = chip
+
+    return {
+        frame = chip,
+        stroke = stroke,
+        label = label,
+        value = value,
+        definition = definition,
+        id = identifier,
+        defaultLabel = defaultLabel,
+        defaultValue = defaultValue,
+    }
+end
+
+local function createSummaryRow(parent, theme, summary)
+    local container = Instance.new("Frame")
+    container.Name = "Summary"
+    container.BackgroundTransparency = 1
+    container.AutomaticSize = Enum.AutomaticSize.Y
+    container.Size = UDim2.new(1, 0, 0, 0)
+    container.Parent = parent
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 2)
+    padding.PaddingBottom = UDim.new(0, 2)
+    padding.Parent = container
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 12)
+    layout.Parent = container
+
+    local chips = {}
+    for index, definition in ipairs(summary) do
+        local chip = createSummaryChip(container, theme, definition, index)
+        chip.frame.LayoutOrder = index
+        chips[chip.id or definition.id or tostring(index)] = chip
+    end
+
+    return {
+        frame = container,
+        layout = layout,
+        chips = chips,
+    }
+end
+
+local function normalizeSummaryInput(summary)
+    if typeof(summary) ~= "table" then
+        return nil
+    end
+
+    local result = {}
+
+    if #summary == 0 then
+        local list = {}
+        for key, payload in pairs(summary) do
+            if typeof(payload) == "table" then
+                local entry = Util.deepCopy(payload)
+                entry.id = entry.id or entry.Id or entry.key or entry.Key or key
+                entry.label = entry.label or entry.title or entry.name or key
+                entry.value = entry.value or entry.text or entry.display or entry[1]
+                table.insert(list, entry)
+            elseif payload ~= nil then
+                table.insert(list, {
+                    id = key,
+                    label = key,
+                    value = payload,
+                })
+            end
+        end
+        summary = list
+    end
+
+    for _, entry in ipairs(summary) do
+        if typeof(entry) == "table" then
+            local id = entry.id or entry.Id or entry.key or entry.Key or entry.label or entry.title
+            if id then
+                result[string.lower(tostring(id))] = {
+                    id = id,
+                    label = entry.label or entry.title or entry.name or id,
+                    value = entry.value or entry.text or entry.display or entry[1],
+                }
+            end
+        end
+    end
+
+    if next(result) == nil then
+        return nil
+    end
+
+    return result
+end
+
 local function createTooltip(parent, theme, text)
     local tooltip = Instance.new("TextLabel")
     tooltip.Name = "Tooltip"
@@ -408,10 +600,10 @@ local function createTooltip(parent, theme, text)
     return tooltip
 end
 
-local function createStep(parent, definition, theme)
+local function createStep(parent, definition, theme, order, totalSteps)
     local frame = Instance.new("Frame")
     frame.Name = definition.id
-    frame.Size = UDim2.new(1, 0, 0, 72)
+    frame.Size = UDim2.new(1, 0, 0, 76)
     frame.BackgroundColor3 = theme.cardColor
     frame.BackgroundTransparency = theme.cardTransparency
     frame.BorderSizePixel = 0
@@ -455,7 +647,7 @@ local function createStep(parent, definition, theme)
 
     local iconGlow = Instance.new("UIStroke")
     iconGlow.Thickness = 2
-    iconGlow.Transparency = 0.4
+    iconGlow.Transparency = 0.55
     iconGlow.Color = theme.pendingColor
     iconGlow.Parent = icon
 
@@ -463,24 +655,44 @@ local function createStep(parent, definition, theme)
     title.Name = "Title"
     title.AnchorPoint = Vector2.new(0, 0)
     title.Position = UDim2.new(0, 66, 0, 10)
-    title.Size = UDim2.new(1, -90, 0, 24)
+    title.Size = UDim2.new(1, -150, 0, 24)
     title.BackgroundTransparency = 1
     title.Font = theme.stepTitleFont
     title.TextSize = theme.stepTitleTextSize
-    title.TextColor3 = Color3.fromRGB(235, 240, 255)
+    title.TextColor3 = Color3.fromRGB(232, 238, 248)
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Text = definition.title
     title.Parent = frame
+
+    local metaLabel
+    if order then
+        metaLabel = Instance.new("TextLabel")
+        metaLabel.Name = "Meta"
+        metaLabel.AnchorPoint = Vector2.new(1, 0)
+        metaLabel.Position = UDim2.new(1, -18, 0, 12)
+        metaLabel.Size = UDim2.new(0, 86, 0, 20)
+        metaLabel.BackgroundTransparency = 1
+        metaLabel.Font = theme.stepStatusFont
+        metaLabel.TextSize = math.max(theme.stepStatusTextSize - 1, 12)
+        metaLabel.TextColor3 = Color3.fromRGB(168, 182, 210)
+        if totalSteps and totalSteps > 0 then
+            metaLabel.Text = string.format("Step %d/%d", order, totalSteps)
+        else
+            metaLabel.Text = string.format("Step %d", order)
+        end
+        metaLabel.TextXAlignment = Enum.TextXAlignment.Right
+        metaLabel.Parent = frame
+    end
 
     local status = Instance.new("TextLabel")
     status.Name = "Status"
     status.AnchorPoint = Vector2.new(0, 0)
     status.Position = UDim2.new(0, 66, 0, 34)
-    status.Size = UDim2.new(1, -90, 0, 24)
+    status.Size = UDim2.new(1, -150, 0, 26)
     status.BackgroundTransparency = 1
     status.Font = theme.stepStatusFont
     status.TextSize = theme.stepStatusTextSize
-    status.TextColor3 = Color3.fromRGB(180, 194, 235)
+    status.TextColor3 = Color3.fromRGB(184, 198, 224)
     status.TextXAlignment = Enum.TextXAlignment.Left
     status.Text = definition.description
     status.Parent = frame
@@ -516,6 +728,7 @@ local function createStep(parent, definition, theme)
         status = status,
         connector = connector,
         tooltip = tooltip,
+        meta = metaLabel,
         hoverArea = hoverArea,
         state = "pending",
         priority = STATUS_PRIORITY.pending,
@@ -831,7 +1044,7 @@ function VerificationDashboard.new(options)
     local header = Instance.new("Frame")
     header.Name = "Header"
     header.BackgroundTransparency = 1
-    header.Size = UDim2.new(1, 0, 0, 96)
+    header.Size = UDim2.new(1, 0, 0, 118)
     header.LayoutOrder = 1
     header.Parent = root
 
@@ -843,10 +1056,12 @@ function VerificationDashboard.new(options)
     headerLayout.Padding = UDim.new(0, 18)
     headerLayout.Parent = header
 
+    local initialLogoWidth = (theme.logo and theme.logo.width) or DEFAULT_THEME.logo.width or 230
+
     local logoContainer = Instance.new("Frame")
     logoContainer.Name = "LogoContainer"
     logoContainer.BackgroundTransparency = 1
-    logoContainer.Size = UDim2.new(0, 230, 1, 0)
+    logoContainer.Size = UDim2.new(0, initialLogoWidth, 1, 0)
     logoContainer.Parent = header
 
     local logoElements = createLogoBadge(logoContainer, theme)
@@ -854,7 +1069,7 @@ function VerificationDashboard.new(options)
     local textContainer = Instance.new("Frame")
     textContainer.Name = "HeaderText"
     textContainer.BackgroundTransparency = 1
-    textContainer.Size = UDim2.new(1, -230, 1, 0)
+    textContainer.Size = UDim2.new(1, -initialLogoWidth, 1, 0)
     textContainer.Parent = header
 
     local textLayout = Instance.new("UIListLayout")
@@ -885,9 +1100,61 @@ function VerificationDashboard.new(options)
     subtitle.TextSize = theme.subtitleTextSize
     subtitle.TextColor3 = Color3.fromRGB(170, 184, 220)
     subtitle.TextXAlignment = Enum.TextXAlignment.Left
-    subtitle.Text = "Preparing AutoParry systems…"
+    subtitle.Text = "Initialising AutoParry suite…"
     subtitle.LayoutOrder = 2
     subtitle.Parent = textContainer
+
+    local summaryDefinitions
+    local shouldSortSummary = false
+    if typeof(options.summary) == "table" then
+        if #options.summary > 0 then
+            summaryDefinitions = options.summary
+        else
+            summaryDefinitions = {}
+            for key, payload in pairs(options.summary) do
+                if typeof(payload) == "table" then
+                    local entry = Util.deepCopy(payload)
+                    entry.id = entry.id or entry.Id or entry.key or entry.Key or key
+                    entry.label = entry.label or entry.title or entry.name or key
+                    entry.value = entry.value or entry.text or entry.display or entry[1]
+                    table.insert(summaryDefinitions, entry)
+                elseif payload ~= nil then
+                    table.insert(summaryDefinitions, {
+                        id = key,
+                        label = key,
+                        value = payload,
+                    })
+                end
+            end
+            shouldSortSummary = true
+        end
+    end
+
+    summaryDefinitions = summaryDefinitions or DEFAULT_HEADER_SUMMARY
+
+    if shouldSortSummary then
+        table.sort(summaryDefinitions, function(a, b)
+            local orderA = tonumber(a.order or a.Order)
+            local orderB = tonumber(b.order or b.Order)
+            if orderA and orderB then
+                if orderA == orderB then
+                    return tostring(a.label or a.id or "") < tostring(b.label or b.id or "")
+                end
+                return orderA < orderB
+            elseif orderA then
+                return true
+            elseif orderB then
+                return false
+            end
+            return tostring(a.label or a.id or "") < tostring(b.label or b.id or "")
+        end)
+    end
+
+    local summaryRow
+    if #summaryDefinitions > 0 then
+        summaryRow = createSummaryRow(textContainer, theme, summaryDefinitions)
+        summaryRow.frame.LayoutOrder = 3
+    end
 
     local telemetryFrame = Instance.new("Frame")
     telemetryFrame.Name = "Telemetry"
@@ -1030,8 +1297,8 @@ function VerificationDashboard.new(options)
     local progressTrack = Instance.new("Frame")
     progressTrack.Name = "ProgressTrack"
     progressTrack.Size = UDim2.new(1, 0, 0, 8)
-    progressTrack.BackgroundColor3 = Color3.fromRGB(26, 32, 52)
-    progressTrack.BackgroundTransparency = 0.2
+    progressTrack.BackgroundColor3 = theme.cardColor:Lerp(theme.accentColor, 0.08)
+    progressTrack.BackgroundTransparency = math.clamp((theme.cardTransparency or 0) + 0.12, 0, 1)
     progressTrack.BorderSizePixel = 0
     progressTrack.LayoutOrder = 1
     progressTrack.Parent = timelineCard
@@ -1079,7 +1346,7 @@ function VerificationDashboard.new(options)
 
     local steps = {}
     for index, definition in ipairs(STEP_DEFINITIONS) do
-        local step = createStep(listFrame, definition, theme)
+        local step = createStep(listFrame, definition, theme, index, #STEP_DEFINITIONS)
         step.frame.LayoutOrder = index
         if index == #STEP_DEFINITIONS then
             step.connector.Visible = false
@@ -1109,6 +1376,10 @@ function VerificationDashboard.new(options)
         _header = header,
         _title = title,
         _subtitle = subtitle,
+        _summaryFrame = summaryRow and summaryRow.frame or nil,
+        _summaryLayout = summaryRow and summaryRow.layout or nil,
+        _summaryChips = summaryRow and summaryRow.chips or nil,
+        _summaryDefinitions = Util.deepCopy(summaryDefinitions),
         _telemetryFrame = telemetryFrame,
         _telemetryGrid = telemetryGrid,
         _telemetryCards = telemetryCards,
@@ -1124,6 +1395,7 @@ function VerificationDashboard.new(options)
         _onControlChanged = options and options.onControlToggle or nil,
         _timelineCard = timelineCard,
         _timelineStroke = timelineStroke,
+        _progressTrack = progressTrack,
         _progressFill = progressFill,
         _progressTween = nil,
         _stepsFrame = listFrame,
@@ -1152,7 +1424,9 @@ function VerificationDashboard.new(options)
     end
 
     self:_applyLogoTheme()
+    self:_applySummaryTheme()
     self:_startLogoShimmer()
+    self:setHeaderSummary(summaryDefinitions)
     self:setControls(options.controls)
     self:setTelemetry(options.telemetry)
     self:setProgress(0)
@@ -1250,6 +1524,90 @@ function VerificationDashboard:_applyLogoTheme()
     end
 end
 
+function VerificationDashboard:_applySummaryTheme()
+    if self._destroyed or not self._summaryChips then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local summaryTheme = mergeTable(DEFAULT_THEME.summary, theme.summary or {})
+
+    if self._summaryFrame then
+        self._summaryFrame.Visible = next(self._summaryChips) ~= nil
+    end
+
+    for _, chip in pairs(self._summaryChips) do
+        if chip.frame then
+            chip.frame.BackgroundColor3 = summaryTheme.chipBackground or DEFAULT_THEME.summary.chipBackground
+            chip.frame.BackgroundTransparency = summaryTheme.chipTransparency or DEFAULT_THEME.summary.chipTransparency
+        end
+        if chip.stroke then
+            chip.stroke.Color = summaryTheme.chipStrokeColor or DEFAULT_THEME.summary.chipStrokeColor
+            chip.stroke.Transparency = summaryTheme.chipStrokeTransparency or DEFAULT_THEME.summary.chipStrokeTransparency or 0.6
+        end
+        if chip.label then
+            chip.label.Font = summaryTheme.labelFont or DEFAULT_THEME.summary.labelFont
+            chip.label.TextSize = summaryTheme.labelTextSize or DEFAULT_THEME.summary.labelTextSize
+            chip.label.TextColor3 = summaryTheme.labelColor or DEFAULT_THEME.summary.labelColor
+        end
+        if chip.value then
+            chip.value.Font = summaryTheme.valueFont or DEFAULT_THEME.summary.valueFont
+            chip.value.TextSize = summaryTheme.valueTextSize or DEFAULT_THEME.summary.valueTextSize
+            chip.value.TextColor3 = summaryTheme.valueColor or DEFAULT_THEME.summary.valueColor
+        end
+    end
+end
+
+function VerificationDashboard:setHeaderSummary(summary)
+    if self._destroyed or not self._summaryChips then
+        return
+    end
+
+    if summary ~= nil and typeof(summary) == "table" then
+        self._summaryDefinitions = Util.deepCopy(summary)
+    end
+
+    local source = summary
+    if typeof(source) ~= "table" then
+        source = self._summaryDefinitions or DEFAULT_HEADER_SUMMARY
+    end
+
+    local normalised = normalizeSummaryInput(source)
+    if not normalised then
+        normalised = normalizeSummaryInput(DEFAULT_HEADER_SUMMARY) or {}
+    end
+
+    for key, chip in pairs(self._summaryChips) do
+        local identifier = chip.id or key
+        local lookupKey = identifier and string.lower(tostring(identifier)) or nil
+        local payload = lookupKey and normalised[lookupKey] or nil
+
+        local labelText = chip.defaultLabel or identifier
+        local valueText = chip.defaultValue
+        if valueText == nil then
+            valueText = ""
+        end
+
+        if payload then
+            if payload.label ~= nil then
+                labelText = payload.label
+            end
+            if payload.value ~= nil then
+                valueText = payload.value
+            end
+        end
+
+        if chip.label then
+            chip.label.Text = string.upper(tostring(labelText))
+        end
+        if chip.value then
+            chip.value.Text = tostring(valueText)
+        end
+    end
+
+    self:_applySummaryTheme()
+end
+
 function VerificationDashboard:destroy()
     if self._destroyed then
         return
@@ -1320,6 +1678,7 @@ function VerificationDashboard:applyTheme(theme)
 
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
+    self:_applySummaryTheme()
 
     if self._title then
         self._title.Font = currentTheme.titleFont
@@ -1332,6 +1691,11 @@ function VerificationDashboard:applyTheme(theme)
 
     if self._actionsFrame then
         self._actionsFrame.Size = UDim2.new(1, 0, 0, currentTheme.actionHeight + 12)
+    end
+
+    if self._progressTrack then
+        self._progressTrack.BackgroundColor3 = currentTheme.cardColor:Lerp(currentTheme.accentColor, 0.08)
+        self._progressTrack.BackgroundTransparency = math.clamp((currentTheme.cardTransparency or 0) + 0.12, 0, 1)
     end
 
     if self._progressFill then
@@ -1423,6 +1787,11 @@ function VerificationDashboard:applyTheme(theme)
             step.title.TextSize = currentTheme.stepTitleTextSize
             step.status.Font = currentTheme.stepStatusFont
             step.status.TextSize = currentTheme.stepStatusTextSize
+            if step.meta then
+                step.meta.Font = currentTheme.stepStatusFont
+                step.meta.TextSize = math.max(currentTheme.stepStatusTextSize - 1, 12)
+                step.meta.TextColor3 = Color3.fromRGB(168, 182, 210)
+            end
             step.connector.BackgroundColor3 = currentTheme.connectorColor
             step.connector.BackgroundTransparency = currentTheme.connectorTransparency
             if step.tooltip then
@@ -1552,9 +1921,13 @@ function VerificationDashboard:reset()
             step.icon.ImageColor3 = self._theme.pendingColor
             if step.iconGlow then
                 step.iconGlow.Color = self._theme.pendingColor
+                step.iconGlow.Transparency = 0.55
             end
             step.connector.BackgroundTransparency = self._theme.connectorTransparency
             step.connector.BackgroundColor3 = self._theme.connectorColor
+            if step.meta then
+                step.meta.TextColor3 = Color3.fromRGB(168, 182, 210)
+            end
             if step.tooltip then
                 step.tooltip.Text = definition.tooltip
             end
@@ -1563,7 +1936,8 @@ function VerificationDashboard:reset()
     end
 
     self:setProgress(0)
-    self:setStatusText("Preparing AutoParry systems…")
+    self:setHeaderSummary(nil)
+    self:setStatusText("Initialising AutoParry suite…")
 end
 
 local function resolveStyle(theme, status)
@@ -1622,12 +1996,21 @@ function VerificationDashboard:_applyStepState(id, status, message, tooltip)
 
     if step.iconGlow then
         step.iconGlow.Color = style.color
-        step.iconGlow.Transparency = 0.35
+        step.iconGlow.Transparency = style.strokeTransparency or 0.35
     end
 
     if step.connector then
         step.connector.BackgroundColor3 = style.color
         step.connector.BackgroundTransparency = status == "pending" and self._theme.connectorTransparency or 0.15
+    end
+
+    if step.meta then
+        if status == "pending" then
+            step.meta.TextColor3 = Color3.fromRGB(168, 182, 210)
+        else
+            local accentBase = style.color or self._theme.accentColor
+            step.meta.TextColor3 = accentBase:Lerp(Color3.fromRGB(230, 236, 248), 0.45)
+        end
     end
 
     step.state = status
