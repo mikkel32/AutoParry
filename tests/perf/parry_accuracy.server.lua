@@ -326,11 +326,21 @@ function Environment.new(config)
     env.parryAttempts = 0
 
     local remote = env.parryRemote
+    local originalFire = remote.Fire
     local originalFireServer = remote.FireServer
+    env.originalFire = originalFire
     env.originalFireServer = originalFireServer
     local environment = env
 
-    function remote:FireServer(...)
+    local function invokeOriginal(self, ...)
+        if environment.originalFire then
+            return environment.originalFire(self, ...)
+        elseif environment.originalFireServer then
+            return environment.originalFireServer(self, ...)
+        end
+    end
+
+    function remote:Fire(...)
         environment.parryAttempts += 1
         local payload = { ... }
         table.insert(environment.remoteLog, {
@@ -339,8 +349,10 @@ function Environment.new(config)
             scenario = environment.currentScenario,
             payload = payload,
         })
-        return originalFireServer(self, ...)
+        return invokeOriginal(self, ...)
     end
+
+    remote.FireServer = remote.Fire
 
     env.parryConnection = env.api.onParry(function(ball, timestamp)
         local event = {
@@ -487,8 +499,18 @@ function Environment:cleanup()
         self.parryConnection = nil
     end
 
-    if self.parryRemote and self.originalFireServer then
-        self.parryRemote.FireServer = self.originalFireServer
+    if self.parryRemote then
+        if self.originalFire then
+            self.parryRemote.Fire = self.originalFire
+        else
+            self.parryRemote.Fire = nil
+        end
+
+        if self.originalFireServer then
+            self.parryRemote.FireServer = self.originalFireServer
+        else
+            self.parryRemote.FireServer = nil
+        end
     end
 
     if self.originalGetService then

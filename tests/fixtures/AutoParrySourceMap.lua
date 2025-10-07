@@ -37,41 +37,56 @@ local function cloneTable(tbl)
     return result
 end
 
-local function isRemoteEvent(remote)
+local function classifyParryRemote(remote)
     if remote == nil then
-        return false, "nil"
+        return false, "nil", nil
     end
 
-    local okIsA, result = pcall(function()
-        local method = remote.IsA
-        if not isCallable(method) then
-            return nil
+    local cachedClassName = nil
+
+    local function getClassName()
+        if cachedClassName ~= nil then
+            return cachedClassName
         end
 
-        return method(remote, "RemoteEvent")
-    end)
-
-    if okIsA and result == true then
         local okClass, className = pcall(function()
             return remote.ClassName
         end)
 
         if okClass and type(className) == "string" then
-            return true, className
+            cachedClassName = className
         end
 
-        return true, "RemoteEvent"
+        return cachedClassName
     end
 
-    local okClass, className = pcall(function()
-        return remote.ClassName
-    end)
+    local function isInstanceOf(target)
+        local okIsA, result = pcall(function()
+            local method = remote.IsA
+            if not isCallable(method) then
+                return nil
+            end
 
-    if okClass and type(className) == "string" and className == "RemoteEvent" then
-        return true, className
+            return method(remote, target)
+        end)
+
+        return okIsA and result == true
     end
 
-    return false, okClass and className or typeOf(remote)
+    if isInstanceOf("RemoteEvent") then
+        return true, getClassName() or "RemoteEvent", "RemoteEvent"
+    end
+
+    if isInstanceOf("BindableEvent") then
+        return true, getClassName() or "BindableEvent", "BindableEvent"
+    end
+
+    local className = getClassName()
+    if className == "RemoteEvent" or className == "BindableEvent" then
+        return true, className, className
+    end
+
+    return false, className or typeOf(remote), nil
 end
 
 local function createRemoteFireWrapper(remote, methodName)
@@ -92,18 +107,18 @@ local function createRemoteFireWrapper(remote, methodName)
 end
 
 local function findRemoteFire(remote)
-    local okServer, fireServer = pcall(function()
-        return remote.FireServer
-    end)
-    if okServer and isCallable(fireServer) then
-        return "FireServer", createRemoteFireWrapper(remote, "FireServer")
-    end
-
     local okFire, fire = pcall(function()
         return remote.Fire
     end)
     if okFire and isCallable(fire) then
         return "Fire", createRemoteFireWrapper(remote, "Fire")
+    end
+
+    local okServer, fireServer = pcall(function()
+        return remote.FireServer
+    end)
+    if okServer and isCallable(fireServer) then
+        return "FireServer", createRemoteFireWrapper(remote, "FireServer")
     end
 
     return nil, nil
@@ -124,8 +139,8 @@ local function locateSuccessRemotes(remotes)
     for _, definition in ipairs(definitions) do
         local okRemote, remote = pcall(remotes.FindFirstChild, remotes, definition.name)
         if okRemote and remote then
-            local isEvent, className = isRemoteEvent(remote)
-            if isEvent then
+            local isSupported, className = classifyParryRemote(remote)
+            if isSupported then
                 success[definition.key] = {
                     remote = remote,
                     name = definition.name,
@@ -318,8 +333,8 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
             return nil
         end
 
-        local isEvent, className = isRemoteEvent(found)
-        if not isEvent then
+        local isSupported, className, kind = classifyParryRemote(found)
+        if not isSupported then
             emit(report, {
                 stage = "error",
                 target = "remote",
@@ -353,15 +368,15 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
                 className = className,
                 remoteName = found.Name,
                 candidates = candidateNames,
-                message = "AutoParry: parry remote missing FireServer/Fire",
+                message = "AutoParry: parry remote missing Fire/FireServer",
             })
 
-            error("AutoParry: parry remote missing FireServer/Fire", 0)
+            error("AutoParry: parry remote missing Fire/FireServer", 0)
         end
 
         local info = {
             method = methodName,
-            kind = "RemoteEvent",
+            kind = kind or className,
             className = className,
             remoteName = found.Name,
             variant = candidate.variant,
@@ -717,29 +732,38 @@ local function getClassName(instance)
     return type(instance)
 end
 
-local function isRemoteEvent(remote)
+local function classifyParryRemote(remote)
     if remote == nil then
-        return false, "nil"
+        return false, "nil", nil
     end
 
-    local okIsA, result = pcall(function()
-        local method = remote.IsA
-        if not isCallable(method) then
-            return nil
-        end
-        return method(remote, "RemoteEvent")
-    end)
+    local function isInstanceOf(target)
+        local okIsA, result = pcall(function()
+            local method = remote.IsA
+            if not isCallable(method) then
+                return nil
+            end
 
-    if okIsA and result == true then
-        return true, getClassName(remote)
+            return method(remote, target)
+        end)
+
+        return okIsA and result == true
+    end
+
+    if isInstanceOf("RemoteEvent") then
+        return true, getClassName(remote), "RemoteEvent"
+    end
+
+    if isInstanceOf("BindableEvent") then
+        return true, getClassName(remote), "BindableEvent"
     end
 
     local className = getClassName(remote)
-    if className == "RemoteEvent" then
-        return true, className
+    if className == "RemoteEvent" or className == "BindableEvent" then
+        return true, className, className
     end
 
-    return false, className
+    return false, className, nil
 end
 
 local function clone(tbl)

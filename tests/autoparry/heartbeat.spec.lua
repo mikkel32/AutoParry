@@ -136,15 +136,19 @@ return function(t)
         local parryLog = {}
         local currentFrame = 0
 
-        local originalFireServer = remote.FireServer
-        remote.FireServer = function(self, ...)
+        local originalFire = remote.Fire or remote.FireServer
+        remote.Fire = function(self, ...)
             table.insert(parryLog, {
                 frame = currentFrame,
                 time = scheduler:clock(),
                 payload = { ... },
             })
-            return originalFireServer(self, ...)
+            if originalFire then
+                return originalFire(self, ...)
+            end
         end
+
+        remote.FireServer = remote.Fire
 
         local autoparry = Harness.loadAutoparry({
             scheduler = scheduler,
