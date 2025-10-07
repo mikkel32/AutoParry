@@ -1,0 +1,7 @@
+{
+  "summary": {
+    "average": 0.0016,
+    "p95": 0.0035
+  },
+  "notes": "Update these values when establishing a new performance baseline from main."
+}

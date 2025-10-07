@@ -24,6 +24,7 @@ files = [
     ('src/ui/init.lua', os.path.join(root, 'src', 'ui', 'init.lua')),
     ('src/shared/util.lua', os.path.join(root, 'src', 'shared', 'util.lua')),
     ('tests/fixtures/ui_snapshot.json', os.path.join(root, 'tests', 'fixtures', 'ui_snapshot.json')),
+    ('tests/perf/config.lua', os.path.join(root, 'tests', 'perf', 'config.lua')),
 ]
 
 contents = {}
