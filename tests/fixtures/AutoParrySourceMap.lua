@@ -46,6 +46,22 @@ local DEFAULT_CONFIG = {
     pingBased = true,
     pingBasedOffset = 0,
     fHoldTime = 0.06,
+    reactionLeeway = 0,
+    directionSensitivity = 0.35,
+    minApproachSpeed = 14,
+    lookAheadTime = 0.35,
+    lookAheadSteps = 4,
+    ttiHysteresis = 0.03,
+    proximityHysteresis = 1.25,
+    predictionHorizon = 1.75,
+    predictionSteps = 36,
+    impactSolveIterations = 12,
+    impactTolerance = 0.0025,
+    certaintyWeight = 0.65,
+    certaintyThreshold = 0.9,
+    certaintyDecay = 0.4,
+    guaranteeWindow = 0.28,
+    guaranteeDistance = 4.25,
 }
 
 local TARGET_WINDOW_BANDS = {
@@ -119,6 +135,16 @@ local characterRemovingConnection: RBXScriptConnection?
 
 local lastFiredTime = 0
 local trackedBall: BasePart?
+local lastBallDecision = {
+    ball = nil :: BasePart?,
+    fireTime = 0,
+    tti = math.huge,
+    distance = math.huge,
+}
+
+local lastPlayerVelocity = Vector3.zero
+local lastPlayerVelocityTime = 0
+local ballHistory = setmetatable({}, { __mode = "k" })
 
 local AutoParry
 
@@ -178,6 +204,22 @@ local function syncGlobalSettings()
     settings.PingBasedOffset = config.pingBasedOffset
     settings.FHoldTime = config.fHoldTime
     settings.AntiSpam = config.cooldown
+    settings.ReactionLeeway = config.reactionLeeway
+    settings.DirectionSensitivity = config.directionSensitivity
+    settings.MinApproachSpeed = config.minApproachSpeed
+    settings.LookAheadTime = config.lookAheadTime
+    settings.LookAheadSteps = config.lookAheadSteps
+    settings.TTIHysteresis = config.ttiHysteresis
+    settings.ProximityHysteresis = config.proximityHysteresis
+    settings.PredictionHorizon = config.predictionHorizon
+    settings.PredictionSteps = config.predictionSteps
+    settings.ImpactSolveIterations = config.impactSolveIterations
+    settings.ImpactTolerance = config.impactTolerance
+    settings.CertaintyWeight = config.certaintyWeight
+    settings.CertaintyThreshold = config.certaintyThreshold
+    settings.CertaintyDecay = config.certaintyDecay
+    settings.GuaranteeWindow = config.guaranteeWindow
+    settings.GuaranteeDistance = config.guaranteeDistance
 end
 
 local function updateToggleButton()
@@ -211,6 +253,10 @@ local function clearBallVisuals()
         BallBillboard.Adornee = nil
     end
     trackedBall = nil
+    lastBallDecision.ball = nil
+    lastBallDecision.fireTime = 0
+    lastBallDecision.tti = math.huge
+    lastBallDecision.distance = math.huge
 end
 
 local function ensureUi()
@@ -389,6 +435,389 @@ local function findRealBall(folder)
     return best
 end
 
+local function getPlayerVelocity()
+    if not RootPart then
+        return Vector3.zero
+    end
+
+    local velocity = RootPart.AssemblyLinearVelocity or RootPart.Velocity
+    if typeof(velocity) == "Vector3" then
+        return velocity
+    end
+
+    return Vector3.zero
+end
+
+local function evaluateRelativePosition(relativePosition, relativeVelocity, relativeAcceleration, t)
+    if t <= 0 then
+        return relativePosition
+    end
+
+    local accelerationComponent = relativeAcceleration * (0.5 * t * t)
+    return relativePosition + relativeVelocity * t + accelerationComponent
+end
+
+local function solveImpactTime(relativePosition, relativeVelocity, relativeAcceleration, safeRadius, horizon, tolerance, iterations)
+    safeRadius = math.max(safeRadius or 0, 0)
+    if safeRadius <= 0 then
+        return math.huge
+    end
+
+    local relativeAccelerationValue = relativeAcceleration or Vector3.zero
+    local distance = relativePosition.Magnitude
+    if distance <= safeRadius then
+        return 0
+    end
+
+    local velocityMagnitudeSquared = relativeVelocity:Dot(relativeVelocity)
+    local guess = math.huge
+    if velocityMagnitudeSquared > 1e-6 then
+        local b = 2 * relativePosition:Dot(relativeVelocity)
+        local c = relativePosition:Dot(relativePosition) - (safeRadius * safeRadius)
+        local discriminant = b * b - 4 * velocityMagnitudeSquared * c
+        if discriminant >= 0 then
+            local sqrtDisc = math.sqrt(discriminant)
+            local denom = 2 * velocityMagnitudeSquared
+            local t1 = (-b - sqrtDisc) / denom
+            local t2 = (-b + sqrtDisc) / denom
+            if t1 > 0 then
+                guess = t1
+            end
+            if t2 > 0 then
+                if guess == math.huge or t2 < guess then
+                    guess = t2
+                end
+            end
+        end
+    end
+
+    if guess == math.huge then
+        local speed = math.sqrt(velocityMagnitudeSquared)
+        if speed > 1e-6 then
+            guess = math.max((distance - safeRadius) / speed, 0)
+        else
+            guess = horizon or 0
+        end
+    end
+
+    guess = math.clamp(guess, 0, math.max(horizon or 0, 0))
+
+    local result = guess
+    local maxIterations = math.max(iterations or 0, 0)
+    local epsilon = math.max(tolerance or 0.001, 1e-4)
+
+    for _ = 1, maxIterations do
+        local position = evaluateRelativePosition(relativePosition, relativeVelocity, relativeAccelerationValue, result)
+        local magnitude = position.Magnitude
+        local difference = magnitude - safeRadius
+        if math.abs(difference) <= epsilon then
+            return math.max(result, 0)
+        end
+
+        local velocityAtTime = relativeVelocity + relativeAccelerationValue * result
+        local derivative = 0
+        if magnitude > 1e-6 then
+            derivative = position:Dot(velocityAtTime) / magnitude
+        end
+
+        if math.abs(derivative) < 1e-6 then
+            break
+        end
+
+        result -= difference / derivative
+        if result < 0 then
+            result = 0
+        end
+        if result > (horizon or math.huge) then
+            result = horizon or math.huge
+        end
+    end
+
+    local finalPosition = evaluateRelativePosition(relativePosition, relativeVelocity, relativeAccelerationValue, result)
+    if finalPosition.Magnitude <= safeRadius + epsilon then
+        return math.max(result, 0)
+    end
+
+    return math.huge
+end
+
+local function sweepClosestDistance(relativePosition, relativeVelocity, relativeAcceleration, horizon, steps)
+    local minimum = relativePosition.Magnitude
+    local stepCount = math.max(math.floor(steps or 0), 0)
+    if stepCount == 0 then
+        return minimum
+    end
+
+    local delta = (math.max(horizon or 0, 0)) / stepCount
+    for index = 1, stepCount do
+        local timePosition = delta * index
+        local position = evaluateRelativePosition(relativePosition, relativeVelocity, relativeAcceleration, timePosition)
+        local magnitude = position.Magnitude
+        if magnitude < minimum then
+            minimum = magnitude
+        end
+    end
+
+    return minimum
+end
+
+local function computeAdvancedPrediction(relativePosition, relativeVelocity, relativeAcceleration, safeRadius, horizon, steps, tolerance, iterations)
+    local impactTime = solveImpactTime(relativePosition, relativeVelocity, relativeAcceleration, safeRadius, horizon, tolerance, iterations)
+    local minDistance = sweepClosestDistance(relativePosition, relativeVelocity, relativeAcceleration, horizon, steps)
+    local impactDistance = math.huge
+
+    if impactTime ~= math.huge then
+        local positionAtImpact = evaluateRelativePosition(relativePosition, relativeVelocity, relativeAcceleration, impactTime)
+        impactDistance = positionAtImpact.Magnitude
+        if impactDistance < minDistance then
+            minDistance = impactDistance
+        end
+    end
+
+    return impactTime, impactDistance, minDistance
+end
+
+local function computeBallTelemetry(ball)
+    if not RootPart or not ball or not ball:IsA("BasePart") then
+        return nil
+    end
+
+    local now = os.clock()
+    local ballPosition = ball.Position
+    local playerPosition = RootPart.Position
+    local toPlayer = playerPosition - ballPosition
+    local distance = toPlayer.Magnitude
+    if distance == 0 then
+        return nil
+    end
+
+    local directionToPlayer = toPlayer / distance
+    local velocity = ball.AssemblyLinearVelocity or ball.Velocity or Vector3.zero
+    local speed = velocity.Magnitude
+    local playerVelocity = getPlayerVelocity()
+
+    local playerAcceleration = Vector3.zero
+    local playerDelta = now - (lastPlayerVelocityTime or 0)
+    if playerDelta > 1e-3 then
+        playerAcceleration = (playerVelocity - lastPlayerVelocity) / playerDelta
+    end
+    lastPlayerVelocity = playerVelocity
+    lastPlayerVelocityTime = now
+
+    local record = ballHistory[ball]
+    if not record then
+        record = {
+            lastPosition = ballPosition,
+            lastVelocity = velocity,
+            lastUpdate = now,
+            certainty = 0,
+        }
+        ballHistory[ball] = record
+    end
+
+    local deltaTime = now - (record.lastUpdate or now)
+    local acceleration = Vector3.zero
+    if deltaTime > 1e-3 then
+        acceleration = (velocity - record.lastVelocity) / deltaTime
+    end
+
+    local approachingSpeed = velocity:Dot(directionToPlayer)
+    local directionDot = speed > 0 and approachingSpeed / speed or 0
+
+    local pingAdjustment = 0
+    if config.pingBased then
+        pingAdjustment = speed * getPingTime() + (config.pingBasedOffset or 0)
+    end
+
+    local adjustedDistance = distance - pingAdjustment
+    if adjustedDistance < 0 then
+        adjustedDistance = 0
+    end
+
+    local tti = math.huge
+    if approachingSpeed > 0 then
+        tti = adjustedDistance / approachingSpeed
+        if tti < 0 then
+            tti = 0
+        end
+    end
+
+    local window = config.dynamicWindow and getDynamicWindow(speed) or (config.staticTTIWindow or 0.5)
+
+    local lookAheadTime = math.max(config.lookAheadTime or 0, 0)
+    local lookAheadSteps = math.max(config.lookAheadSteps or 0, 0)
+    local minFutureDistance = distance
+    if lookAheadTime > 0 and lookAheadSteps > 0 then
+        local stepDuration = lookAheadTime / lookAheadSteps
+        for step = 1, lookAheadSteps do
+            local dt = stepDuration * step
+            local futureBallPosition = ballPosition + velocity * dt
+            local futurePlayerPosition = playerPosition + playerVelocity * dt
+            local projected = (futurePlayerPosition - futureBallPosition).Magnitude
+            if projected < minFutureDistance then
+                minFutureDistance = projected
+            end
+        end
+    end
+
+    local relativePosition = ballPosition - playerPosition
+    local relativeVelocity = velocity - playerVelocity
+    local relativeAcceleration = acceleration - playerAcceleration
+
+    local predictionHorizon = math.max(config.predictionHorizon or 0, 0)
+    local predictionSteps = math.max(math.floor(config.predictionSteps or 0), 0)
+    local impactTolerance = math.max(config.impactTolerance or 0.001, 1e-4)
+    local impactIterations = math.max(math.floor(config.impactSolveIterations or 0), 0)
+    local safeRadius = math.max(config.safeRadius or 0, 0)
+
+    local impactTime, impactDistance, predictedMinDistance = computeAdvancedPrediction(
+        relativePosition,
+        relativeVelocity,
+        relativeAcceleration,
+        safeRadius,
+        predictionHorizon,
+        predictionSteps,
+        impactTolerance,
+        impactIterations
+    )
+
+    if predictedMinDistance < minFutureDistance then
+        minFutureDistance = predictedMinDistance
+    end
+
+    local decayRate = math.max(config.certaintyDecay or 0.4, 0)
+    local retention = math.exp(-deltaTime * decayRate)
+    local closeness = 0
+    if safeRadius > 0 then
+        local delta = math.max(minFutureDistance - safeRadius, 0)
+        closeness = math.clamp(1 - (delta / safeRadius), 0, 1)
+    else
+        closeness = 1
+    end
+
+    local timeFactor = 0
+    if impactTime ~= math.huge then
+        timeFactor = math.exp(-(impactTime) * (decayRate * 0.5 + 0.05))
+    end
+
+    local instantaneousCertainty = math.clamp(closeness * timeFactor, 0, 1)
+    local certaintyWeight = math.clamp(config.certaintyWeight or 0.65, 0, 1)
+    local previousCertainty = (record.certainty or 0) * retention
+    local blendedCertainty = previousCertainty * certaintyWeight + instantaneousCertainty * (1 - certaintyWeight)
+    blendedCertainty = math.clamp(blendedCertainty, 0, 1)
+
+    record.lastPosition = ballPosition
+    record.lastVelocity = velocity
+    record.lastUpdate = now
+    record.certainty = blendedCertainty
+
+    local consider = true
+    if approachingSpeed <= 0 then
+        consider = false
+    end
+
+    if speed < (config.minSpeed or 0) then
+        consider = false
+    end
+
+    if approachingSpeed < (config.minApproachSpeed or config.minSpeed or 0) then
+        consider = false
+    end
+
+    if directionDot < (config.directionSensitivity or 0) then
+        consider = false
+    end
+
+    if config.ballSpeedCheck and speed == 0 then
+        consider = false
+    end
+
+    if not consider and impactTime ~= math.huge and impactTime <= predictionHorizon then
+        consider = true
+    end
+
+    return {
+        ball = ball,
+        position = ballPosition,
+        velocity = velocity,
+        playerVelocity = playerVelocity,
+        relativeVelocity = relativeVelocity,
+        relativeAcceleration = relativeAcceleration,
+        speed = speed,
+        distance = distance,
+        approachingSpeed = approachingSpeed,
+        directionDot = directionDot,
+        pingAdjustment = pingAdjustment,
+        adjustedDistance = adjustedDistance,
+        tti = tti,
+        window = window,
+        minFutureDistance = minFutureDistance,
+        impactTime = impactTime,
+        impactDistance = impactDistance,
+        predictionHorizon = predictionHorizon,
+        certainty = blendedCertainty,
+        consider = consider,
+    }
+end
+
+local function scoreCandidate(candidate)
+    local impactTime = candidate.impactTime or candidate.tti or math.huge
+    if impactTime == math.huge then
+        impactTime = candidate.tti or 10
+    end
+
+    if impactTime == math.huge then
+        impactTime = 10
+    end
+
+    local distanceScore = math.min(candidate.minFutureDistance or candidate.distance or 0, candidate.distance or 0) /
+        math.max(candidate.speed or 0, 1)
+    local directionPenalty = 1 - math.clamp(candidate.directionDot or 0, 0, 1)
+    local safeRadius = math.max(config.safeRadius or 1, 1)
+    local futurePenalty = math.max((candidate.minFutureDistance or candidate.distance or safeRadius) - safeRadius, 0) / safeRadius
+    local certaintyBonus = math.clamp(candidate.certainty or 0, 0, 1) * 0.6
+
+    return impactTime + (distanceScore * 0.05) + (directionPenalty * 0.05) + (futurePenalty * 0.03) - certaintyBonus
+end
+
+local function selectBestBall(folder)
+    if not folder then
+        return nil
+    end
+
+    local bestCandidate
+    local fallback
+
+    for _, child in ipairs(folder:GetChildren()) do
+        if child:IsA("BasePart") then
+            local telemetry = computeBallTelemetry(child)
+            if telemetry then
+                if not fallback then
+                    fallback = telemetry
+                end
+
+                if telemetry.consider then
+                    telemetry.score = scoreCandidate(telemetry)
+                    if not bestCandidate or telemetry.score < bestCandidate.score then
+                        bestCandidate = telemetry
+                    end
+                end
+            end
+        end
+    end
+
+    local now = os.clock()
+    for tracked, record in pairs(ballHistory) do
+        if typeof(tracked) ~= "Instance" or not tracked:IsDescendantOf(Workspace) then
+            ballHistory[tracked] = nil
+        elseif record and (now - (record.lastUpdate or now)) > math.max((config.predictionHorizon or 0) + 1, 1) then
+            ballHistory[tracked] = nil
+        end
+    end
+
+    return bestCandidate or fallback
+end
+
 local function getDynamicWindow(speed)
     for _, entry in ipairs(TARGET_WINDOW_BANDS) do
         if speed > entry.threshold then
@@ -438,10 +867,60 @@ local function setBallVisuals(ball, text)
     trackedBall = ball
 end
 
-local function sendKeyPress(ball)
+local function canFireForBall(candidate, now)
+    if not candidate then
+        return false
+    end
+
+    if lastBallDecision.ball ~= candidate.ball then
+        return true
+    end
+
+    local hysteresis = math.max(config.ttiHysteresis or 0, 0)
+    local proximityDelta = math.max(config.proximityHysteresis or 0, 0)
+
+    local previousTTI = lastBallDecision.tti or math.huge
+    local previousDistance = lastBallDecision.distance or math.huge
+    local currentTTI = candidate.tti or math.huge
+    local currentDistance = candidate.distance or math.huge
+
+    if previousTTI - currentTTI >= hysteresis then
+        return true
+    end
+
+    if previousDistance - currentDistance >= proximityDelta then
+        return true
+    end
+
+    if now - (lastBallDecision.fireTime or 0) > math.max(config.cooldown or 0.1, 0) then
+        return true
+    end
+
+    if candidate.certainty and candidate.certainty >= math.clamp(config.certaintyThreshold or 0.9, 0, 1) then
+        return true
+    end
+
+    return false
+end
+
+local function sendKeyPress(ball, candidate)
     local now = os.clock()
+    local sameBall = lastBallDecision.ball == ball and lastBallDecision.ball ~= nil
     local cooldown = config.cooldown or 0.1
-    if now - lastFiredTime < cooldown then
+    if not sameBall then
+        local reactionLeeway = math.max(config.reactionLeeway or 0, 0)
+        cooldown = math.min(cooldown, reactionLeeway)
+    end
+
+    if candidate and candidate.certainty and candidate.certainty >= math.clamp(config.certaintyThreshold or 0.9, 0, 1) then
+        cooldown = math.min(cooldown, 0.015)
+    end
+
+    if cooldown > 0 and now - lastFiredTime < cooldown then
+        return false
+    end
+
+    if candidate and not canFireForBall(candidate, now) then
         return false
     end
 
@@ -453,6 +932,18 @@ local function sendKeyPress(ball)
         task.wait(config.fHoldTime or 0.06)
         VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
     end)
+
+    if candidate then
+        lastBallDecision.ball = candidate.ball
+        lastBallDecision.fireTime = now
+        lastBallDecision.tti = candidate.tti or math.huge
+        lastBallDecision.distance = candidate.distance or math.huge
+    else
+        lastBallDecision.ball = ball
+        lastBallDecision.fireTime = now
+        lastBallDecision.tti = math.huge
+        lastBallDecision.distance = math.huge
+    end
 
     parryEvent:fire(ball, now)
     return true
@@ -582,8 +1073,116 @@ local function ensureInitialization()
     beginInitialization()
 end
 
-local function computeBallDebug(speed, tti, dist)
-    return string.format("💨 Speed: %.1f\n⏱️ TTI: %.3f\n📏 Dist: %.2f", speed, tti, dist)
+local function computeBallDebug(telemetry)
+    if not telemetry then
+        return ""
+    end
+
+    local ttiValue = telemetry.tti
+    if ttiValue == math.huge then
+        ttiValue = -1
+    end
+
+    local impactValue = telemetry.impactTime or math.huge
+    if impactValue == math.huge then
+        impactValue = -1
+    end
+
+    local certaintyPct = (telemetry.certainty or 0) * 100
+    local closest = telemetry.minFutureDistance or telemetry.distance
+    local impactDistance = telemetry.impactDistance or closest
+
+    return string.format(
+        "💨 Speed: %.1f\n⏱️ TTI: %.3f\n🔮 Impact: %.3f\n📏 Closest: %.2f\n🎯 ImpactDist: %.2f\n✅ Certainty: %.1f%%",
+        telemetry.speed,
+        ttiValue,
+        impactValue,
+        closest,
+        impactDistance,
+        certaintyPct
+    )
+end
+
+local function shouldTriggerParry(candidate)
+    if not candidate then
+        return false, "no-ball"
+    end
+
+    if config.ballSpeedCheck and candidate.speed == 0 then
+        return false, "stationary"
+    end
+
+    local proximityStuds = math.max(config.proximityStuds or 0, 0)
+    local safeRadius = math.max(config.safeRadius or 0, 0)
+    local certaintyThreshold = math.clamp(config.certaintyThreshold or 0.9, 0, 1)
+    local guaranteeWindow = math.max(config.guaranteeWindow or 0, 0)
+    local guaranteeDistance = math.max(config.guaranteeDistance or 0, 0)
+
+    if candidate.certainty and candidate.certainty >= certaintyThreshold then
+        return true, "certainty-lock"
+    end
+
+    if candidate.impactTime and candidate.impactTime ~= math.huge then
+        local limit = candidate.window and math.min(candidate.window, guaranteeWindow > 0 and guaranteeWindow or candidate.window) or guaranteeWindow
+        if limit == 0 then
+            limit = candidate.window or guaranteeWindow
+        end
+        if limit == 0 then
+            limit = guaranteeWindow
+        end
+        if limit == 0 then
+            limit = 0.3
+        end
+        if candidate.impactTime <= limit then
+            return true, "impact-lock"
+        end
+    end
+
+    if candidate.impactDistance and candidate.impactDistance <= math.max(guaranteeDistance, safeRadius) then
+        return true, "trajectory-commit"
+    end
+
+    if candidate.distance <= proximityStuds then
+        return true, "proximity"
+    end
+
+    if candidate.minFutureDistance <= math.max(proximityStuds, safeRadius * 0.65) then
+        return true, "predicted"
+    end
+
+    if config.useTTIWindow and candidate.tti <= candidate.window then
+        return true, "tti-window"
+    end
+
+    if candidate.tti <= (config.minTTI or 0.12) then
+        return true, "fast-min-tti"
+    end
+
+    if candidate.adjustedDistance <= safeRadius and candidate.directionDot > (config.directionSensitivity or 0) then
+        return true, "safe-radius"
+    end
+
+    return false, "waiting"
+end
+
+local function describeReason(reason)
+    local mapping = {
+        ["no-ball"] = "No ball",
+        stationary = "Stationary hold",
+        proximity = "Proximity lock",
+        predicted = "Trajectory collapse",
+        ["tti-window"] = "TTI window",
+        ["fast-min-tti"] = "Aggressive minimum",
+        ["safe-radius"] = "Safe radius",
+        ["impact-lock"] = "Impact window",
+        ["trajectory-commit"] = "Trajectory commit",
+        ["certainty-lock"] = "Certainty lock",
+        waiting = "Tracking",
+        ["not-targeting"] = "Not targeting",
+        cooldown = "Cooldown guard",
+    }
+
+    return mapping[reason] or reason
 end
 
 local function renderLoop()
@@ -616,81 +1215,76 @@ local function renderLoop()
         return
     end
 
-    local ball = findRealBall(folder)
-    if not ball or not ball:IsDescendantOf(Workspace) then
+    local telemetry = selectBestBall(folder)
+    if not telemetry or not telemetry.ball or not telemetry.ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "TTI: -", "Info: waiting for realBall..." })
         clearBallVisuals()
         return
     end
 
-    local velocity = ball.AssemblyLinearVelocity or ball.Velocity or Vector3.zero
-    local speed = velocity.Magnitude
+    local ball = telemetry.ball
+    local targeting = isTargetingMe()
+    local forcedTargeting = false
 
-    if config.ballSpeedCheck and speed == 0 then
-        local stationaryDistance = (RootPart.Position - ball.Position).Magnitude
-        updateStatusLabel({
-            "Auto-Parry F",
-            "Ball: found (stationary)",
-            string.format("Speed: %.1f | Dist: %.2f", speed, stationaryDistance),
-            "Info: speed=0 -> hold",
-        })
-        setBallVisuals(nil, "")
-        return
+    if not targeting then
+        local threshold = math.clamp(config.certaintyThreshold or 0.9, 0, 1)
+        local guaranteedWindow = math.max(config.guaranteeWindow or 0, 0.05)
+        if telemetry.certainty and telemetry.certainty >= threshold then
+            if telemetry.impactTime and telemetry.impactTime ~= math.huge and telemetry.impactTime <= guaranteedWindow then
+                targeting = true
+                forcedTargeting = true
+            end
+        end
     end
-
-    local distanceToPlayer = (RootPart.Position - ball.Position).Magnitude
-
-    local adjustedDistance = distanceToPlayer
-    if config.pingBased then
-        adjustedDistance -= (speed * getPingTime() + (config.pingBasedOffset or 0))
-    end
-
-    local toward = speed
-    if toward <= 0 then
-        toward = 1
-    end
-
-    local tti = adjustedDistance / toward
-    if tti < 0 then
-        tti = 0
-    end
-
-    local window = config.dynamicWindow and getDynamicWindow(speed) or (config.staticTTIWindow or 0.5)
 
     local fired = false
-    local reason = ""
+    local reasonCode = "waiting"
 
-    if isTargetingMe() then
-        if distanceToPlayer <= (config.proximityStuds or 5) then
-            if sendKeyPress(ball) then
-                fired = true
-                reason = "PROX"
+    if targeting then
+        local shouldFire, code = shouldTriggerParry(telemetry)
+        reasonCode = code
+
+        if shouldFire then
+            fired = sendKeyPress(ball, telemetry)
+            if not fired then
+                reasonCode = "cooldown"
             end
         end
-
-        if not fired and config.useTTIWindow and (tti <= window) then
-            if sendKeyPress(ball) then
-                fired = true
-                reason = "TTI"
-            end
-        end
+    else
+        reasonCode = "not-targeting"
     end
 
     local debugLines = {
         "Auto-Parry F",
         "Ball: found",
-        string.format("Speed: %.1f | Dist: %.2f | TTI: %.3f", speed, distanceToPlayer, tti),
-        string.format("Window: %.3f | TargetingMe: %s", window, tostring(isTargetingMe())),
+        string.format(
+            "Speed: %.1f | Dist: %.2f | TTI: %.3f",
+            telemetry.speed,
+            telemetry.distance,
+            telemetry.tti == math.huge and -1 or telemetry.tti
+        ),
+        string.format(
+            "Window: %.3f | Dot: %.2f | Targeting: %s",
+            telemetry.window,
+            telemetry.directionDot,
+            forcedTargeting and "FORCED" or tostring(targeting)
+        ),
+        string.format(
+            "Impact: %.3f | Closest: %.2f | Certainty: %.1f%%",
+            telemetry.impactTime == math.huge and -1 or telemetry.impactTime,
+            telemetry.minFutureDistance,
+            (telemetry.certainty or 0) * 100
+        ),
     }
 
     if fired then
-        table.insert(debugLines, "🔥 Press F: YES (" .. reason .. ")")
+        table.insert(debugLines, "🔥 Press F: YES (" .. describeReason(reasonCode) .. ")")
     else
-        table.insert(debugLines, "Press F: no")
+        table.insert(debugLines, "Press F: no (" .. describeReason(reasonCode) .. ")")
     end
 
     updateStatusLabel(debugLines)
-    setBallVisuals(ball, computeBallDebug(speed, tti, distanceToPlayer))
+    setBallVisuals(ball, computeBallDebug(telemetry))
 end
 
 local function ensureLoop()
@@ -763,6 +1357,54 @@ local validators = {
         return typeof(value) == "number"
     end,
     fHoldTime = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    reactionLeeway = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    directionSensitivity = function(value)
+        return typeof(value) == "number"
+    end,
+    minApproachSpeed = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    lookAheadTime = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    lookAheadSteps = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    ttiHysteresis = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    proximityHysteresis = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    predictionHorizon = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    predictionSteps = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    impactSolveIterations = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    impactTolerance = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    certaintyWeight = function(value)
+        return typeof(value) == "number" and value >= 0 and value <= 1
+    end,
+    certaintyThreshold = function(value)
+        return typeof(value) == "number" and value >= 0 and value <= 1
+    end,
+    certaintyDecay = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    guaranteeWindow = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    guaranteeDistance = function(value)
         return typeof(value) == "number" and value >= 0
     end,
 }
