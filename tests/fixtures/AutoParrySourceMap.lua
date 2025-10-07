@@ -13,44 +13,184 @@ local Stats = game:GetService("Stats")
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
 
-local function resolveLocalPlayer()
+local function clone(tbl)
+    return Util.deepCopy(tbl)
+end
+
+local initStatus = Util.Signal.new()
+local initProgress = { stage = "waiting-player" }
+
+local function updateInitProgress(stage, details)
+    for key in pairs(initProgress) do
+        initProgress[key] = nil
+    end
+
+    initProgress.stage = stage
+
+    if details then
+        for key, value in pairs(details) do
+            initProgress[key] = value
+        end
+    end
+
+    initStatus:fire(clone(initProgress))
+end
+
+local function resolveLocalPlayer(report)
+    report("waiting-player", { elapsed = 0 })
+
     local player = Players.LocalPlayer
     if player then
         return player
     end
 
     local start = os.clock()
+
     while not player do
-        task.wait()
-        player = Players.LocalPlayer
-        if player or os.clock() - start > 10 then
+        local elapsed = os.clock() - start
+        if elapsed >= 10 then
+            report("timeout", {
+                stage = "waiting-player",
+                elapsed = elapsed,
+                reason = "local-player",
+            })
             break
         end
+
+        report("waiting-player", { elapsed = elapsed })
+        task.wait()
+        player = Players.LocalPlayer
     end
 
     assert(player, "AutoParry: LocalPlayer unavailable")
     return player
 end
 
-local function resolveParryRemote()
+local function resolveParryRemote(report)
+    report("waiting-remotes", { target = "folder", elapsed = 0 })
+
     local remotes = Replicated:FindFirstChild("Remotes")
     if not remotes then
-        remotes = Replicated:WaitForChild("Remotes", 10)
+        local start = os.clock()
+        while not remotes do
+            local elapsed = os.clock() - start
+            if elapsed >= 10 then
+                report("timeout", {
+                    stage = "waiting-remotes",
+                    target = "folder",
+                    elapsed = elapsed,
+                    reason = "remotes-folder",
+                })
+                break
+            end
+
+            report("waiting-remotes", {
+                target = "folder",
+                elapsed = elapsed,
+            })
+            task.wait()
+            remotes = Replicated:FindFirstChild("Remotes")
+        end
     end
 
     assert(remotes, "AutoParry: ReplicatedStorage.Remotes missing")
 
+    report("waiting-remotes", { target = "remote", elapsed = 0 })
+
     local remote = remotes:FindFirstChild("ParryButtonPress")
     if not remote then
-        remote = remotes:WaitForChild("ParryButtonPress", 10)
+        local start = os.clock()
+        while not remote do
+            local elapsed = os.clock() - start
+            if elapsed >= 10 then
+                report("timeout", {
+                    stage = "waiting-remotes",
+                    target = "remote",
+                    elapsed = elapsed,
+                    reason = "parry-remote",
+                })
+                break
+            end
+
+            report("waiting-remotes", {
+                target = "remote",
+                elapsed = elapsed,
+            })
+            task.wait()
+            remote = remotes:FindFirstChild("ParryButtonPress")
+        end
     end
 
     assert(remote, "AutoParry: ParryButtonPress remote missing")
     return remote
 end
 
-local LocalPlayer = resolveLocalPlayer()
-local ParryRemote = resolveParryRemote()
+local LocalPlayer = nil
+local ParryRemote = nil
+
+local initialization = {
+    started = false,
+    completed = false,
+    error = nil,
+    token = 0,
+}
+
+local function beginInitialization()
+    initialization.token += 1
+    local token = initialization.token
+    initialization.started = true
+    initialization.completed = false
+    initialization.error = nil
+
+    updateInitProgress("waiting-player", { elapsed = 0 })
+
+    local initStart = os.clock()
+
+    task.spawn(function()
+        local function report(stage, details)
+            if initialization.token ~= token then
+                return
+            end
+
+            updateInitProgress(stage, details)
+        end
+
+        local ok, player, remoteOrError = pcall(function()
+            local player = resolveLocalPlayer(report)
+            if initialization.token ~= token then
+                return nil, nil
+            end
+
+            local remote = resolveParryRemote(report)
+            return player, remote
+        end)
+
+        if initialization.token ~= token then
+            return
+        end
+
+        if ok then
+            if not player or not remoteOrError then
+                return
+            end
+
+            LocalPlayer = player
+            ParryRemote = remoteOrError
+            initialization.completed = true
+            report("ready", { elapsed = os.clock() - initStart })
+        else
+            initialization.error = player
+        end
+    end)
+end
+
+local function ensureInitialization()
+    if initialization.started then
+        return
+    end
+
+    beginInitialization()
+end
 
 local DEFAULT_CONFIG = {
     cooldown = 0.10,
@@ -74,6 +214,30 @@ local state = {
 local stateChanged = Util.Signal.new()
 local parryEvent = Util.Signal.new()
 local logger = nil
+
+local function waitForReady()
+    ensureInitialization()
+
+    if initialization.completed then
+        return true
+    end
+
+    if initialization.error then
+        error(initialization.error, 0)
+    end
+
+    while true do
+        task.wait()
+
+        if initialization.completed then
+            return true
+        end
+
+        if initialization.error then
+            error(initialization.error, 0)
+        end
+    end
+end
 
 local function log(...)
     if logger then
@@ -215,6 +379,8 @@ function AutoParry.enable()
         return
     end
 
+    waitForReady()
+
     state.enabled = true
     if not state.connection then
         state.connection = RunService.Heartbeat:Connect(step)
@@ -316,6 +482,21 @@ function AutoParry.getLastParryTime()
     return state.lastParry
 end
 
+function AutoParry.onInitStatus(callback)
+    assert(typeof(callback) == "function", "AutoParry.onInitStatus expects a function")
+
+    ensureInitialization()
+
+    local connection = initStatus:connect(callback)
+    callback(clone(initProgress))
+    return connection
+end
+
+function AutoParry.getInitProgress()
+    ensureInitialization()
+    return clone(initProgress)
+end
+
 function AutoParry.onStateChanged(callback)
     assert(typeof(callback) == "function", "AutoParry.onStateChanged expects a function")
     return stateChanged:connect(callback)
@@ -337,12 +518,31 @@ function AutoParry.destroy()
     AutoParry.disable()
     stateChanged:destroy()
     parryEvent:destroy()
+    initStatus:destroy()
+
     stateChanged = Util.Signal.new()
     parryEvent = Util.Signal.new()
+    initStatus = Util.Signal.new()
     logger = nil
     state.lastParry = 0
     AutoParry.resetConfig()
+
+    LocalPlayer = nil
+    ParryRemote = nil
+
+    for key in pairs(initProgress) do
+        initProgress[key] = nil
+    end
+    initProgress.stage = "waiting-player"
+
+    initialization.started = false
+    initialization.completed = false
+    initialization.error = nil
+
+    beginInitialization()
 end
+
+ensureInitialization()
 
 return AutoParry
 
@@ -916,6 +1116,82 @@ local DEFAULT_ENTRY = "src/main.lua"
 
 local globalSourceCache = {}
 
+local function newSignal()
+    local listeners = {}
+
+    local signal = {}
+
+    function signal:Connect(callback)
+        assert(type(callback) == "function", "Signal connection requires a callback")
+
+        local connection = {
+            Connected = true,
+        }
+
+        listeners[connection] = callback
+
+        function connection:Disconnect()
+            if not self.Connected then
+                return
+            end
+
+            self.Connected = false
+            listeners[self] = nil
+        end
+
+        return connection
+    end
+
+    function signal:Fire(...)
+        local snapshot = {}
+        local count = 0
+
+        for connection, callback in pairs(listeners) do
+            if connection.Connected then
+                count = count + 1
+                snapshot[count] = callback
+            end
+        end
+
+        for i = 1, count do
+            local callback = snapshot[i]
+            callback(...)
+        end
+    end
+
+    return signal
+end
+
+local function copyTable(source)
+    local target = {}
+    for key, value in pairs(source) do
+        target[key] = value
+    end
+    return target
+end
+
+local function emit(signal, basePayload, overrides)
+    if not signal then
+        return
+    end
+
+    local payload = copyTable(basePayload)
+
+    if overrides then
+        for key, value in pairs(overrides) do
+            payload[key] = value
+        end
+    end
+
+    signal:Fire(payload)
+end
+
+local function updateAllComplete(context)
+    if context.progress.started == context.progress.finished + context.progress.failed then
+        context.signals.onAllComplete:Fire(context.progress)
+    end
+end
+
 local function buildUrl(repo, branch, path)
     return ("%s/%s/%s/%s"):format(RAW_HOST, repo, branch, path)
 end
@@ -923,7 +1199,7 @@ end
 local function fetch(repo, branch, path, refresh)
     local url = buildUrl(repo, branch, path)
     if not refresh and globalSourceCache[url] then
-        return globalSourceCache[url]
+        return globalSourceCache[url], true
     end
 
     local ok, res = pcall(game.HttpGet, game, url, true)
@@ -935,7 +1211,7 @@ local function fetch(repo, branch, path, refresh)
         globalSourceCache[url] = res
     end
 
-    return res
+    return res, false
 end
 
 local function createContext(options)
@@ -947,16 +1223,91 @@ local function createContext(options)
         cache = {},
     }
 
+    context.progress = {
+        started = 0,
+        finished = 0,
+        failed = 0,
+    }
+
+    context.signals = {
+        onFetchStarted = newSignal(),
+        onFetchCompleted = newSignal(),
+        onFetchFailed = newSignal(),
+        onAllComplete = newSignal(),
+    }
+
     local function remoteRequire(path)
         local cacheKey = path
-        if not context.refresh and context.cache[cacheKey] ~= nil then
-            return context.cache[cacheKey]
+        local url = buildUrl(context.repo, context.branch, path)
+        local baseEvent = {
+            path = path,
+            url = url,
+            refresh = context.refresh,
+        }
+
+        local function start(overrides)
+            context.progress.started = context.progress.started + 1
+            emit(context.signals.onFetchStarted, baseEvent, overrides)
         end
 
-        local source = fetch(context.repo, context.branch, path, context.refresh)
+        local function succeed(overrides)
+            context.progress.finished = context.progress.finished + 1
+            emit(context.signals.onFetchCompleted, baseEvent, overrides)
+            updateAllComplete(context)
+        end
+
+        local function fail(message, overrides)
+            context.progress.failed = context.progress.failed + 1
+            emit(context.signals.onFetchFailed, baseEvent, overrides)
+            updateAllComplete(context)
+            error(message, 0)
+        end
+
+        if not context.refresh and context.cache[cacheKey] ~= nil then
+            local cachedResult = context.cache[cacheKey]
+            start({
+                status = "started",
+                fromCache = true,
+                cache = "context",
+            })
+            succeed({
+                status = "completed",
+                fromCache = true,
+                cache = "context",
+                result = cachedResult,
+            })
+            return cachedResult
+        end
+
+        local willUseGlobalCache = not context.refresh and globalSourceCache[url] ~= nil
+
+        start({
+            status = "started",
+            fromCache = willUseGlobalCache,
+            cache = willUseGlobalCache and "global" or nil,
+        })
+
+        local fetchOk, fetchResult, fetchFromCache = pcall(fetch, context.repo, context.branch, path, context.refresh)
+        if not fetchOk then
+            local message = fetchResult
+            fail(message, {
+                status = "failed",
+                fromCache = willUseGlobalCache,
+                cache = willUseGlobalCache and "global" or nil,
+                error = message,
+            })
+        end
+
+        local source = fetchResult
         local chunk, err = loadstring(source, "=" .. path)
         if not chunk then
-            error(("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err)), 0)
+            local message = ("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err))
+            fail(message, {
+                status = "failed",
+                fromCache = fetchFromCache or false,
+                cache = fetchFromCache and "global" or nil,
+                error = message,
+            })
         end
 
         local previousRequire = rawget(_G, "ARequire")
@@ -967,10 +1318,24 @@ local function createContext(options)
         rawset(_G, "ARequire", previousRequire)
 
         if not ok then
-            error(("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result)), 0)
+            local message = ("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result))
+            fail(message, {
+                status = "failed",
+                fromCache = fetchFromCache or false,
+                cache = fetchFromCache and "global" or nil,
+                error = message,
+            })
         end
 
         context.cache[cacheKey] = result
+
+        succeed({
+            status = "completed",
+            fromCache = fetchFromCache or false,
+            cache = fetchFromCache and "global" or nil,
+            result = result,
+        })
+
         return result
     end
 
@@ -990,6 +1355,8 @@ local function bootstrap(options)
         rawset(_G, "AutoParryLoader", {
             require = context.require,
             context = context,
+            signals = context.signals,
+            progress = context.progress,
         })
 
         local mainModule = context.require(context.entrypoint)

@@ -10,44 +10,184 @@ local Stats = game:GetService("Stats")
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
 
-local function resolveLocalPlayer()
+local function clone(tbl)
+    return Util.deepCopy(tbl)
+end
+
+local initStatus = Util.Signal.new()
+local initProgress = { stage = "waiting-player" }
+
+local function updateInitProgress(stage, details)
+    for key in pairs(initProgress) do
+        initProgress[key] = nil
+    end
+
+    initProgress.stage = stage
+
+    if details then
+        for key, value in pairs(details) do
+            initProgress[key] = value
+        end
+    end
+
+    initStatus:fire(clone(initProgress))
+end
+
+local function resolveLocalPlayer(report)
+    report("waiting-player", { elapsed = 0 })
+
     local player = Players.LocalPlayer
     if player then
         return player
     end
 
     local start = os.clock()
+
     while not player do
-        task.wait()
-        player = Players.LocalPlayer
-        if player or os.clock() - start > 10 then
+        local elapsed = os.clock() - start
+        if elapsed >= 10 then
+            report("timeout", {
+                stage = "waiting-player",
+                elapsed = elapsed,
+                reason = "local-player",
+            })
             break
         end
+
+        report("waiting-player", { elapsed = elapsed })
+        task.wait()
+        player = Players.LocalPlayer
     end
 
     assert(player, "AutoParry: LocalPlayer unavailable")
     return player
 end
 
-local function resolveParryRemote()
+local function resolveParryRemote(report)
+    report("waiting-remotes", { target = "folder", elapsed = 0 })
+
     local remotes = Replicated:FindFirstChild("Remotes")
     if not remotes then
-        remotes = Replicated:WaitForChild("Remotes", 10)
+        local start = os.clock()
+        while not remotes do
+            local elapsed = os.clock() - start
+            if elapsed >= 10 then
+                report("timeout", {
+                    stage = "waiting-remotes",
+                    target = "folder",
+                    elapsed = elapsed,
+                    reason = "remotes-folder",
+                })
+                break
+            end
+
+            report("waiting-remotes", {
+                target = "folder",
+                elapsed = elapsed,
+            })
+            task.wait()
+            remotes = Replicated:FindFirstChild("Remotes")
+        end
     end
 
     assert(remotes, "AutoParry: ReplicatedStorage.Remotes missing")
 
+    report("waiting-remotes", { target = "remote", elapsed = 0 })
+
     local remote = remotes:FindFirstChild("ParryButtonPress")
     if not remote then
-        remote = remotes:WaitForChild("ParryButtonPress", 10)
+        local start = os.clock()
+        while not remote do
+            local elapsed = os.clock() - start
+            if elapsed >= 10 then
+                report("timeout", {
+                    stage = "waiting-remotes",
+                    target = "remote",
+                    elapsed = elapsed,
+                    reason = "parry-remote",
+                })
+                break
+            end
+
+            report("waiting-remotes", {
+                target = "remote",
+                elapsed = elapsed,
+            })
+            task.wait()
+            remote = remotes:FindFirstChild("ParryButtonPress")
+        end
     end
 
     assert(remote, "AutoParry: ParryButtonPress remote missing")
     return remote
 end
 
-local LocalPlayer = resolveLocalPlayer()
-local ParryRemote = resolveParryRemote()
+local LocalPlayer = nil
+local ParryRemote = nil
+
+local initialization = {
+    started = false,
+    completed = false,
+    error = nil,
+    token = 0,
+}
+
+local function beginInitialization()
+    initialization.token += 1
+    local token = initialization.token
+    initialization.started = true
+    initialization.completed = false
+    initialization.error = nil
+
+    updateInitProgress("waiting-player", { elapsed = 0 })
+
+    local initStart = os.clock()
+
+    task.spawn(function()
+        local function report(stage, details)
+            if initialization.token ~= token then
+                return
+            end
+
+            updateInitProgress(stage, details)
+        end
+
+        local ok, player, remoteOrError = pcall(function()
+            local player = resolveLocalPlayer(report)
+            if initialization.token ~= token then
+                return nil, nil
+            end
+
+            local remote = resolveParryRemote(report)
+            return player, remote
+        end)
+
+        if initialization.token ~= token then
+            return
+        end
+
+        if ok then
+            if not player or not remoteOrError then
+                return
+            end
+
+            LocalPlayer = player
+            ParryRemote = remoteOrError
+            initialization.completed = true
+            report("ready", { elapsed = os.clock() - initStart })
+        else
+            initialization.error = player
+        end
+    end)
+end
+
+local function ensureInitialization()
+    if initialization.started then
+        return
+    end
+
+    beginInitialization()
+end
 
 local DEFAULT_CONFIG = {
     cooldown = 0.10,
@@ -71,6 +211,30 @@ local state = {
 local stateChanged = Util.Signal.new()
 local parryEvent = Util.Signal.new()
 local logger = nil
+
+local function waitForReady()
+    ensureInitialization()
+
+    if initialization.completed then
+        return true
+    end
+
+    if initialization.error then
+        error(initialization.error, 0)
+    end
+
+    while true do
+        task.wait()
+
+        if initialization.completed then
+            return true
+        end
+
+        if initialization.error then
+            error(initialization.error, 0)
+        end
+    end
+end
 
 local function log(...)
     if logger then
@@ -212,6 +376,8 @@ function AutoParry.enable()
         return
     end
 
+    waitForReady()
+
     state.enabled = true
     if not state.connection then
         state.connection = RunService.Heartbeat:Connect(step)
@@ -313,6 +479,21 @@ function AutoParry.getLastParryTime()
     return state.lastParry
 end
 
+function AutoParry.onInitStatus(callback)
+    assert(typeof(callback) == "function", "AutoParry.onInitStatus expects a function")
+
+    ensureInitialization()
+
+    local connection = initStatus:connect(callback)
+    callback(clone(initProgress))
+    return connection
+end
+
+function AutoParry.getInitProgress()
+    ensureInitialization()
+    return clone(initProgress)
+end
+
 function AutoParry.onStateChanged(callback)
     assert(typeof(callback) == "function", "AutoParry.onStateChanged expects a function")
     return stateChanged:connect(callback)
@@ -334,11 +515,30 @@ function AutoParry.destroy()
     AutoParry.disable()
     stateChanged:destroy()
     parryEvent:destroy()
+    initStatus:destroy()
+
     stateChanged = Util.Signal.new()
     parryEvent = Util.Signal.new()
+    initStatus = Util.Signal.new()
     logger = nil
     state.lastParry = 0
     AutoParry.resetConfig()
+
+    LocalPlayer = nil
+    ParryRemote = nil
+
+    for key in pairs(initProgress) do
+        initProgress[key] = nil
+    end
+    initProgress.stage = "waiting-player"
+
+    initialization.started = false
+    initialization.completed = false
+    initialization.error = nil
+
+    beginInitialization()
 end
+
+ensureInitialization()
 
 return AutoParry
