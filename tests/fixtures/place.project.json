@@ -30,6 +30,14 @@
         },
         "Specs": {
           "$className": "Folder",
+          "ApiMainSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../api/main.spec.lua"
+              }
+            }
+          },
           "BootstrapSpec": {
             "$className": "ModuleScript",
             "$properties": {
