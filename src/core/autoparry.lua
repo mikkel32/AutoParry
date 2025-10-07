@@ -119,11 +119,98 @@ local function resolveParryRemote(report)
     end
 
     assert(remote, "AutoParry: ParryButtonPress remote missing")
-    return remote
+
+    local luauTypeof = rawget(_G, "typeof")
+
+    local function isCallable(value)
+        if luauTypeof then
+            local success, kind = pcall(luauTypeof, value)
+            if success and kind == "function" then
+                return true
+            end
+        end
+
+        return type(value) == "function"
+    end
+
+    local adapters = {
+        { method = "FireServer", kind = "RemoteEvent" },
+        { method = "InvokeServer", kind = "RemoteFunction" },
+        { method = "Fire", kind = "BindableEvent" },
+        { method = "Invoke", kind = "BindableFunction" },
+    }
+
+    for _, adapter in ipairs(adapters) do
+        local ok, method = pcall(function()
+            return remote[adapter.method]
+        end)
+
+        if ok and isCallable(method) then
+            local methodName = adapter.method
+
+            local function fire(...)
+                local current = remote[methodName]
+                if not isCallable(current) then
+                    error(
+                        string.format(
+                            "AutoParry: ParryButtonPress remote missing %s",
+                            methodName
+                        ),
+                        0
+                    )
+                end
+
+                return current(remote, ...)
+            end
+
+            return remote, fire, {
+                method = methodName,
+                kind = adapter.kind,
+                className = remote.ClassName,
+            }
+        end
+    end
+
+    local className
+    local okClass, value = pcall(function()
+        return remote.ClassName
+    end)
+    if okClass then
+        className = value
+    end
+
+    if not className then
+        if luauTypeof then
+            local success, typeName = pcall(luauTypeof, remote)
+            if success then
+                className = typeName
+            end
+        end
+
+        if not className then
+            className = type(remote)
+        end
+    end
+
+    report("error", {
+        stage = "waiting-remotes",
+        target = "remote",
+        reason = "parry-remote-unsupported",
+        className = className,
+    })
+
+    error(
+        string.format(
+            "AutoParry: ParryButtonPress remote unsupported type (%s)",
+            className
+        ),
+        0
+    )
 end
 
 local LocalPlayer = nil
 local ParryRemote = nil
+local ParryRemoteFire = nil
 
 local initialization = {
     started = false,
@@ -138,6 +225,8 @@ local function beginInitialization()
     initialization.started = true
     initialization.completed = false
     initialization.error = nil
+    ParryRemote = nil
+    ParryRemoteFire = nil
 
     updateInitProgress("waiting-player", { elapsed = 0 })
 
@@ -152,14 +241,14 @@ local function beginInitialization()
             updateInitProgress(stage, details)
         end
 
-        local ok, player, remoteOrError = pcall(function()
+        local ok, player, remoteOrError, fire, remoteInfo = pcall(function()
             local player = resolveLocalPlayer(report)
             if initialization.token ~= token then
-                return nil, nil
+                return nil, nil, nil, nil
             end
 
-            local remote = resolveParryRemote(report)
-            return player, remote
+            local remote, parryFire, info = resolveParryRemote(report)
+            return player, remote, parryFire, info
         end)
 
         if initialization.token ~= token then
@@ -167,16 +256,64 @@ local function beginInitialization()
         end
 
         if ok then
-            if not player or not remoteOrError then
+            if not player or not remoteOrError or not fire then
                 return
             end
 
             LocalPlayer = player
             ParryRemote = remoteOrError
+            ParryRemoteFire = fire
             initialization.completed = true
-            report("ready", { elapsed = os.clock() - initStart })
+            local readyDetails = { elapsed = os.clock() - initStart }
+
+            if remoteInfo then
+                if remoteInfo.kind then
+                    readyDetails.remoteKind = remoteInfo.kind
+                end
+
+                if remoteInfo.method then
+                    readyDetails.remoteMethod = remoteInfo.method
+                end
+
+                if remoteInfo.className then
+                    readyDetails.remoteClass = remoteInfo.className
+                end
+            end
+
+            if not readyDetails.remoteClass then
+                local okClass, className = pcall(function()
+                    return ParryRemote.ClassName
+                end)
+
+                if okClass then
+                    readyDetails.remoteClass = className
+                end
+            end
+
+            report("ready", readyDetails)
         else
             initialization.error = player
+            local details = { message = player }
+
+            if initProgress.stage == "error" then
+                if initProgress.reason then
+                    details.reason = initProgress.reason
+                end
+
+                if initProgress.target then
+                    details.target = initProgress.target
+                end
+
+                if initProgress.className then
+                    details.className = initProgress.className
+                end
+
+                if initProgress.elapsed then
+                    details.elapsed = initProgress.elapsed
+                end
+            end
+
+            report("error", details)
         end
     end)
 end
@@ -289,7 +426,9 @@ local function tryParry(ball)
     end
 
     state.lastParry = now
-    ParryRemote:FireServer()
+
+    assert(ParryRemoteFire, "AutoParry: Parry remote unavailable")
+    ParryRemoteFire()
     parryEvent:fire(ball, now)
     log("AutoParry: fired parry for", ball)
     return true
@@ -526,6 +665,7 @@ function AutoParry.destroy()
 
     LocalPlayer = nil
     ParryRemote = nil
+    ParryRemoteFire = nil
 
     for key in pairs(initProgress) do
         initProgress[key] = nil
