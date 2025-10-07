@@ -46,6 +46,14 @@
               }
             }
           },
+          "DestroySpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../autoparry/destroy.spec.lua"
+              }
+            }
+          },
           "PingSpec": {
             "$className": "ModuleScript",
             "$properties": {
