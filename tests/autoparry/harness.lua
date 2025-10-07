@@ -90,46 +90,11 @@ end
 
 Harness.createContainer = createContainer
 
-function Harness.createRemote(options)
-    options = options or {}
+function Harness.createRemote()
+    local remote = { Name = "ParryButtonPress" }
 
-    local kind = options.kind or "RemoteEvent"
-    local name = options.name or "ParryButtonPress"
-    local className = options.className
-
-    local remote = { Name = name }
-
-    local function assign(methodName, impl)
-        remote[methodName] = impl
-        remote._parryMethod = methodName
-    end
-
-    if kind == "RemoteEvent" then
-        remote.ClassName = className or "RemoteEvent"
-
-        assign("FireServer", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    elseif kind == "BindableEvent" then
-        remote.ClassName = className or "BindableEvent"
-
-        assign("Fire", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    elseif kind == "RemoteFunction" then
-        remote.ClassName = className or "RemoteFunction"
-
-        assign("InvokeServer", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    elseif kind == "BindableFunction" then
-        remote.ClassName = className or "BindableFunction"
-
-        assign("Invoke", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    else
-        error(string.format("Unsupported remote kind: %s", tostring(kind)))
+    function remote:FireServer(...)
+        self.lastPayload = { ... }
     end
 
     return remote
