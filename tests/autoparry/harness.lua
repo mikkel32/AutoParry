@@ -90,14 +90,111 @@ end
 
 Harness.createContainer = createContainer
 
-function Harness.createRemote()
-    local remote = { Name = "ParryButtonPress" }
+local function createSignal()
+    local handlers = {}
+    local nextId = 0
 
-    function remote:FireServer(...)
-        self.lastPayload = { ... }
+    local signal = {}
+
+    function signal:Connect(callback)
+        nextId += 1
+        handlers[nextId] = callback
+
+        local connection = { _id = nextId }
+
+        function connection:Disconnect()
+            handlers[connection._id] = nil
+        end
+
+        connection.disconnect = connection.Disconnect
+
+        return connection
+    end
+
+    signal.connect = signal.Connect
+
+    function signal:Fire(...)
+        for _, callback in pairs(handlers) do
+            callback(...)
+        end
+    end
+
+    signal.fire = signal.Fire
+
+    return signal
+end
+
+function Harness.createRemote(options)
+    options = options or {}
+
+    local kind = options.kind or "RemoteEvent"
+    local name = options.name or "ParryButtonPress"
+    local className = options.className
+
+    local remote = { Name = name }
+
+    local function assign(methodName, impl)
+        remote[methodName] = impl
+        remote._parryMethod = methodName
+    end
+
+    if kind == "RemoteEvent" then
+        remote.ClassName = className or "RemoteEvent"
+
+        assign("FireServer", function(self, ...)
+            self.lastPayload = { ... }
+        end)
+
+        local signal = createSignal()
+        remote.OnClientEvent = signal
+        remote._mockFireClient = function(_, ...)
+            signal:Fire(...)
+        end
+        remote._mockFireAllClients = remote._mockFireClient
+    elseif kind == "BindableEvent" then
+        remote.ClassName = className or "BindableEvent"
+
+        assign("Fire", function(self, ...)
+            self.lastPayload = { ... }
+        end)
+    elseif kind == "RemoteFunction" then
+        remote.ClassName = className or "RemoteFunction"
+
+        assign("InvokeServer", function(self, ...)
+            self.lastPayload = { ... }
+        end)
+    elseif kind == "BindableFunction" then
+        remote.ClassName = className or "BindableFunction"
+
+        assign("Invoke", function(self, ...)
+            self.lastPayload = { ... }
+        end)
+    else
+        error(string.format("Unsupported remote kind: %s", tostring(kind)))
     end
 
     return remote
+end
+
+function Harness.fireRemoteClient(remote, ...)
+    if not remote then
+        return
+    end
+
+    local signal = remote.OnClientEvent
+    if not signal then
+        return
+    end
+
+    local ok, fire = pcall(function()
+        return signal.Fire or signal.fire
+    end)
+
+    if ok and fire then
+        fire(signal, ...)
+    elseif type(signal) == "function" then
+        signal(...)
+    end
 end
 
 function Harness.createRunService()
@@ -291,10 +388,45 @@ end
 
 function Harness.createBaseServices(scheduler, options)
     options = options or {}
-    local players = options.players or { LocalPlayer = options.initialLocalPlayer }
+    local players = options.players or {}
 
-    if players.LocalPlayer == nil and options.initialLocalPlayer ~= nil then
-        players.LocalPlayer = options.initialLocalPlayer
+    local rosterList = {}
+    local rosterSet = {}
+
+    local function addPlayer(player)
+        if player and not rosterSet[player] then
+            rosterSet[player] = true
+            table.insert(rosterList, player)
+        end
+    end
+
+    function players:GetPlayers()
+        local result = {}
+        for index, player in ipairs(rosterList) do
+            result[index] = player
+        end
+        return result
+    end
+
+    function players:_setLocalPlayer(player)
+        rawset(self, "LocalPlayer", player)
+        addPlayer(player)
+    end
+
+    function players:_addPlayer(player)
+        addPlayer(player)
+    end
+
+    if options.initialLocalPlayer ~= nil then
+        players:_setLocalPlayer(options.initialLocalPlayer)
+    elseif players.LocalPlayer ~= nil then
+        addPlayer(players.LocalPlayer)
+    end
+
+    if options.playersList then
+        for _, player in ipairs(options.playersList) do
+            addPlayer(player)
+        end
     end
 
     local replicated = options.replicated or createContainer(scheduler, "ReplicatedStorage")
