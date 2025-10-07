@@ -77,6 +77,14 @@
                 "$path": "../ui/hotkey.spec.lua"
               }
             }
+          },
+          "UiLifecycleSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../ui/lifecycle.spec.lua"
+              }
+            }
           }
         }
       }
