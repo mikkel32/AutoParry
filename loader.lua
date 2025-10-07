@@ -10,6 +10,82 @@ local DEFAULT_ENTRY = "src/main.lua"
 
 local globalSourceCache = {}
 
+local function newSignal()
+    local listeners = {}
+
+    local signal = {}
+
+    function signal:Connect(callback)
+        assert(type(callback) == "function", "Signal connection requires a callback")
+
+        local connection = {
+            Connected = true,
+        }
+
+        listeners[connection] = callback
+
+        function connection:Disconnect()
+            if not self.Connected then
+                return
+            end
+
+            self.Connected = false
+            listeners[self] = nil
+        end
+
+        return connection
+    end
+
+    function signal:Fire(...)
+        local snapshot = {}
+        local count = 0
+
+        for connection, callback in pairs(listeners) do
+            if connection.Connected then
+                count = count + 1
+                snapshot[count] = callback
+            end
+        end
+
+        for i = 1, count do
+            local callback = snapshot[i]
+            callback(...)
+        end
+    end
+
+    return signal
+end
+
+local function copyTable(source)
+    local target = {}
+    for key, value in pairs(source) do
+        target[key] = value
+    end
+    return target
+end
+
+local function emit(signal, basePayload, overrides)
+    if not signal then
+        return
+    end
+
+    local payload = copyTable(basePayload)
+
+    if overrides then
+        for key, value in pairs(overrides) do
+            payload[key] = value
+        end
+    end
+
+    signal:Fire(payload)
+end
+
+local function updateAllComplete(context)
+    if context.progress.started == context.progress.finished + context.progress.failed then
+        context.signals.onAllComplete:Fire(context.progress)
+    end
+end
+
 local function buildUrl(repo, branch, path)
     return ("%s/%s/%s/%s"):format(RAW_HOST, repo, branch, path)
 end
@@ -17,7 +93,7 @@ end
 local function fetch(repo, branch, path, refresh)
     local url = buildUrl(repo, branch, path)
     if not refresh and globalSourceCache[url] then
-        return globalSourceCache[url]
+        return globalSourceCache[url], true
     end
 
     local ok, res = pcall(game.HttpGet, game, url, true)
@@ -29,7 +105,7 @@ local function fetch(repo, branch, path, refresh)
         globalSourceCache[url] = res
     end
 
-    return res
+    return res, false
 end
 
 local function createContext(options)
@@ -41,16 +117,91 @@ local function createContext(options)
         cache = {},
     }
 
+    context.progress = {
+        started = 0,
+        finished = 0,
+        failed = 0,
+    }
+
+    context.signals = {
+        onFetchStarted = newSignal(),
+        onFetchCompleted = newSignal(),
+        onFetchFailed = newSignal(),
+        onAllComplete = newSignal(),
+    }
+
     local function remoteRequire(path)
         local cacheKey = path
-        if not context.refresh and context.cache[cacheKey] ~= nil then
-            return context.cache[cacheKey]
+        local url = buildUrl(context.repo, context.branch, path)
+        local baseEvent = {
+            path = path,
+            url = url,
+            refresh = context.refresh,
+        }
+
+        local function start(overrides)
+            context.progress.started = context.progress.started + 1
+            emit(context.signals.onFetchStarted, baseEvent, overrides)
         end
 
-        local source = fetch(context.repo, context.branch, path, context.refresh)
+        local function succeed(overrides)
+            context.progress.finished = context.progress.finished + 1
+            emit(context.signals.onFetchCompleted, baseEvent, overrides)
+            updateAllComplete(context)
+        end
+
+        local function fail(message, overrides)
+            context.progress.failed = context.progress.failed + 1
+            emit(context.signals.onFetchFailed, baseEvent, overrides)
+            updateAllComplete(context)
+            error(message, 0)
+        end
+
+        if not context.refresh and context.cache[cacheKey] ~= nil then
+            local cachedResult = context.cache[cacheKey]
+            start({
+                status = "started",
+                fromCache = true,
+                cache = "context",
+            })
+            succeed({
+                status = "completed",
+                fromCache = true,
+                cache = "context",
+                result = cachedResult,
+            })
+            return cachedResult
+        end
+
+        local willUseGlobalCache = not context.refresh and globalSourceCache[url] ~= nil
+
+        start({
+            status = "started",
+            fromCache = willUseGlobalCache,
+            cache = willUseGlobalCache and "global" or nil,
+        })
+
+        local fetchOk, fetchResult, fetchFromCache = pcall(fetch, context.repo, context.branch, path, context.refresh)
+        if not fetchOk then
+            local message = fetchResult
+            fail(message, {
+                status = "failed",
+                fromCache = willUseGlobalCache,
+                cache = willUseGlobalCache and "global" or nil,
+                error = message,
+            })
+        end
+
+        local source = fetchResult
         local chunk, err = loadstring(source, "=" .. path)
         if not chunk then
-            error(("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err)), 0)
+            local message = ("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err))
+            fail(message, {
+                status = "failed",
+                fromCache = fetchFromCache or false,
+                cache = fetchFromCache and "global" or nil,
+                error = message,
+            })
         end
 
         local previousRequire = rawget(_G, "ARequire")
@@ -61,10 +212,24 @@ local function createContext(options)
         rawset(_G, "ARequire", previousRequire)
 
         if not ok then
-            error(("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result)), 0)
+            local message = ("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result))
+            fail(message, {
+                status = "failed",
+                fromCache = fetchFromCache or false,
+                cache = fetchFromCache and "global" or nil,
+                error = message,
+            })
         end
 
         context.cache[cacheKey] = result
+
+        succeed({
+            status = "completed",
+            fromCache = fetchFromCache or false,
+            cache = fetchFromCache and "global" or nil,
+            result = result,
+        })
+
         return result
     end
 
@@ -84,6 +249,8 @@ local function bootstrap(options)
         rawset(_G, "AutoParryLoader", {
             require = context.require,
             context = context,
+            signals = context.signals,
+            progress = context.progress,
         })
 
         local mainModule = context.require(context.entrypoint)

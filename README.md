@@ -52,6 +52,42 @@ Behind the scenes the loader protects any existing global state and only
 publishes the `AutoParryLoader` helper after the bootstrap succeeds, so failed
 fetches or compile errors will not leak partial state into the environment.
 
+### Loader monitoring hooks
+
+When the bootstrap succeeds, a global `AutoParryLoader` table is exposed with
+helpers for manual module access and instrumentation:
+
+```lua
+local loader = AutoParryLoader
+loader.signals.onFetchCompleted:Connect(function(event)
+    print("Loaded", event.path, "from", event.cache or "network")
+end)
+```
+
+| field | description |
+| ----- | ----------- |
+| `require` | Re-exports the loader-aware `require` implementation |
+| `context` | Active loader context (repo, branch, caches, etc.) |
+| `signals` | Signal table described below |
+| `progress` | Mutable counters `{ started, finished, failed }` |
+
+`signals` contains four connections (`onFetchStarted`, `onFetchCompleted`,
+`onFetchFailed`, `onAllComplete`). Listeners receive a payload table containing:
+
+| key | description |
+| --- | ----------- |
+| `path` | Module path relative to the repository root |
+| `url` | Resolved raw GitHub URL |
+| `refresh` | Boolean indicating whether refresh mode is active |
+| `status` | One of `"started"`, `"completed"`, or `"failed"` |
+| `fromCache` | `true` when the module came from context/global caches |
+| `cache` | Either `"context"`, `"global"`, or `nil` |
+| `result` | Module return value (completed events only) |
+| `error` | Error message (failed events only) |
+
+Signals fire for every loader request, including cache hits, and `onAllComplete`
+emits whenever `progress.started == progress.finished + progress.failed`.
+
 ## Runtime API
 
 The loader returns the AutoParry API table:

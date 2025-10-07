@@ -156,6 +156,143 @@ return function(t)
         end)
     end)
 
+    t.test("emits loader signals for network and cached modules", function(expect)
+        rawset(_G, "__loaderSignalCount", 0)
+
+        local modulePath = "modules/signals.lua"
+
+        runLoaderScenario({
+            repo = "SpecOrg/Loader",
+            branch = "signals",
+            entrypoint = "entry.lua",
+            sources = {
+                ["entry.lua"] = "return {}",
+                [modulePath] = [[
+                    local executions = (rawget(_G, "__loaderSignalCount") or 0) + 1
+                    rawset(_G, "__loaderSignalCount", executions)
+                    return { executions = executions }
+                ]],
+            },
+        }, function(context)
+            expect(context.ok):toEqual(true)
+
+            local loaderState = rawget(_G, "AutoParryLoader")
+            expect(type(loaderState) == "table"):toBeTruthy()
+
+            local signals = loaderState.signals
+            local progress = loaderState.progress
+
+            expect(type(signals) == "table"):toBeTruthy()
+            expect(type(progress) == "table"):toBeTruthy()
+
+            local startedEvents = {}
+            local completedEvents = {}
+            local failedEvents = {}
+            local allCompleteEvents = {}
+
+            local connections = {
+                signals.onFetchStarted:Connect(function(payload)
+                    table.insert(startedEvents, payload)
+                end),
+                signals.onFetchCompleted:Connect(function(payload)
+                    table.insert(completedEvents, payload)
+                end),
+                signals.onFetchFailed:Connect(function(payload)
+                    table.insert(failedEvents, payload)
+                end),
+                signals.onAllComplete:Connect(function(payload)
+                    table.insert(allCompleteEvents, payload)
+                end),
+            }
+
+            local function snapshot()
+                return {
+                    started = progress.started,
+                    finished = progress.finished,
+                    failed = progress.failed,
+                }
+            end
+
+            local baseline = snapshot()
+
+            local first = loaderState.require(modulePath)
+            expect(first.executions):toEqual(1)
+
+            expect(#startedEvents):toEqual(1)
+            expect(#completedEvents):toEqual(1)
+            expect(#failedEvents):toEqual(0)
+            expect(#allCompleteEvents):toEqual(1)
+
+            expect(startedEvents[1].path):toEqual(modulePath)
+            expect(startedEvents[1].fromCache):toEqual(false)
+            expect(startedEvents[1].cache):toEqual(nil)
+
+            expect(completedEvents[1].result):toEqual(first)
+            expect(completedEvents[1].fromCache):toEqual(false)
+            expect(allCompleteEvents[1]):toEqual(progress)
+
+            expect(progress.started):toEqual(baseline.started + 1)
+            expect(progress.finished):toEqual(baseline.finished + 1)
+            expect(progress.failed):toEqual(baseline.failed)
+
+            startedEvents = {}
+            completedEvents = {}
+            failedEvents = {}
+            allCompleteEvents = {}
+
+            baseline = snapshot()
+
+            local second = loaderState.require(modulePath)
+            expect(second):toEqual(first)
+
+            expect(#startedEvents):toEqual(1)
+            expect(#completedEvents):toEqual(1)
+            expect(#failedEvents):toEqual(0)
+            expect(#allCompleteEvents):toEqual(1)
+
+            expect(startedEvents[1].fromCache):toEqual(true)
+            expect(startedEvents[1].cache):toEqual("context")
+            expect(completedEvents[1].result):toEqual(first)
+            expect(completedEvents[1].cache):toEqual("context")
+
+            expect(progress.started):toEqual(baseline.started + 1)
+            expect(progress.finished):toEqual(baseline.finished + 1)
+            expect(progress.failed):toEqual(baseline.failed)
+
+            startedEvents = {}
+            completedEvents = {}
+            failedEvents = {}
+            allCompleteEvents = {}
+
+            baseline = snapshot()
+
+            loaderState.context.cache[modulePath] = nil
+
+            local third = loaderState.require(modulePath)
+            expect(third.executions):toEqual(2)
+
+            expect(#startedEvents):toEqual(1)
+            expect(#completedEvents):toEqual(1)
+            expect(#failedEvents):toEqual(0)
+            expect(#allCompleteEvents):toEqual(1)
+
+            expect(startedEvents[1].cache):toEqual("global")
+            expect(startedEvents[1].fromCache):toEqual(true)
+            expect(completedEvents[1].cache):toEqual("global")
+            expect(completedEvents[1].result):toEqual(third)
+
+            expect(progress.started):toEqual(baseline.started + 1)
+            expect(progress.finished):toEqual(baseline.finished + 1)
+            expect(progress.failed):toEqual(baseline.failed)
+
+            for _, connection in ipairs(connections) do
+                connection:Disconnect()
+            end
+
+            rawset(_G, "__loaderSignalCount", nil)
+        end)
+    end)
+
     t.test("refresh=true bypasses global and context caches", function(expect)
         rawset(_G, "__loaderSpecExecutions", 0)
 
