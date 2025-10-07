@@ -41,6 +41,7 @@
 local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local ContentProvider = game:GetService("ContentProvider")
+local Workspace = game:GetService("Workspace")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
@@ -50,45 +51,122 @@ LoadingOverlay.__index = LoadingOverlay
 
 local Module = {}
 
+local FONT_ASSET = "rbxasset://fonts/families/GothamSSm.json"
+local SPINNER_ASSET = "rbxasset://textures/ui/LoadingIndicator.png"
+
 local DEFAULT_THEME = {
     backdropColor = Color3.fromRGB(6, 6, 6),
     backdropTransparency = 0.35,
     accentColor = Color3.fromRGB(0, 170, 255),
     spinnerColor = Color3.fromRGB(255, 255, 255),
-    progressBackgroundColor = Color3.fromRGB(45, 45, 45),
+    progressBackgroundColor = Color3.fromRGB(24, 26, 40),
     progressFillColor = Color3.fromRGB(0, 170, 255),
     statusTextColor = Color3.fromRGB(240, 240, 240),
     tipTextColor = Color3.fromRGB(185, 185, 185),
-    containerSize = UDim2.new(0, 360, 0, 240),
-    spinnerSize = UDim2.new(0, 72, 0, 72),
-    progressBarSize = UDim2.new(0, 280, 0, 12),
+    containerSize = UDim2.new(0, 640, 0, 360),
+    containerTransparency = 0.08,
+    containerCornerRadius = UDim.new(0, 18),
+    containerStrokeColor = Color3.fromRGB(0, 150, 255),
+    containerStrokeTransparency = 0.35,
+    containerStrokeThickness = 2,
+    spinnerSize = UDim2.new(0, 96, 0, 96),
+    spinnerPosition = UDim2.new(0.5, 0, 0.22, 0),
+    progressBarSize = UDim2.new(0.85, 0, 0, 14),
+    progressBarPosition = UDim2.new(0.5, 0, 0.52, 0),
+    statusPosition = UDim2.new(0.5, 0, 0.7, 0),
+    tipPosition = UDim2.new(0.5, 0, 0.85, 0),
     progressTweenSeconds = 0.35,
     statusTweenSeconds = 0.18,
     actionsPadding = UDim.new(0, 12),
-    actionsPosition = UDim2.new(0.5, 0, 1, -20),
-    actionsSize = UDim2.new(0.9, 0, 0, 40),
-    actionButtonHeight = 38,
-    actionButtonMinWidth = 132,
-    actionButtonCorner = UDim.new(0, 6),
+    actionsPosition = UDim2.new(0.5, 0, 1, -24),
+    actionsSize = UDim2.new(0.9, 0, 0, 44),
+    actionButtonHeight = 40,
+    actionButtonMinWidth = 140,
+    actionButtonCorner = UDim.new(0, 10),
     actionButtonFont = Enum.Font.GothamBold,
     actionButtonTextSize = 18,
     actionPrimaryColor = Color3.fromRGB(0, 170, 255),
     actionPrimaryTextColor = Color3.fromRGB(15, 15, 15),
-    actionSecondaryColor = Color3.fromRGB(65, 65, 65),
+    actionSecondaryColor = Color3.fromRGB(40, 45, 65),
     actionSecondaryTextColor = Color3.fromRGB(240, 240, 240),
+    glow = {
+        color = Color3.fromRGB(0, 255, 255),
+        transparency = 0.55,
+        size = Vector2.new(120, 160),
+    },
+    gradient = {
+        enabled = true,
+        rotation = 115,
+        color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 16, 36)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 170, 255)),
+        }),
+        transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.25),
+            NumberSequenceKeypoint.new(0.55, 0.45),
+            NumberSequenceKeypoint.new(1, 0.2),
+        }),
+    },
+    iconography = {
+        spinner = SPINNER_ASSET,
+        check = "rbxassetid://6031068421",
+        warning = "rbxassetid://6031071051",
+        error = "rbxassetid://6031094678",
+        pending = "rbxassetid://6031071050",
+        hologram = "rbxassetid://12148062841",
+        progressArc = "rbxassetid://10957012643",
+    },
+    typography = {
+        statusFont = Enum.Font.GothamMedium,
+        statusTextSize = 20,
+        tipFont = Enum.Font.Gotham,
+        tipTextSize = 16,
+        badgeFont = Enum.Font.GothamBold,
+        badgeTextSize = 16,
+        timelineHeadingFont = Enum.Font.GothamBlack,
+        timelineHeadingSize = 20,
+        timelineStepFont = Enum.Font.GothamSemibold,
+        timelineStepSize = 18,
+        timelineTooltipFont = Enum.Font.Gotham,
+        timelineTooltipSize = 14,
+    },
+    responsive = {
+        minWidth = 360,
+        mediumWidth = 540,
+        largeWidth = 720,
+        maxWidth = 820,
+        columnSpacing = 32,
+    },
+    hologramBadgeColor = Color3.fromRGB(0, 210, 255),
+    hologramBadgeTransparency = 0.25,
+    progressArcColor = Color3.fromRGB(0, 210, 255),
+    progressArcTransparency = 0.4,
+    dashboardMountSize = UDim2.new(1, -12, 1, -12),
 }
 
-local FONT_ASSET = "rbxasset://fonts/families/GothamSSm.json"
-local SPINNER_ASSET = "rbxasset://textures/ui/LoadingIndicator.png"
-
 local activeOverlay
+
+local function mergeTable(base, overrides)
+    if typeof(overrides) ~= "table" then
+        return base
+    end
+
+    local merged = Util.deepCopy(base)
+    for key, value in pairs(overrides) do
+        if typeof(value) == "table" and typeof(merged[key]) == "table" then
+            merged[key] = mergeTable(merged[key], value)
+        else
+            merged[key] = value
+        end
+    end
+
+    return merged
+end
 
 local function mergeTheme(overrides)
     local theme = Util.deepCopy(DEFAULT_THEME)
     if typeof(overrides) == "table" then
-        for key, value in pairs(overrides) do
-            theme[key] = value
-        end
+        theme = mergeTable(theme, overrides)
         if overrides.accentColor then
             if overrides.progressFillColor == nil then
                 theme.progressFillColor = overrides.accentColor
@@ -116,10 +194,12 @@ local function createSpinner(parent, theme)
     local spinner = Instance.new("ImageLabel")
     spinner.Name = "Spinner"
     spinner.AnchorPoint = Vector2.new(0.5, 0.5)
-    spinner.Size = theme.spinnerSize
-    spinner.Position = UDim2.new(0.5, 0, 0, 64)
+    spinner.Size = theme.spinnerSize or DEFAULT_THEME.spinnerSize
+    spinner.Position = theme.spinnerPosition or DEFAULT_THEME.spinnerPosition
     spinner.BackgroundTransparency = 1
-    spinner.Image = SPINNER_ASSET
+    spinner.Image = (theme.iconography and theme.iconography.spinner)
+        or theme.spinnerAsset
+        or SPINNER_ASSET
     spinner.ImageColor3 = theme.spinnerColor or DEFAULT_THEME.spinnerColor
     spinner.Parent = parent
     return spinner
@@ -129,8 +209,8 @@ local function createProgressBar(parent, theme)
     local bar = Instance.new("Frame")
     bar.Name = "Progress"
     bar.AnchorPoint = Vector2.new(0.5, 0)
-    bar.Size = theme.progressBarSize
-    bar.Position = UDim2.new(0.5, 0, 0, 152)
+    bar.Size = theme.progressBarSize or DEFAULT_THEME.progressBarSize
+    bar.Position = theme.progressBarPosition or DEFAULT_THEME.progressBarPosition
     bar.BackgroundColor3 = theme.progressBackgroundColor or DEFAULT_THEME.progressBackgroundColor
     bar.BackgroundTransparency = 0.25
     bar.BorderSizePixel = 0
@@ -161,11 +241,13 @@ local function createStatusLabel(parent, theme)
     local label = Instance.new("TextLabel")
     label.Name = "Status"
     label.AnchorPoint = Vector2.new(0.5, 0)
-    label.Position = UDim2.new(0.5, 0, 0, 184)
+    label.Position = theme.statusPosition or DEFAULT_THEME.statusPosition
     label.Size = UDim2.new(0.8, 0, 0, 32)
     label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamMedium
-    label.TextSize = 20
+    label.Font = (theme.typography and theme.typography.statusFont)
+        or DEFAULT_THEME.typography.statusFont
+    label.TextSize = (theme.typography and theme.typography.statusTextSize)
+        or DEFAULT_THEME.typography.statusTextSize
     label.TextColor3 = theme.statusTextColor or DEFAULT_THEME.statusTextColor
     label.Text = ""
     label.TextWrapped = true
@@ -177,11 +259,13 @@ local function createTipLabel(parent, theme)
     local label = Instance.new("TextLabel")
     label.Name = "Tip"
     label.AnchorPoint = Vector2.new(0.5, 0)
-    label.Position = UDim2.new(0.5, 0, 0, 216)
+    label.Position = theme.tipPosition or DEFAULT_THEME.tipPosition
     label.Size = UDim2.new(0.9, 0, 0, 28)
     label.BackgroundTransparency = 1
-    label.Font = Enum.Font.Gotham
-    label.TextSize = 16
+    label.Font = (theme.typography and theme.typography.tipFont)
+        or DEFAULT_THEME.typography.tipFont
+    label.TextSize = (theme.typography and theme.typography.tipTextSize)
+        or DEFAULT_THEME.typography.tipTextSize
     label.TextColor3 = theme.tipTextColor or DEFAULT_THEME.tipTextColor
     label.TextTransparency = 0.15
     label.TextWrapped = true
@@ -213,8 +297,19 @@ end
 
 local function preloadAssets(instances)
     task.spawn(function()
+        local payload = {}
+        for _, item in ipairs(instances) do
+            if item ~= nil then
+                table.insert(payload, item)
+            end
+        end
+
+        if #payload == 0 then
+            return
+        end
+
         local ok, err = pcall(function()
-            ContentProvider:PreloadAsync(instances)
+            ContentProvider:PreloadAsync(payload)
         end)
         if not ok then
             warn("AutoParry loading overlay preload failed:", err)
@@ -240,17 +335,143 @@ function LoadingOverlay.new(options)
     container.Name = "Container"
     container.AnchorPoint = Vector2.new(0.5, 0.5)
     container.Position = UDim2.new(0.5, 0, 0.5, 0)
-    container.Size = theme.containerSize
-    container.BackgroundTransparency = 1
+    container.Size = theme.containerSize or DEFAULT_THEME.containerSize
+    container.BackgroundColor3 = theme.containerBackgroundColor or Color3.fromRGB(10, 14, 28)
+    container.BackgroundTransparency = theme.containerTransparency or DEFAULT_THEME.containerTransparency or 0
+    container.BorderSizePixel = 0
+    container.ClipsDescendants = false
     container.Parent = backdrop
 
-    local spinner = createSpinner(container, theme)
-    local progressBar, progressFill = createProgressBar(container, theme)
-    local statusLabel = createStatusLabel(container, theme)
-    local tipLabel = createTipLabel(container, theme)
-    local actionsRow, actionsLayout = createActionsRow(container, theme)
+    local containerCorner = Instance.new("UICorner")
+    containerCorner.CornerRadius = theme.containerCornerRadius or DEFAULT_THEME.containerCornerRadius
+    containerCorner.Parent = container
 
-    preloadAssets({ spinner, progressBar, FONT_ASSET, SPINNER_ASSET })
+    local containerStroke = Instance.new("UIStroke")
+    containerStroke.Thickness = theme.containerStrokeThickness or DEFAULT_THEME.containerStrokeThickness or 2
+    containerStroke.Color = theme.containerStrokeColor or theme.accentColor or DEFAULT_THEME.containerStrokeColor
+    containerStroke.Transparency = theme.containerStrokeTransparency or DEFAULT_THEME.containerStrokeTransparency or 0.4
+    containerStroke.Parent = container
+
+    local containerGradient
+    if theme.gradient and theme.gradient.enabled ~= false then
+        containerGradient = Instance.new("UIGradient")
+        containerGradient.Name = "ContainerGradient"
+        containerGradient.Color = theme.gradient.color or DEFAULT_THEME.gradient.color
+        containerGradient.Transparency = theme.gradient.transparency or DEFAULT_THEME.gradient.transparency
+        containerGradient.Rotation = theme.gradient.rotation or DEFAULT_THEME.gradient.rotation or 0
+        containerGradient.Parent = container
+    end
+
+    local glow
+    if theme.glow then
+        glow = Instance.new("ImageLabel")
+        glow.Name = "Glow"
+        glow.AnchorPoint = Vector2.new(0.5, 0.5)
+        glow.Position = UDim2.new(0.5, 0, 0.5, 0)
+        glow.Size = UDim2.new(0, (theme.glow.size and theme.glow.size.X) or 240, 0, (theme.glow.size and theme.glow.size.Y) or 320)
+        glow.BackgroundTransparency = 1
+        glow.Image = theme.iconography and theme.iconography.hologram or "rbxassetid://12148062841"
+        glow.ImageTransparency = theme.glow.transparency or 0.55
+        glow.ImageColor3 = theme.glow.color or theme.accentColor or DEFAULT_THEME.accentColor
+        glow.ZIndex = 0
+        glow.Parent = container
+    end
+
+    local infoColumn = Instance.new("Frame")
+    infoColumn.Name = "InfoColumn"
+    infoColumn.AnchorPoint = Vector2.new(0, 0.5)
+    infoColumn.Position = UDim2.new(0, 24, 0.5, 0)
+    infoColumn.Size = UDim2.new(0.45, -12, 1, -48)
+    infoColumn.BackgroundTransparency = 1
+    infoColumn.ZIndex = 2
+    infoColumn.Parent = container
+
+    local dashboardColumn = Instance.new("Frame")
+    dashboardColumn.Name = "DashboardColumn"
+    dashboardColumn.AnchorPoint = Vector2.new(1, 0.5)
+    dashboardColumn.Position = UDim2.new(1, -24, 0.5, 0)
+    dashboardColumn.Size = UDim2.new(0.5, -12, 1, -48)
+    dashboardColumn.BackgroundTransparency = 1
+    dashboardColumn.ZIndex = 2
+    dashboardColumn.Parent = container
+
+    local spinner = createSpinner(infoColumn, theme)
+    local progressBar, progressFill = createProgressBar(infoColumn, theme)
+    local statusLabel = createStatusLabel(infoColumn, theme)
+    local tipLabel = createTipLabel(infoColumn, theme)
+    local actionsRow, actionsLayout = createActionsRow(infoColumn, theme)
+
+    local dashboardMount = Instance.new("Frame")
+    dashboardMount.Name = "DashboardMount"
+    dashboardMount.BackgroundTransparency = 1
+    dashboardMount.Size = theme.dashboardMountSize or DEFAULT_THEME.dashboardMountSize
+    dashboardMount.Position = UDim2.new(0.5, 0, 0.5, 0)
+    dashboardMount.AnchorPoint = Vector2.new(0.5, 0.5)
+    dashboardMount.Parent = dashboardColumn
+
+    local progressArc = Instance.new("ImageLabel")
+    progressArc.Name = "ProgressArc"
+    progressArc.AnchorPoint = Vector2.new(0.5, 0.5)
+    progressArc.Position = spinner.Position
+    progressArc.Size = UDim2.new(0, math.max((spinner.Size.X.Offset or 0) + 40, 120), 0, math.max((spinner.Size.Y.Offset or 0) + 40, 120))
+    progressArc.BackgroundTransparency = 1
+    progressArc.Image = theme.iconography and theme.iconography.progressArc or "rbxassetid://10957012643"
+    progressArc.ImageColor3 = theme.progressArcColor or DEFAULT_THEME.progressArcColor
+    progressArc.ImageTransparency = theme.progressArcTransparency or DEFAULT_THEME.progressArcTransparency
+    progressArc.ZIndex = spinner.ZIndex - 1
+    progressArc.Parent = infoColumn
+
+    local arcGradient = Instance.new("UIGradient")
+    arcGradient.Name = "ProgressGradient"
+    arcGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, (theme.progressArcColor or DEFAULT_THEME.progressArcColor)),
+        ColorSequenceKeypoint.new(1, (theme.progressArcColor or DEFAULT_THEME.progressArcColor)),
+    })
+    arcGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.5, 0.35),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    arcGradient.Rotation = 0
+    arcGradient.Offset = Vector2.new(-1, 0)
+    arcGradient.Parent = progressArc
+
+    local badge = Instance.new("TextLabel")
+    badge.Name = "Badge"
+    badge.AnchorPoint = Vector2.new(0.5, 0)
+    badge.Position = UDim2.new(0.5, 0, 0, 0)
+    badge.Size = UDim2.new(0.75, 0, 0, 28)
+    badge.BackgroundColor3 = theme.hologramBadgeColor or DEFAULT_THEME.hologramBadgeColor
+    badge.BackgroundTransparency = theme.hologramBadgeTransparency or DEFAULT_THEME.hologramBadgeTransparency
+    badge.TextColor3 = Color3.new(1, 1, 1)
+    badge.Font = (theme.typography and theme.typography.badgeFont) or DEFAULT_THEME.typography.badgeFont
+    badge.TextSize = (theme.typography and theme.typography.badgeTextSize) or DEFAULT_THEME.typography.badgeTextSize
+    badge.Text = "Initializing AutoParry"
+    badge.ZIndex = 3
+    badge.Parent = infoColumn
+
+    local badgeCorner = Instance.new("UICorner")
+    badgeCorner.CornerRadius = UDim.new(0, 10)
+    badgeCorner.Parent = badge
+
+    local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.Thickness = 1.5
+    badgeStroke.Transparency = 0.35
+    badgeStroke.Color = (theme.accentColor or DEFAULT_THEME.accentColor)
+    badgeStroke.Parent = badge
+
+    preloadAssets({
+        spinner,
+        progressBar,
+        FONT_ASSET,
+        SPINNER_ASSET,
+        progressArc,
+        badge,
+        (theme.iconography and theme.iconography.check) or nil,
+        (theme.iconography and theme.iconography.warning) or nil,
+        (theme.iconography and theme.iconography.error) or nil,
+        (theme.iconography and theme.iconography.pending) or nil,
+    })
 
     local self = setmetatable({
         _gui = gui,
@@ -263,6 +484,18 @@ function LoadingOverlay.new(options)
         _tipLabel = tipLabel,
         _actionsRow = actionsRow,
         _actionsLayout = actionsLayout,
+        _dashboardMount = dashboardMount,
+        _progressArc = progressArc,
+        _progressArcGradient = arcGradient,
+        _badge = badge,
+        _infoColumn = infoColumn,
+        _dashboardColumn = dashboardColumn,
+        _containerGlow = glow,
+        _containerGradient = containerGradient,
+        _viewportConnection = nil,
+        _badgeStatus = "Initializing AutoParry",
+        _badgeProgress = 0,
+        _dashboard = nil,
         _progress = 0,
         _completed = false,
         _destroyed = false,
@@ -282,11 +515,149 @@ function LoadingOverlay.new(options)
     spinnerTween:Play()
     self._spinnerTween = spinnerTween
 
+    self:_connectResponsiveLayout()
+
     if typeof(options.tips) == "table" then
         self:setTips(options.tips)
     end
 
+    self:_refreshBadge()
+
     return self
+end
+
+function LoadingOverlay:_applyResponsiveLayout(viewportSize)
+    if self._destroyed then
+        return
+    end
+
+    local container = self._container
+    if not container then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local responsive = theme.responsive or DEFAULT_THEME.responsive or {}
+    local viewportWidth = viewportSize and viewportSize.X or (theme.containerSize and theme.containerSize.X.Offset) or 640
+    local minWidth = responsive.minWidth or 360
+    local maxWidth = responsive.maxWidth or viewportWidth
+    local desiredWidth = math.clamp(math.floor(viewportWidth * 0.7), minWidth, maxWidth)
+    local defaultHeight = (theme.containerSize and theme.containerSize.Y.Offset)
+        or (DEFAULT_THEME.containerSize and DEFAULT_THEME.containerSize.Y.Offset)
+        or 360
+
+    container.Size = UDim2.new(0, desiredWidth, 0, defaultHeight)
+
+    local infoColumn = self._infoColumn
+    local dashboardColumn = self._dashboardColumn
+    if not infoColumn or not dashboardColumn then
+        return
+    end
+
+    local columnSpacing = responsive.columnSpacing or 32
+    if viewportWidth <= (responsive.mediumWidth or 540) then
+        infoColumn.AnchorPoint = Vector2.new(0.5, 0)
+        infoColumn.Position = UDim2.new(0.5, 0, 0, 24)
+        infoColumn.Size = UDim2.new(1, -48, 0.45, 0)
+
+        dashboardColumn.AnchorPoint = Vector2.new(0.5, 1)
+        dashboardColumn.Position = UDim2.new(0.5, 0, 1, -24)
+        dashboardColumn.Size = UDim2.new(1, -48, 0.5, 0)
+    else
+        infoColumn.AnchorPoint = Vector2.new(0, 0.5)
+        infoColumn.Position = UDim2.new(0, columnSpacing * 0.5, 0.5, 0)
+        infoColumn.Size = UDim2.new(0.48, -columnSpacing, 1, -48)
+
+        dashboardColumn.AnchorPoint = Vector2.new(1, 0.5)
+        dashboardColumn.Position = UDim2.new(1, -columnSpacing * 0.5, 0.5, 0)
+        dashboardColumn.Size = UDim2.new(0.52, -columnSpacing, 1, -48)
+    end
+end
+
+function LoadingOverlay:_connectResponsiveLayout()
+    local function applyFromCamera(camera)
+        if not camera then
+            self:_applyResponsiveLayout(nil)
+            return
+        end
+        self:_applyResponsiveLayout(camera.ViewportSize)
+    end
+
+    local function connectViewport(camera)
+        if self._viewportConnection then
+            self._viewportConnection:Disconnect()
+            self._viewportConnection = nil
+        end
+        if not camera then
+            return
+        end
+        applyFromCamera(camera)
+        local connection = camera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            applyFromCamera(camera)
+        end)
+        table.insert(self._connections, connection)
+        self._viewportConnection = connection
+    end
+
+    connectViewport(Workspace.CurrentCamera)
+
+    local cameraChanged = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        connectViewport(Workspace.CurrentCamera)
+    end)
+    table.insert(self._connections, cameraChanged)
+end
+
+local function truncateBadgeText(text)
+    if typeof(text) ~= "string" then
+        return ""
+    end
+
+    local sanitized = text:gsub("%s+", " ")
+    if #sanitized > 40 then
+        sanitized = sanitized:sub(1, 40) .. "…"
+    end
+    return sanitized
+end
+
+function LoadingOverlay:_refreshBadge()
+    if not self._badge then
+        return
+    end
+
+    local status = truncateBadgeText(self._badgeStatus or "Initializing AutoParry")
+    local progress = self._badgeProgress
+    if typeof(progress) == "number" then
+        self._badge.Text = string.format("%s  •  %d%%", status, math.floor(math.clamp(progress, 0, 1) * 100 + 0.5))
+    else
+        self._badge.Text = status
+    end
+end
+
+function LoadingOverlay:_setBadgeStatus(text)
+    self._badgeStatus = text or self._badgeStatus
+    self:_refreshBadge()
+end
+
+function LoadingOverlay:_setBadgeProgress(alpha)
+    self._badgeProgress = alpha
+    self:_refreshBadge()
+end
+
+function LoadingOverlay:_updateProgressVisual(alpha, tweenDuration)
+    if self._progressArcGradient then
+        if self._progressArcTween then
+            self._progressArcTween:Cancel()
+        end
+        local targetOffset = Vector2.new(math.clamp(alpha * 2 - 1, -1, 1), 0)
+        local tween = TweenService:Create(self._progressArcGradient, TweenInfo.new(tweenDuration or self._theme.progressTweenSeconds, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Offset = targetOffset,
+            Rotation = 360 * math.clamp(alpha, 0, 1),
+        })
+        self._progressArcTween = tween
+        tween:Play()
+    end
+
+    self:_setBadgeProgress(alpha)
 end
 
 function LoadingOverlay:_applyTipVisibility()
@@ -295,6 +666,41 @@ function LoadingOverlay:_applyTipVisibility()
     end
     local visible = self._tipLabel.Text ~= nil and self._tipLabel.Text ~= ""
     self._tipLabel.Visible = visible
+end
+
+function LoadingOverlay:getTheme()
+    return self._theme
+end
+
+function LoadingOverlay:getDashboardMount()
+    return self._dashboardMount
+end
+
+function LoadingOverlay:attachDashboard(dashboard)
+    if self._destroyed then
+        if dashboard and dashboard.destroy then
+            dashboard:destroy()
+        end
+        return
+    end
+
+    if self._dashboard and self._dashboard ~= dashboard and self._dashboard.destroy then
+        self._dashboard:destroy()
+    end
+
+    self._dashboard = dashboard
+
+    if dashboard then
+        if dashboard.applyTheme then
+            dashboard:applyTheme(self._theme)
+        end
+        if dashboard.setProgress then
+            dashboard:setProgress(self._progress)
+        end
+        if dashboard.setStatusText and self._statusLabel then
+            dashboard:setStatusText(self._statusLabel.Text)
+        end
+    end
 end
 
 function LoadingOverlay:setTips(tips)
@@ -375,6 +781,9 @@ function LoadingOverlay:setActions(actions)
         if self._actionsRow then
             self._actionsRow.Visible = false
         end
+        if self._dashboard and self._dashboard.setActions then
+            self._dashboard:setActions(nil)
+        end
         return
     end
 
@@ -410,6 +819,10 @@ function LoadingOverlay:setActions(actions)
 
         table.insert(self._actionButtons, button)
         table.insert(self._actionConnections, connection)
+    end
+
+    if self._dashboard and self._dashboard.setActions then
+        self._dashboard:setActions(actions)
     end
 end
 
@@ -449,6 +862,8 @@ function LoadingOverlay:setStatus(text, options)
     label.Text = text
     label.Visible = text ~= ""
 
+    self:_setBadgeStatus(text)
+
     if self._statusTween then
         self._statusTween:Cancel()
     end
@@ -458,6 +873,10 @@ function LoadingOverlay:setStatus(text, options)
     })
     self._statusTween = tween
     tween:Play()
+
+    if self._dashboard and self._dashboard.setStatusText then
+        self._dashboard:setStatusText(text)
+    end
 end
 
 function LoadingOverlay:setProgress(alpha, options)
@@ -497,6 +916,12 @@ function LoadingOverlay:setProgress(alpha, options)
         end
     end)
     tween:Play()
+
+    self:_updateProgressVisual(alpha, options.duration)
+
+    if self._dashboard and self._dashboard.setProgress then
+        self._dashboard:setProgress(alpha)
+    end
 end
 
 function LoadingOverlay:applyTheme(themeOverrides)
@@ -514,24 +939,75 @@ function LoadingOverlay:applyTheme(themeOverrides)
     end
     if self._container then
         self._container.Size = theme.containerSize or DEFAULT_THEME.containerSize
+        self._container.BackgroundColor3 = theme.containerBackgroundColor or Color3.fromRGB(10, 14, 28)
+        self._container.BackgroundTransparency = theme.containerTransparency or DEFAULT_THEME.containerTransparency or 0
+    end
+    if self._containerGradient then
+        self._containerGradient.Color = theme.gradient and theme.gradient.color or DEFAULT_THEME.gradient.color
+        self._containerGradient.Transparency = theme.gradient and theme.gradient.transparency or DEFAULT_THEME.gradient.transparency
+        self._containerGradient.Rotation = theme.gradient and theme.gradient.rotation or DEFAULT_THEME.gradient.rotation or 0
+    end
+    if self._containerGlow then
+        local glowTheme = theme.glow or DEFAULT_THEME.glow or {}
+        self._containerGlow.ImageColor3 = glowTheme.color or theme.accentColor or DEFAULT_THEME.accentColor
+        self._containerGlow.ImageTransparency = glowTheme.transparency or 0.55
+        if glowTheme.size then
+            self._containerGlow.Size = UDim2.new(0, glowTheme.size.X, 0, glowTheme.size.Y)
+        end
     end
     if self._spinner then
         self._spinner.ImageColor3 = theme.spinnerColor or DEFAULT_THEME.spinnerColor
         self._spinner.Size = theme.spinnerSize or DEFAULT_THEME.spinnerSize
+        self._spinner.Position = theme.spinnerPosition or DEFAULT_THEME.spinnerPosition
+        local spinnerImage = (theme.iconography and theme.iconography.spinner)
+            or theme.spinnerAsset
+            or SPINNER_ASSET
+        if spinnerImage then
+            self._spinner.Image = spinnerImage
+        end
     end
     if self._progressBar then
         self._progressBar.Size = theme.progressBarSize or DEFAULT_THEME.progressBarSize
+        self._progressBar.Position = theme.progressBarPosition or DEFAULT_THEME.progressBarPosition
         self._progressBar.BackgroundColor3 = theme.progressBackgroundColor or DEFAULT_THEME.progressBackgroundColor
     end
     if self._progressFill then
         self._progressFill.BackgroundColor3 = theme.progressFillColor or DEFAULT_THEME.progressFillColor
         self._progressFill.Size = UDim2.new(self._progress, 0, 1, 0)
     end
+    if self._progressArc then
+        self._progressArc.Image = theme.iconography and theme.iconography.progressArc or self._progressArc.Image
+        self._progressArc.ImageColor3 = theme.progressArcColor or DEFAULT_THEME.progressArcColor
+        self._progressArc.ImageTransparency = theme.progressArcTransparency or DEFAULT_THEME.progressArcTransparency
+        local spinnerSize = self._spinner and self._spinner.Size
+        local width = spinnerSize and spinnerSize.X.Offset or 96
+        local height = spinnerSize and spinnerSize.Y.Offset or 96
+        self._progressArc.Size = UDim2.new(0, math.max(width + 40, 120), 0, math.max(height + 40, 120))
+    end
+    if self._progressArcGradient then
+        local arcColor = theme.progressArcColor or DEFAULT_THEME.progressArcColor
+        self._progressArcGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, arcColor),
+            ColorSequenceKeypoint.new(1, arcColor),
+        })
+    end
     if self._statusLabel then
         self._statusLabel.TextColor3 = theme.statusTextColor or DEFAULT_THEME.statusTextColor
+        self._statusLabel.Font = (theme.typography and theme.typography.statusFont) or DEFAULT_THEME.typography.statusFont
+        self._statusLabel.TextSize = (theme.typography and theme.typography.statusTextSize) or DEFAULT_THEME.typography.statusTextSize
+        self._statusLabel.Position = theme.statusPosition or DEFAULT_THEME.statusPosition
     end
     if self._tipLabel then
         self._tipLabel.TextColor3 = theme.tipTextColor or DEFAULT_THEME.tipTextColor
+        self._tipLabel.Font = (theme.typography and theme.typography.tipFont) or DEFAULT_THEME.typography.tipFont
+        self._tipLabel.TextSize = (theme.typography and theme.typography.tipTextSize) or DEFAULT_THEME.typography.tipTextSize
+        self._tipLabel.Position = theme.tipPosition or DEFAULT_THEME.tipPosition
+    end
+    if self._badge then
+        self._badge.BackgroundColor3 = theme.hologramBadgeColor or DEFAULT_THEME.hologramBadgeColor
+        self._badge.BackgroundTransparency = theme.hologramBadgeTransparency or DEFAULT_THEME.hologramBadgeTransparency
+        self._badge.Font = (theme.typography and theme.typography.badgeFont) or DEFAULT_THEME.typography.badgeFont
+        self._badge.TextSize = (theme.typography and theme.typography.badgeTextSize) or DEFAULT_THEME.typography.badgeTextSize
     end
     if self._actionsRow then
         self._actionsRow.Position = theme.actionsPosition or DEFAULT_THEME.actionsPosition
@@ -542,6 +1018,14 @@ function LoadingOverlay:applyTheme(themeOverrides)
     end
     if self._actions then
         self:setActions(self._actions)
+    end
+
+    self:_refreshBadge()
+    self:_updateProgressVisual(self._progress, 0.1)
+    self:_applyResponsiveLayout(Workspace.CurrentCamera and Workspace.CurrentCamera.ViewportSize or nil)
+
+    if self._dashboard and self._dashboard.applyTheme then
+        self._dashboard:applyTheme(theme)
     end
 end
 
@@ -568,6 +1052,8 @@ function LoadingOverlay:complete(options)
     self:setProgress(1, { duration = options.progressDuration or 0.25, force = true })
 
     self._completed = true
+
+    self:_setBadgeStatus("Verification Complete")
 
     if self._spinnerTween then
         self._spinnerTween:Cancel()
@@ -659,6 +1145,10 @@ function LoadingOverlay:destroy()
         self._statusTween:Cancel()
         self._statusTween = nil
     end
+    if self._progressArcTween then
+        self._progressArcTween:Cancel()
+        self._progressArcTween = nil
+    end
 
     if self._completedSignal then
         self._completedSignal:destroy()
@@ -669,6 +1159,15 @@ function LoadingOverlay:destroy()
     self._actionConnections = nil
     destroyButtons(self._actionButtons)
     self._actionButtons = nil
+
+    disconnectConnections(self._connections)
+    self._connections = nil
+    self._viewportConnection = nil
+
+    if self._dashboard and self._dashboard.destroy then
+        self._dashboard:destroy()
+    end
+    self._dashboard = nil
 
     if self._gui then
         self._gui:Destroy()

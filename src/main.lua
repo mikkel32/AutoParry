@@ -8,6 +8,7 @@ assert(Require, "AutoParry: ARequire missing (loader.lua not executed)")
 
 local Util = Require("src/shared/util.lua")
 local LoadingOverlay = Require("src/ui/loading_overlay.lua")
+local VerificationDashboard = Require("src/ui/verification_dashboard.lua")
 
 local VERSION = "1.1.0"
 local UI_MODULE_PATH = "src/ui/init.lua"
@@ -192,6 +193,7 @@ return function(options, loaderContext)
     local overlayEnabled = overlayOpts.enabled ~= false
 
     local overlay = nil
+    local dashboard = nil
     if overlayEnabled then
         overlay = LoadingOverlay.create({
             parent = overlayOpts.parent,
@@ -205,6 +207,26 @@ return function(options, loaderContext)
             local ok, err = pcall(customize, overlay, overlayOpts, opts)
             if not ok then
                 warn("AutoParry loading overlay customization failed:", err)
+            end
+        end
+
+        local mount = overlay and overlay:getDashboardMount()
+        if mount then
+            local okDashboard, dashboardResult = pcall(function()
+                return VerificationDashboard.new({
+                    parent = mount,
+                    theme = overlay:getTheme(),
+                })
+            end)
+            if okDashboard then
+                dashboard = dashboardResult
+                overlay:attachDashboard(dashboard)
+                dashboard:update(overlayState, { progress = dashboardProgressAlpha })
+                overlay:onCompleted(function()
+                    dashboard = nil
+                end)
+            else
+                warn("AutoParry dashboard initialization failed:", dashboardResult)
             end
         end
     end
@@ -229,6 +251,8 @@ return function(options, loaderContext)
         parry = {},
         error = nil,
     }
+
+    local dashboardProgressAlpha = 0
 
     local loaderComplete = not overlayEnabled
     local parryReady = not overlayEnabled
@@ -291,13 +315,19 @@ return function(options, loaderContext)
 
         local okProgress, progressValue = pcall(progressFormatter, overlayState, overlayOpts, opts)
         if okProgress and typeof(progressValue) == "number" then
-            overlay:setProgress(math.clamp(progressValue, 0, 1), { force = overlayState.error ~= nil })
+            local clamped = math.clamp(progressValue, 0, 1)
+            overlay:setProgress(clamped, { force = overlayState.error ~= nil })
+            dashboardProgressAlpha = clamped
         elseif not okProgress then
             warn("AutoParry loading overlay progress formatter error:", progressValue)
         end
 
         if applyActions then
             applyActions()
+        end
+
+        if dashboard then
+            dashboard:update(overlayState, { progress = dashboardProgressAlpha })
         end
     end
 
@@ -309,6 +339,11 @@ return function(options, loaderContext)
 
         if overlay then
             overlay:setActions(nil)
+        end
+
+        if dashboard then
+            dashboard:setActions(nil)
+            dashboard:setStatusText("Verification cancelled")
         end
 
         if typeof(overlayOpts.onCancel) == "function" then
@@ -365,11 +400,17 @@ return function(options, loaderContext)
         overlayState.loader.completed = false
         loaderComplete = not overlayEnabled
         parryReady = not overlayEnabled
+        dashboardProgressAlpha = 0
 
         if overlay then
             overlay:setActions(nil)
             overlay:setStatus("Retrying AutoParry download…", { force = true })
             overlay:setProgress(0, { force = true })
+        end
+
+        if dashboard then
+            dashboard:reset()
+            dashboard:setStatusText("Reinitialising verification…")
         end
 
         task.spawn(function()
@@ -677,6 +718,8 @@ return function(options, loaderContext)
             overlay:destroy()
             overlay = nil
         end
+
+        dashboard = nil
     end
 
     return api
