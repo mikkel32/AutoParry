@@ -70,6 +70,14 @@
               }
             }
           },
+          "SharedSignalSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../shared/signal.spec.lua"
+              }
+            }
+          },
           "PingSpec": {
             "$className": "ModuleScript",
             "$properties": {
