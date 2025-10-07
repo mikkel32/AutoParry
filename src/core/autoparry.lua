@@ -20,7 +20,7 @@ local Signal = Util.Signal
 
 local DEFAULT_CONFIG = {
     -- legacy configuration keys kept for compatibility with the public API
-    cooldown = 0.10,
+    cooldown = 0,
     minSpeed = 10,
     pingOffset = 0,
     minTTI = 0.12,
@@ -43,6 +43,15 @@ local DEFAULT_CONFIG = {
     pingBased = true,
     pingBasedOffset = 0,
     fHoldTime = 0.06,
+    reactionWindowMultiplier = 1.35,
+    minimumTTIWindow = 0.05,
+    antiSpamHoldTime = 0.25,
+    curveDetection = true,
+    curveAngleThreshold = 25,
+    curveHoldTime = 0.12,
+    curveIntensityMultiplier = 1.2,
+    curveResumeSpeed = 80,
+    curveStateTimeout = 2,
 }
 
 local TARGET_WINDOW_BANDS = {
@@ -116,6 +125,15 @@ local characterRemovingConnection: RBXScriptConnection?
 
 local lastFiredTime = 0
 local trackedBall: BasePart?
+local lastParriedBallId: string?
+local antiSpamHoldUntil = 0
+local curveStates: { [string]: {
+    lastVelocity: Vector3?,
+    lastSpeed: number?,
+    curveHoldUntil: number?,
+    curveResumeSpeed: number?,
+    lastUpdate: number?,
+} } = {}
 
 local AutoParry
 
@@ -175,6 +193,15 @@ local function syncGlobalSettings()
     settings.PingBasedOffset = config.pingBasedOffset
     settings.FHoldTime = config.fHoldTime
     settings.AntiSpam = config.cooldown
+    settings.ReactionWindowMultiplier = config.reactionWindowMultiplier
+    settings.MinimumTTIWindow = config.minimumTTIWindow
+    settings.AntiSpamHoldTime = config.antiSpamHoldTime
+    settings.CurveDetection = config.curveDetection
+    settings.CurveAngleThreshold = config.curveAngleThreshold
+    settings.CurveHoldTime = config.curveHoldTime
+    settings.CurveIntensityMultiplier = config.curveIntensityMultiplier
+    settings.CurveResumeSpeed = config.curveResumeSpeed
+    settings.CurveStateTimeout = config.curveStateTimeout
 end
 
 local function updateToggleButton()
@@ -435,15 +462,78 @@ local function setBallVisuals(ball, text)
     trackedBall = ball
 end
 
+local function getBallIdentifier(ball)
+    if not ball then
+        return nil
+    end
+
+    local ok, id = pcall(ball.GetDebugId, ball, 0)
+    if ok and typeof(id) == "string" then
+        return id
+    end
+
+    return tostring(ball)
+end
+
+local function getCurveState(ballId)
+    if not ballId then
+        return nil
+    end
+
+    local state = curveStates[ballId]
+    if not state then
+        state = {}
+        curveStates[ballId] = state
+    end
+
+    return state
+end
+
+local function cleanupCurveStates(now)
+    local timeout = config.curveStateTimeout or 0
+    if timeout <= 0 then
+        return
+    end
+
+    for id, entry in pairs(curveStates) do
+        local lastUpdate = entry.lastUpdate or 0
+        if now - lastUpdate > timeout then
+            curveStates[id] = nil
+        end
+    end
+end
+
 local function sendKeyPress(ball)
     local now = os.clock()
-    local cooldown = config.cooldown or 0.1
-    if now - lastFiredTime < cooldown then
-        return false
+    local cooldown = config.cooldown or 0
+    local holdTime = config.antiSpamHoldTime or 0
+    local ballId = getBallIdentifier(ball)
+
+    if holdTime > 0 and now < antiSpamHoldUntil then
+        if ballId == nil or ballId == lastParriedBallId then
+            return false
+        end
+    end
+
+    if cooldown > 0 and (now - lastFiredTime) < cooldown then
+        if ballId == nil or ballId == lastParriedBallId then
+            return false
+        end
     end
 
     lastFiredTime = now
     state.lastParry = now
+    lastParriedBallId = ballId
+    if holdTime > 0 then
+        antiSpamHoldUntil = now + holdTime
+    else
+        antiSpamHoldUntil = 0
+    end
+
+    if ballId and curveStates[ballId] then
+        curveStates[ballId].curveHoldUntil = 0
+        curveStates[ballId].curveResumeSpeed = 0
+    end
 
     task.spawn(function()
         VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
@@ -613,6 +703,9 @@ local function renderLoop()
         return
     end
 
+    local now = os.clock()
+    cleanupCurveStates(now)
+
     local ball = findRealBall(folder)
     if not ball or not ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "TTI: -", "Info: waiting for realBall..." })
@@ -622,6 +715,67 @@ local function renderLoop()
 
     local velocity = ball.AssemblyLinearVelocity or ball.Velocity or Vector3.zero
     local speed = velocity.Magnitude
+    local ballId = getBallIdentifier(ball)
+
+    local curveState
+    local curveHoldActive = false
+    local curveHoldRemaining = 0
+    local curveResumeTarget = 0
+
+    if config.curveDetection then
+        curveState = getCurveState(ballId)
+        if curveState then
+            local previousVelocity = curveState.lastVelocity
+            local previousSpeed = curveState.lastSpeed or (previousVelocity and previousVelocity.Magnitude) or 0
+
+            if previousVelocity and previousVelocity.Magnitude > 0 and speed > 0 then
+                local previousDirection = previousVelocity.Unit
+                local currentDirection = velocity.Unit
+                local dot = math.clamp(previousDirection:Dot(currentDirection), -1, 1)
+                local angle = math.deg(math.acos(dot))
+                local threshold = config.curveAngleThreshold or 0
+
+                if angle >= threshold then
+                    local holdTime = config.curveHoldTime or 0
+                    if holdTime > 0 then
+                        local newHoldUntil = now + holdTime
+                        local existingHold = curveState.curveHoldUntil or 0
+                        curveState.curveHoldUntil = math.max(existingHold, newHoldUntil)
+                    end
+
+                    local multiplier = config.curveIntensityMultiplier or 1
+                    if multiplier < 1 then
+                        multiplier = 1
+                    end
+
+                    local resumeBaseline = math.max(speed, previousSpeed)
+                    local resumeMinimum = config.curveResumeSpeed or 0
+                    curveState.curveResumeSpeed = math.max(resumeBaseline * multiplier, resumeMinimum)
+                end
+            end
+
+            curveState.lastVelocity = velocity
+            curveState.lastSpeed = speed
+            curveState.lastUpdate = now
+
+            local holdUntil = curveState.curveHoldUntil or 0
+            if holdUntil > now then
+                curveHoldActive = true
+                curveHoldRemaining = holdUntil - now
+            end
+
+            local resumeTarget = curveState.curveResumeSpeed or 0
+            if resumeTarget > 0 then
+                curveResumeTarget = resumeTarget
+                if speed >= resumeTarget then
+                    curveState.curveResumeSpeed = 0
+                    curveState.curveHoldUntil = 0
+                else
+                    curveHoldActive = true
+                end
+            end
+        end
+    end
 
     if config.ballSpeedCheck and speed == 0 then
         local stationaryDistance = (RootPart.Position - ball.Position).Magnitude
@@ -653,11 +807,22 @@ local function renderLoop()
     end
 
     local window = config.dynamicWindow and getDynamicWindow(speed) or (config.staticTTIWindow or 0.5)
+    local multiplier = config.reactionWindowMultiplier or 1
+    if multiplier > 0 then
+        window *= multiplier
+    end
+    local minWindow = config.minimumTTIWindow or 0
+    if window < minWindow then
+        window = minWindow
+    end
 
     local fired = false
     local reason = ""
 
-    if isTargetingMe() then
+    local canAttemptParry = not curveHoldActive
+    local targetingMe = isTargetingMe()
+
+    if targetingMe and canAttemptParry then
         if distanceToPlayer <= (config.proximityStuds or 5) then
             if sendKeyPress(ball) then
                 fired = true
@@ -677,13 +842,24 @@ local function renderLoop()
         "Auto-Parry F",
         "Ball: found",
         string.format("Speed: %.1f | Dist: %.2f | TTI: %.3f", speed, distanceToPlayer, tti),
-        string.format("Window: %.3f | TargetingMe: %s", window, tostring(isTargetingMe())),
+        string.format("Window: %.3f | TargetingMe: %s", window, tostring(targetingMe)),
     }
+
+    if curveHoldActive then
+        table.insert(debugLines, string.format("Curve hold: %.3fs", math.max(curveHoldRemaining, 0)))
+        if curveResumeTarget > 0 then
+            table.insert(debugLines, string.format("Resume ≥ %.1f speed", curveResumeTarget))
+        end
+    end
 
     if fired then
         table.insert(debugLines, "🔥 Press F: YES (" .. reason .. ")")
     else
-        table.insert(debugLines, "Press F: no")
+        local pressLabel = "Press F: no"
+        if not canAttemptParry and curveHoldActive then
+            pressLabel = "Press F: hold (curve)"
+        end
+        table.insert(debugLines, pressLabel)
     end
 
     updateStatusLabel(debugLines)
@@ -762,6 +938,33 @@ local validators = {
     fHoldTime = function(value)
         return typeof(value) == "number" and value >= 0
     end,
+    reactionWindowMultiplier = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    minimumTTIWindow = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    antiSpamHoldTime = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curveDetection = function(value)
+        return typeof(value) == "boolean"
+    end,
+    curveAngleThreshold = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curveHoldTime = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curveIntensityMultiplier = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curveResumeSpeed = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curveStateTimeout = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
 }
 
 AutoParry = {}
@@ -787,6 +990,8 @@ function AutoParry.disable()
     state.enabled = false
     syncGlobalSettings()
     updateToggleButton()
+    antiSpamHoldUntil = 0
+    lastParriedBallId = nil
     stateChanged:fire(false)
 end
 
@@ -928,6 +1133,9 @@ function AutoParry.destroy()
     state.lastParry = 0
     state.lastSuccess = 0
     state.lastBroadcast = 0
+    lastParriedBallId = nil
+    antiSpamHoldUntil = 0
+    curveStates = {}
 
     initProgress = { stage = "waiting-player" }
     applyInitStatus(cloneTable(initProgress))
