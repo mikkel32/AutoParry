@@ -208,13 +208,6 @@ local function computeExpectedTti(ball, rootPosition, pingSeconds, config)
     return rawTti - (pingSeconds + config.pingOffset)
 end
 
-local function assertAnalysis(expect, analysis, ball, rootPosition)
-    expect(analysis ~= nil):toBeTruthy()
-    expect(analysis.ball).toEqual(ball)
-    expect(analysis.rootPosition).toEqual(rootPosition)
-    return analysis.tti
-end
-
 return function(t)
     t.test("evaluateBall rejects clones that are not BaseParts", function(expect)
         local context = createContext()
@@ -226,8 +219,8 @@ return function(t)
             :withName("NotBasePart")
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -236,8 +229,8 @@ return function(t)
         local builder = BallBuilder.new(context.config)
         local ball = builder:withRealBall(false):build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -249,8 +242,8 @@ return function(t)
             :withVelocity(Vector3.new(0, 0, -slowSpeed))
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -261,10 +254,8 @@ return function(t)
             :withPosition(context.rootPosition)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        local tti = assertAnalysis(expect, analysis, ball, context.rootPosition)
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
         expect(tti):toEqual(0)
-        expect(analysis.immediate):toEqual(true)
         context.autoparry.destroy()
     end)
 
@@ -276,8 +267,8 @@ return function(t)
             :withVelocity(awayVelocity)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -289,8 +280,8 @@ return function(t)
             :withVelocity(sidewaysVelocity)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -305,10 +296,8 @@ return function(t)
             :withVelocity(velocity)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        local tti = assertAnalysis(expect, analysis, ball, context.rootPosition)
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
         expect(tti):toEqual(0)
-        expect(analysis.immediate):toEqual(true)
         context.autoparry.destroy()
     end)
 
@@ -322,8 +311,8 @@ return function(t)
             :withVelocity(velocity)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -338,8 +327,8 @@ return function(t)
             :withVelocity(velocity)
             :build(context.ballsFolder)
 
-        local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-        expect(analysis == nil):toBeTruthy()
+        local tti = context.evaluateBall(ball, context.rootPosition, 0)
+        expect(tti == nil):toBeTruthy()
         context.autoparry.destroy()
     end)
 
@@ -356,8 +345,8 @@ return function(t)
             :build(context.ballsFolder)
 
         local pingSeconds = 0.01
-        local analysis = context.evaluateBall(ball, context.rootPosition, pingSeconds)
-        local tti = assertAnalysis(expect, analysis, ball, context.rootPosition)
+        local tti = context.evaluateBall(ball, context.rootPosition, pingSeconds)
+        expect(tti ~= nil):toBeTruthy()
 
         local expected = computeExpectedTti(ball, context.rootPosition, pingSeconds, context.config)
         expect(tti):toBeCloseTo(expected, 1e-3)
@@ -382,8 +371,8 @@ return function(t)
             )
 
             local ball = builder:withVelocity(velocity):build(context.ballsFolder)
-            local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-            expect(analysis == nil):toBeTruthy()
+            local tti = context.evaluateBall(ball, context.rootPosition, 0)
+            expect(tti == nil):toBeTruthy()
         end
 
         context.autoparry.destroy()
@@ -405,8 +394,8 @@ return function(t)
             )
 
             local ball = builder:withVelocity(velocity):build(context.ballsFolder)
-            local analysis = context.evaluateBall(ball, context.rootPosition, 0)
-            local tti = assertAnalysis(expect, analysis, ball, context.rootPosition)
+            local tti = context.evaluateBall(ball, context.rootPosition, 0)
+            expect(tti ~= nil):toBeTruthy()
 
             local expected = computeExpectedTti(ball, context.rootPosition, 0, context.config)
             expect(tti):toBeCloseTo(expected, 1e-3)

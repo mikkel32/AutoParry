@@ -87,15 +87,13 @@ return function(t)
         for index, scenario in ipairs(scenarios) do
             local pingSeconds = currentPing()
             local ball = makeBall(15, 45)
-            local analysis = evaluateBall(ball, rootPosition, pingSeconds)
+            local tti = evaluateBall(ball, rootPosition, pingSeconds)
 
-            expect(analysis ~= nil):toBeTruthy()
+            expect(tti ~= nil):toBeTruthy()
 
-            local tti = analysis.tti
             local expectedAdjustment = pingSeconds + config.pingOffset
             local expectedTti = baseTti - expectedAdjustment
             expect(tti):toBeCloseTo(expectedTti, 1e-3)
-            expect(analysis.ping):toEqual(pingSeconds)
 
             table.insert(observations, {
                 sequence = index,
