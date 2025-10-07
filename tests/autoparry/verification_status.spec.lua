@@ -32,7 +32,7 @@ return function(t)
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+            remotes:Add(Harness.createRemote())
 
             local autoparry = Harness.loadAutoparry({
                 scheduler = scheduler,
@@ -100,7 +100,7 @@ return function(t)
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+            remotes:Add(Harness.createRemote())
 
             local autoparry = Harness.loadAutoparry({
                 scheduler = scheduler,
@@ -161,8 +161,8 @@ return function(t)
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            local parryContainer = Harness.createParryButtonPress({ scheduler = scheduler })
-            remotes:Add(parryContainer)
+            local parryRemote = Harness.createRemote()
+            remotes:Add(parryRemote)
 
             local autoparry = Harness.loadAutoparry({
                 scheduler = scheduler,
@@ -177,11 +177,11 @@ return function(t)
             local ready = waitForStage(scheduler, autoparry, "ready")
             expect(ready.remoteName):toEqual("ParryButtonPress")
 
-            remotes:Remove(parryContainer.Name)
+            remotes:Remove(parryRemote.Name)
             scheduler:wait()
 
             scheduler:schedule(2, function()
-                remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+                remotes:Add(Harness.createRemote())
             end)
 
             local readyAgain = waitForStage(scheduler, autoparry, "ready", 80)

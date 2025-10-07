@@ -64,7 +64,7 @@ return function(t)
             stats = stats,
         })
 
-        remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+        remotes:Add(Harness.createRemote())
 
         local autoparry = Harness.loadAutoparry({
             scheduler = scheduler,

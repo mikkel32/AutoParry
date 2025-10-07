@@ -26,22 +26,6 @@ local function isCallable(value)
     return typeOf(value) == "function"
 end
 
-local function getClassName(instance)
-    if instance == nil then
-        return "nil"
-    end
-
-    local okClass, className = pcall(function()
-        return instance.ClassName
-    end)
-
-    if okClass and type(className) == "string" then
-        return className
-    end
-
-    return typeOf(instance)
-end
-
 local function cloneTable(tbl)
     local result = {}
     for key, value in pairs(tbl) do
@@ -311,9 +295,8 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
     local candidateNames = {}
 
     for _, entry in ipairs(candidates) do
-        local displayName = entry.displayName or entry.name
         table.insert(candidateDefinitions, entry)
-        table.insert(candidateNames, displayName)
+        table.insert(candidateNames, entry.name)
     end
 
     emit(report, {
@@ -332,22 +315,32 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
             return nil
         end
 
-        local remote = found
-        local containerName = nil
+        local isEvent, className = isRemoteEvent(found)
+        if not isEvent then
+            emit(report, {
+                stage = "error",
+                target = "remote",
+                status = "failed",
+                reason = "parry-remote-unsupported",
+                className = className,
+                remoteName = found.Name,
+                candidates = candidateNames,
+                message = string.format(
+                    "AutoParry: parry remote unsupported type (%s)",
+                    className
+                ),
+            })
 
-        if candidate.childName then
-            local okChild, child = pcall(found.FindFirstChild, found, candidate.childName)
-            if not okChild or not child then
-                return nil
-            end
-
-            remote = child
-            containerName = found.Name
+            error(
+                string.format(
+                    "AutoParry: parry remote unsupported type (%s)",
+                    className
+                ),
+                0
+            )
         end
 
-        local className = getClassName(remote)
-
-        local methodName, fire = findRemoteFire(remote)
+        local methodName, fire = findRemoteFire(found)
         if not methodName or not fire then
             emit(report, {
                 stage = "error",
@@ -355,7 +348,7 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
                 status = "failed",
                 reason = "parry-remote-missing-method",
                 className = className,
-                remoteName = remote.Name,
+                remoteName = found.Name,
                 candidates = candidateNames,
                 message = "AutoParry: parry remote missing FireServer/Fire",
             })
@@ -365,15 +358,13 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
 
         local info = {
             method = methodName,
+            kind = "RemoteEvent",
             className = className,
-            kind = className,
-            remoteName = candidate.name,
-            remoteChildName = remote.Name,
-            remoteContainerName = containerName,
+            remoteName = found.Name,
             variant = candidate.variant,
         }
 
-        return true, remote, fire, info
+        return true, found, fire, info
     end
 
     while true do
@@ -415,7 +406,7 @@ local function ensureParryRemote(report, remotes, timeout, retryInterval, candid
                 candidates = candidateNames,
             })
 
-            error("AutoParry: parry remote missing (ParryButtonPress.parryButtonPress)", 0)
+            error("AutoParry: parry remote missing (ParryButtonPress/ParryAttempt)", 0)
         end
 
         waitInterval(retryInterval)
@@ -528,12 +519,8 @@ function Verification.run(options)
     local retryInterval = options.retryInterval or config.verificationRetryInterval or 0
 
     local candidateDefinitions = options.candidates or {
-        {
-            name = "ParryButtonPress",
-            childName = "parryButtonPress",
-            variant = "modern",
-            displayName = "ParryButtonPress.parryButtonPress",
-        },
+        { name = "ParryButtonPress", variant = "modern" },
+        { name = "ParryAttempt", variant = "legacy" },
     }
 
     local playerTimeout = config.playerTimeout or options.playerTimeout or 10

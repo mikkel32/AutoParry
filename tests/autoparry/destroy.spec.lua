@@ -165,8 +165,8 @@ return function(t)
                 runService = runServiceProbe,
             })
 
-            local remoteContainer1 = Harness.createParryButtonPress({ scheduler = scheduler1 })
-            remotes1:Add(remoteContainer1)
+            local remote1 = Harness.createRemote()
+            remotes1:Add(remote1)
 
             local autoparry1 = Harness.loadAutoparry({
                 scheduler = scheduler1,
@@ -247,8 +247,8 @@ return function(t)
                 runService = runServiceProbe,
             })
 
-            local remoteContainer2 = Harness.createParryButtonPress({ scheduler = scheduler2 })
-            remotes2:Add(remoteContainer2)
+            local remote2 = Harness.createRemote()
+            remotes2:Add(remote2)
 
             local autoparry2 = Harness.loadAutoparry({
                 scheduler = scheduler2,

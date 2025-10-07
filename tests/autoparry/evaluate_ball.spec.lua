@@ -178,7 +178,7 @@ local function createContext()
         initialLocalPlayer = { Name = "LocalPlayer" },
     })
 
-    remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+    remotes:Add(Harness.createRemote())
 
     local autoparry = Harness.loadAutoparry({
         scheduler = scheduler,
