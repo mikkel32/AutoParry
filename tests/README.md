@@ -37,6 +37,32 @@ The script stubs networking, heartbeat timing, and stats latency so the loader
 can run deterministically in CI. A successful run prints a confirmation message
 and exits with code zero.
 
+## Heartbeat performance benchmark
+
+The harness also contains a synthetic workload that exercises the core
+`AutoParry` heartbeat loop across increasing projectile counts. Execute the
+benchmark locally with:
+
+```bash
+run-in-roblox \
+  --place tests/AutoParryHarness.rbxl \
+  --script tests/perf/heartbeat_benchmark.server.lua
+```
+
+The run prints a `[PERF]` JSON blob which is automatically written to
+`tests/artifacts/perf.json` in CI. Thresholds and workload shapes live in
+`tests/perf/config.lua`; adjust them when the product requirements change. The
+default budget expects the average frame to complete in ≤1.6 ms with a 95th
+percentile under 3.5 ms. If either bound is exceeded the benchmark raises an
+error so the CI job fails fast.
+
+The repository tracks a lightweight baseline in `tests/perf/baseline.json` to
+help surface regressions in the GitHub Actions summary. After landing
+performance improvements on `main`, update the baseline (and optionally the
+config thresholds) with the new golden numbers produced by the benchmark. The
+summary panel also renders badges showing the current margin to the configured
+thresholds.
+
 ## UI snapshot review workflow
 
 Visual regressions in the AutoParry toggle UI are caught by

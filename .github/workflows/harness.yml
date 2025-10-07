@@ -28,6 +28,13 @@ jobs:
       - name: Execute loader harness
         run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/init.server.lua
 
+      - name: Run heartbeat benchmark
+        id: perf
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/perf/heartbeat_benchmark.server.lua | tee tests/perf-output.log
+
       - name: Run specs
         run: |
           set -o pipefail
@@ -64,6 +71,163 @@ def write_artifact(key, filename):
 write_artifact("ping-tti", "tests/artifacts/ping_tti.json")
 write_artifact("ui-snapshot", "tests/artifacts/ui_snapshot.json")
 PY
+
+      - name: Collect perf artifact
+        if: always()
+        run: |
+          python - <<'PY'
+import json
+import os
+import re
+
+log_path = "tests/perf-output.log"
+pattern = re.compile(r'^\[PERF\]\s+(.+)$')
+
+if not os.path.exists(log_path):
+    raise SystemExit("perf output log missing")
+
+payload = None
+with open(log_path, 'r', encoding='utf-8') as handle:
+    for line in handle:
+        match = pattern.match(line.strip())
+        if match:
+            payload = json.loads(match.group(1))
+
+if payload is None:
+    raise SystemExit("[PERF] artifact missing from benchmark output")
+
+os.makedirs("tests/artifacts", exist_ok=True)
+
+with open("tests/artifacts/perf.json", "w", encoding="utf-8") as handle:
+    json.dump(payload, handle, indent=2)
+PY
+
+      - name: Summarize heartbeat benchmark
+        if: always()
+        run: |
+          python - <<'PY'
+import json
+import math
+import os
+from pathlib import Path
+
+artifact = Path("tests/artifacts/perf.json")
+if not artifact.exists():
+    raise SystemExit("perf.json artifact missing")
+
+with artifact.open("r", encoding="utf-8") as handle:
+    current = json.load(handle)
+
+baseline_path = Path("tests/perf/baseline.json")
+baseline = {}
+if baseline_path.exists():
+    with baseline_path.open("r", encoding="utf-8") as handle:
+        try:
+            baseline = json.load(handle)
+        except json.JSONDecodeError:
+            baseline = {}
+
+summary = current.get("summary", {})
+thresholds = current.get("thresholds", {})
+baseline_summary = baseline.get("summary", {})
+
+def to_ms(value):
+    return value * 1000.0 if value is not None else None
+
+def fmt(value):
+    return f"{value:.3f}" if value is not None else "—"
+
+def delta(current_value, baseline_value):
+    if current_value is None or baseline_value is None:
+        return "—"
+    diff = (current_value - baseline_value) * 1000.0
+    sign = "+" if diff >= 0 else ""
+    return f"{sign}{diff:.3f}"
+
+def threshold_ms(name):
+    value = thresholds.get(name)
+    return f"{value * 1000.0:.3f}" if value is not None else "—"
+
+def badge_color(ratio):
+    if ratio is None:
+        return "inactive"
+    if ratio < 0.6:
+        return "brightgreen"
+    if ratio < 0.8:
+        return "green"
+    if ratio < 0.95:
+        return "yellow"
+    if ratio <= 1.0:
+        return "orange"
+    return "red"
+
+def badge(label, value, ratio):
+    color = badge_color(ratio)
+    safe_value = value.replace(" ", "%20")
+    return f"![{label}](https://img.shields.io/badge/{label}-{safe_value}-{color})"
+
+avg = summary.get("average")
+p95 = summary.get("p95")
+
+avg_ms = fmt(to_ms(avg))
+p95_ms = fmt(to_ms(p95))
+
+baseline_avg = baseline_summary.get("average")
+baseline_p95 = baseline_summary.get("p95")
+
+avg_ratio = avg / thresholds.get("average") if thresholds.get("average") else None
+p95_ratio = p95 / thresholds.get("p95") if thresholds.get("p95") else None
+
+table_lines = [
+    "## Heartbeat benchmark",
+    "",
+    f"Samples collected: **{summary.get('samples', 0)}**",
+    "",
+    "| Metric | Current (ms) | Baseline (ms) | Δ vs. baseline (ms) | Threshold (ms) | Status |",
+    "| --- | --- | --- | --- | --- | --- |",
+    f"| Average | {avg_ms} | {fmt(to_ms(baseline_avg))} | {delta(avg, baseline_avg)} | {threshold_ms('average')} | {badge('average', avg_ms, avg_ratio)} |",
+    f"| p95 | {p95_ms} | {fmt(to_ms(baseline_p95))} | {delta(p95, baseline_p95)} | {threshold_ms('p95')} | {badge('p95', p95_ms, p95_ratio)} |",
+]
+
+series_rows = []
+for entry in current.get("series", []):
+    balls = entry.get("balls")
+    entry_avg = entry.get("average")
+    entry_p95 = entry.get("p95")
+    if entry_avg is None or entry_p95 is None:
+        continue
+    series_rows.append(
+        f"| {balls} | {entry.get('samples', 0)} | {fmt(to_ms(entry_avg))} | {fmt(to_ms(entry_p95))} |"
+    )
+
+if series_rows:
+    table_lines.extend([
+        "",
+        "### Series detail",
+        "",
+        "| Balls | Samples | Average (ms) | p95 (ms) |",
+        "| --- | --- | --- | --- |",
+    ])
+    table_lines.extend(series_rows)
+
+summary_path = os.environ.get("GITHUB_STEP_SUMMARY")
+if summary_path:
+    with open(summary_path, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(table_lines) + "\n")
+else:
+    print("\n".join(table_lines))
+PY
+
+      - name: Upload performance metrics artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: heartbeat-benchmark
+          path: tests/artifacts/perf.json
+
+      - name: Enforce benchmark thresholds
+        if: steps.perf.outcome == 'failure'
+        run: exit 1
 
       - name: Upload ping metrics artifact
         if: always()
