@@ -1,4 +1,5 @@
 -- mikkel32/AutoParry : src/ui/init.lua
+-- selene: allow(global_usage)
 -- Lightweight, developer-friendly UI controller with toggle button + hotkey support.
 
 local CoreGui = game:GetService("CoreGui")

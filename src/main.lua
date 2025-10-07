@@ -1,4 +1,5 @@
 -- mikkel32/AutoParry : src/main.lua
+-- selene: allow(global_usage)
 -- Bootstraps the AutoParry experience, wiring together the UI and core logic
 -- and returning a friendly developer API.
 
@@ -37,7 +38,7 @@ return function(options)
         initialState = opts.autoStart or opts.defaultEnabled,
         hotkey = opts.hotkey,
         tooltip = opts.tooltip,
-        onToggle = function(enabled, context)
+        onToggle = function(enabled, _context)
             Parry.setEnabled(enabled)
         end,
     })

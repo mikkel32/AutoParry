@@ -1,3 +1,5 @@
+-- selene: allow(global_usage)
+-- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent
 local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 
@@ -104,8 +106,8 @@ function Harness.createRunService()
     function heartbeat:Connect()
         return {
             Disconnect = function() end,
-            disconnect = function(self)
-                self:Disconnect()
+            disconnect = function(connection)
+                connection:Disconnect()
             end,
         }
     end
@@ -114,11 +116,7 @@ function Harness.createRunService()
 end
 
 local function copyResponse(response)
-    local clone = {}
-    for key, value in pairs(response) do
-        clone[key] = value
-    end
-    return clone
+    return table.clone(response)
 end
 
 function Harness.createStats(options)
@@ -251,6 +249,7 @@ function Harness.loadAutoparry(options)
         return scheduler:wait(duration)
     end
 
+    -- selene: allow(incorrect_standard_library_use)
     os.clock = function()
         return scheduler:clock()
     end
@@ -270,6 +269,7 @@ function Harness.loadAutoparry(options)
 
     local function cleanup()
         task.wait = originalWait
+        -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
         game.GetService = originalGetService
         if previousRequire == nil then

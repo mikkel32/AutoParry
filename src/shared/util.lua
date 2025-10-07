@@ -24,12 +24,12 @@ function Signal:connect(handler)
 
     local connection = { _signal = self, _id = id }
 
-    function connection:Disconnect()
-        local signal = rawget(self, "_signal")
+    function connection.Disconnect(conn)
+        local signal = rawget(conn, "_signal")
         if signal and signal._connections then
-            signal._connections[self._id] = nil
+            signal._connections[conn._id] = nil
         end
-        self._signal = nil
+        conn._signal = nil
     end
 
     connection.disconnect = connection.Disconnect

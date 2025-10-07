@@ -126,6 +126,33 @@ services in [`tests/shared/physics`](../tests/shared/physics) export the same
 APIs as the runtime modules you depend on. Missing API methods should be added
 to the shim before landing gameplay changes.
 
+## Parry accuracy benchmark
+
+To validate that AutoParry continues to fire at the correct moments, the harness
+ships a dedicated accuracy workload at `tests/perf/parry_accuracy.server.lua`.
+The script drives the loader through a battery of deterministic scenarios that
+exercise highlight gating, safe-radius snaps, cooldown spacing, and multi-target
+selection.
+
+Run the benchmark with the same automation entrypoint used for the heartbeat
+workload:
+
+```bash
+run-in-roblox \
+  --place tests/AutoParryHarness.rbxl \
+  --script tests/perf/parry_accuracy.server.lua
+```
+
+The job prints a `[ACCURACY]` JSON payload summarising each scenario, total
+parries, and any violations relative to the configured thresholds. You can
+override the defaults by editing `tests/perf/parry_accuracy.config.lua` before
+running the script.
+
+If any scenario produces unexpected parries (false positives) or misses an
+expected window, the script raises an error with a diagnostic string that lists
+the failing thresholds. Review the JSON output to inspect which ball was
+targeted and at which simulated frame the regression occurred.
+
 ## UI snapshot review workflow
 
 Visual regressions in the AutoParry toggle UI are caught by

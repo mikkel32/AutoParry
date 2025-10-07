@@ -1,3 +1,4 @@
+-- selene: allow(global_usage)
 local TestHarness = script.Parent.Parent
 local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 
@@ -16,8 +17,8 @@ end
 local function createConnection()
     local connection = { disconnected = false }
 
-    function connection:Disconnect()
-        self.disconnected = true
+    function connection.Disconnect(conn)
+        conn.disconnected = true
     end
 
     connection.disconnect = connection.Disconnect
@@ -167,8 +168,8 @@ end
 local function createConnection()
     local connection = { disconnected = false }
 
-    function connection:Disconnect()
-        self.disconnected = true
+    function connection.Disconnect(conn)
+        conn.disconnected = true
     end
 
     connection.disconnect = connection.Disconnect
@@ -449,10 +450,7 @@ return function(t)
         expect(lastTime):toEqual(state.parry.lastParryTime)
         expect(state.parry.calls.getLastParryTime):toEqual(1)
 
-        local observerValues = {}
-        local observer = function(enabled)
-            table.insert(observerValues, enabled)
-        end
+        local observer = function() end
 
         local stateChangedConnection = api.onStateChanged(observer)
         expect(stateChangedConnection ~= nil):toBeTruthy()

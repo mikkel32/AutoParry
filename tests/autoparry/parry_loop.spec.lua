@@ -1,0 +1,368 @@
+-- selene: allow(global_usage)
+-- selene: allow(incorrect_standard_library_use)
+local TestHarness = script.Parent.Parent
+local Harness = require(TestHarness:WaitForChild("Harness"))
+
+local Scheduler = Harness.Scheduler
+
+local function createBall(options)
+    options = options or {}
+
+    local ball = {
+        Name = options.name or "TestBall",
+        Position = options.position or Vector3.new(),
+        AssemblyLinearVelocity = options.velocity or Vector3.new(0, 0, -140),
+        Parent = nil,
+        _isReal = options.realBall ~= false,
+        _attributes = {},
+    }
+
+    if options.attributes then
+        for key, value in pairs(options.attributes) do
+            ball._attributes[key] = value
+        end
+    end
+
+    function ball:IsA(className)
+        if className == "BasePart" then
+            return true
+        end
+        return className == options.className
+    end
+
+    function ball:GetAttribute(name)
+        if name == "realBall" then
+            return self._isReal
+        end
+        return self._attributes[name]
+    end
+
+    function ball:SetPosition(position)
+        self.Position = position
+    end
+
+    function ball:SetVelocity(velocity)
+        self.AssemblyLinearVelocity = velocity
+    end
+
+    function ball:SetRealBall(value)
+        self._isReal = value
+    end
+
+    return ball
+end
+
+local BallsFolder = {}
+BallsFolder.__index = BallsFolder
+
+function BallsFolder.new(name)
+    return setmetatable({
+        Name = name or "Balls",
+        _children = {},
+    }, BallsFolder)
+end
+
+function BallsFolder:Add(ball)
+    table.insert(self._children, ball)
+    ball.Parent = self
+    return ball
+end
+
+function BallsFolder:Remove(ball)
+    for index, child in ipairs(self._children) do
+        if child == ball then
+            table.remove(self._children, index)
+            child.Parent = nil
+            break
+        end
+    end
+end
+
+function BallsFolder:GetChildren()
+    return table.clone(self._children)
+end
+
+function BallsFolder:Clear()
+    for index = #self._children, 1, -1 do
+        local child = table.remove(self._children, index)
+        child.Parent = nil
+    end
+end
+
+local function createRunServiceStub()
+    local connections = {}
+
+    local heartbeat = {}
+
+    function heartbeat:Connect(callback)
+        table.insert(connections, callback)
+        local index = #connections
+
+        local connection = {}
+
+        function connection.Disconnect()
+            connections[index] = nil
+        end
+
+        connection.disconnect = connection.Disconnect
+        return connection
+    end
+
+    local stub = { Heartbeat = heartbeat }
+
+    function stub:step(deltaTime)
+        for _, callback in ipairs(connections) do
+            if callback then
+                callback(deltaTime)
+            end
+        end
+    end
+
+    return stub
+end
+
+local function createContext()
+    local scheduler = Scheduler.new(1 / 120)
+    local runService = createRunServiceStub()
+
+    local highlightEnabled = true
+    local highlight = { Name = "Highlight" }
+
+    local rootPart = { Position = Vector3.new() }
+    local character
+
+    character = {
+        PrimaryPart = rootPart,
+        FindFirstChild = function(_, name)
+            if name == "Highlight" and highlightEnabled then
+                return highlight
+            end
+            return nil
+        end,
+    }
+
+    local player = {
+        Name = "LocalPlayer",
+        Character = character,
+    }
+
+    local stats = Harness.createStats({
+        pingResponses = {
+            { value = 0 },
+        },
+    })
+
+    local services, remotes = Harness.createBaseServices(scheduler, {
+        initialLocalPlayer = player,
+        runService = runService,
+        stats = stats,
+    })
+
+    local remote = Harness.createRemote()
+    remotes:Add(remote)
+
+    local ballsFolder = BallsFolder.new("Balls")
+
+    local workspaceStub = {
+        Name = "Workspace",
+        FindFirstChild = function(_, name)
+            if name == ballsFolder.Name then
+                return ballsFolder
+            end
+            return nil
+        end,
+    }
+
+    local originalWorkspace = rawget(_G, "workspace")
+    rawset(_G, "workspace", workspaceStub)
+
+    local autoparry = Harness.loadAutoparry({
+        scheduler = scheduler,
+        services = services,
+    })
+
+    local originalClock = os.clock
+    -- selene: allow(incorrect_standard_library_use)
+    os.clock = function()
+        return scheduler:clock()
+    end
+
+    local remoteLog = {}
+    local originalFireServer = remote.FireServer
+
+    function remote:FireServer(...)
+        table.insert(remoteLog, {
+            timestamp = scheduler:clock(),
+            payload = { ... },
+        })
+        return originalFireServer(self, ...)
+    end
+
+    local parryLog = {}
+    local parryConnection = autoparry.onParry(function(ball, timestamp)
+        table.insert(parryLog, {
+            ball = ball,
+            timestamp = timestamp,
+        })
+    end)
+
+    local context = {
+        scheduler = scheduler,
+        runService = runService,
+        autoparry = autoparry,
+        remote = remote,
+        remoteLog = remoteLog,
+        parryLog = parryLog,
+        ballsFolder = ballsFolder,
+        rootPart = rootPart,
+        character = character,
+        setHighlightEnabled = function(flag)
+            highlightEnabled = flag
+        end,
+    }
+
+    function context:addBall(options)
+        local ball = createBall(options)
+        self.ballsFolder:Add(ball)
+        return ball
+    end
+
+    function context:clearBalls()
+        self.ballsFolder:Clear()
+    end
+
+    function context:step(deltaTime)
+        local dt = deltaTime or 1 / 120
+        self.scheduler:wait(dt)
+        self.runService:step(dt)
+    end
+
+    function context:clearParryLog()
+        for index = #parryLog, 1, -1 do
+            parryLog[index] = nil
+        end
+        for index = #remoteLog, 1, -1 do
+            remoteLog[index] = nil
+        end
+    end
+
+    function context:destroy()
+        if parryConnection then
+            parryConnection:Disconnect()
+        end
+        autoparry.destroy()
+        -- selene: allow(incorrect_standard_library_use)
+        os.clock = originalClock
+        remote.FireServer = originalFireServer
+        if originalWorkspace == nil then
+            rawset(_G, "workspace", nil)
+        else
+            rawset(_G, "workspace", originalWorkspace)
+        end
+    end
+
+    return context
+end
+
+return function(t)
+    t.test("parry loop fires when a valid threat enters the window", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "DirectThreat",
+            position = Vector3.new(0, 0, 36),
+            velocity = Vector3.new(0, 0, -180),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+        expect(context.parryLog[1].ball).toEqual(ball)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop respects the cooldown before firing again", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.18,
+        })
+
+        context:addBall({
+            name = "CooldownThreatA",
+            position = Vector3.new(0, 0, 40),
+            velocity = Vector3.new(0, 0, -200),
+        })
+        local secondBall = context:addBall({
+            name = "CooldownThreatB",
+            position = Vector3.new(0, 0, 50),
+            velocity = Vector3.new(0, 0, -220),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+
+        -- remove the first ball to mirror game behaviour where successful parries
+        -- despawn the projectile immediately.
+        local firstBall = context.parryLog[1].ball
+        context.ballsFolder:Remove(firstBall)
+
+        context:step(0.05)
+        expect(#context.parryLog).toEqual(1)
+
+        context:step(0.15)
+        expect(#context.parryLog).toEqual(2)
+        expect(context.parryLog[2].ball).toEqual(secondBall)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop waits for the highlight gate before firing", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        context:setHighlightEnabled(false)
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "HighlightGatedThreat",
+            position = Vector3.new(0, 0, 48),
+            velocity = Vector3.new(0, 0, -200),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(0)
+
+        context:setHighlightEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+        expect(context.parryLog[1].ball).toEqual(ball)
+
+        context:destroy()
+    end)
+end

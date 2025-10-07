@@ -10,7 +10,7 @@ local function makeSignal()
         table.insert(handlers, handler)
         local connection = {}
 
-        function connection:Disconnect()
+        function connection.Disconnect()
             for index, fn in ipairs(handlers) do
                 if fn == handler then
                     table.remove(handlers, index)

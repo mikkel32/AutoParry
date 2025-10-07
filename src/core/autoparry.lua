@@ -1,4 +1,5 @@
 -- mikkel32/AutoParry : src/core/autoparry.lua
+-- selene: allow(global_usage)
 -- Frame-driven parry engine with developer-friendly configuration hooks.
 
 local Players = game:GetService("Players")

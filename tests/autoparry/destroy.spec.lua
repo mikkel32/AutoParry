@@ -1,3 +1,5 @@
+-- selene: allow(global_usage)
+-- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent.Parent
 local Harness = require(TestHarness:WaitForChild("Harness"))
 
@@ -19,10 +21,10 @@ local function createRunServiceProbe()
 
         local connection = { _probe = probe, disconnected = false }
 
-        function connection:Disconnect()
-            if not self.disconnected then
-                self.disconnected = true
-                self._probe.disconnectCount += 1
+        function connection.Disconnect(conn)
+            if not conn.disconnected then
+                conn.disconnected = true
+                conn._probe.disconnectCount += 1
             end
         end
 
@@ -58,11 +60,7 @@ function BallsFolder:Add(ball)
 end
 
 function BallsFolder:GetChildren()
-    local copy = {}
-    for index, child in ipairs(self._children) do
-        copy[index] = child
-    end
-    return copy
+    return table.clone(self._children)
 end
 
 local function createBall()
@@ -141,6 +139,7 @@ return function(t)
 
             local originalClock = os.clock
             addCleanup(function()
+                -- selene: allow(incorrect_standard_library_use)
                 os.clock = originalClock
             end)
 
@@ -180,6 +179,7 @@ return function(t)
                 end
             end)
 
+            -- selene: allow(incorrect_standard_library_use)
             os.clock = function()
                 return scheduler1:clock()
             end
@@ -259,6 +259,7 @@ return function(t)
                 end
             end)
 
+            -- selene: allow(incorrect_standard_library_use)
             os.clock = function()
                 return scheduler2:clock()
             end

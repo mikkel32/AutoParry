@@ -4,13 +4,10 @@ local Harness = require(TestHarness:WaitForChild("Harness"))
 local Scheduler = Harness.Scheduler
 
 local function cloneTable(source)
-    local clone = {}
-    if source then
-        for key, value in pairs(source) do
-            clone[key] = value
-        end
+    if not source then
+        return {}
     end
-    return clone
+    return table.clone(source)
 end
 
 local function createBallsFolder(config)
@@ -26,11 +23,7 @@ local function createBallsFolder(config)
     end
 
     function folder:GetChildren()
-        local children = {}
-        for index, child in ipairs(self._children) do
-            children[index] = child
-        end
-        return children
+        return table.clone(self._children)
     end
 
     function folder:Clear()
