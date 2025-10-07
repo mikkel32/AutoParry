@@ -198,51 +198,145 @@ local function serializeButton(button)
     }
 end
 
-local function captureSnapshot(gui)
-    local frame = gui:FindFirstChildOfClass("Frame")
-    assert(frame, "AutoParry frame missing from ScreenGui")
+local function serializeTelemetryCards(cardsFrame)
+    local cards = {}
 
-    local children = frame:GetChildren()
+    if not cardsFrame then
+        return cards
+    end
 
-    local titleLabel
-    local hotkeyLabel
-    local tooltipLabel
-    local button = frame:FindFirstChild("ToggleButton")
-
-    for _, child in ipairs(children) do
-        if child:IsA("TextLabel") then
-            if child.Name == "HotkeyLabel" then
-                hotkeyLabel = child
-            elseif child.Name == "Tooltip" then
-                tooltipLabel = child
-            elseif not titleLabel then
-                titleLabel = child
-            end
+    for _, child in ipairs(cardsFrame:GetChildren()) do
+        if child:IsA("Frame") then
+            table.insert(cards, {
+                name = child.Name,
+                size = serializeUDim2(child.Size),
+                backgroundColor3 = serializeColor3(child.BackgroundColor3),
+                label = child:FindFirstChild("Label") and serializeTextLabel(child.Label) or nil,
+                value = child:FindFirstChild("Value") and serializeTextLabel(child.Value) or nil,
+                hint = child:FindFirstChild("Hint") and serializeTextLabel(child.Hint) or nil,
+            })
         end
     end
 
-    assert(titleLabel, "Title label missing from AutoParry UI")
-    assert(button, "Toggle button missing from AutoParry UI")
+    table.sort(cards, function(a, b)
+        return tostring(a.name) < tostring(b.name)
+    end)
 
-    return {
+    return cards
+end
+
+local function serializeControlToggles(list)
+    local toggles = {}
+
+    if not list then
+        return toggles
+    end
+
+    for _, child in ipairs(list:GetChildren()) do
+        if child:IsA("Frame") then
+            table.insert(toggles, {
+                name = child.Name,
+                title = child:FindFirstChild("Title") and serializeTextLabel(child.Title) or nil,
+                description = child:FindFirstChild("Description") and serializeTextLabel(child.Description) or nil,
+                badge = child:FindFirstChild("Badge") and serializeTextLabel(child.Badge) or nil,
+                switch = child:FindFirstChild("Switch") and serializeButton(child.Switch) or nil,
+            })
+        end
+    end
+
+    table.sort(toggles, function(a, b)
+        return tostring(a.name) < tostring(b.name)
+    end)
+
+    return toggles
+end
+
+local function captureSnapshot(gui)
+    local dashboard = gui:FindFirstChild("Dashboard")
+    assert(dashboard, "Dashboard frame missing from AutoParry UI")
+
+    local content = dashboard:FindFirstChild("Content")
+    assert(content, "Dashboard content missing")
+
+    local header = content:FindFirstChild("Header")
+    local statusCard = content:FindFirstChild("StatusCard")
+    local telemetry = content:FindFirstChild("Telemetry")
+    local controls = content:FindFirstChild("Controls")
+    local actions = content:FindFirstChild("Actions")
+
+    assert(header, "Dashboard header missing")
+    assert(statusCard, "Status card missing from AutoParry UI")
+
+    local badge = header:FindFirstChild("StatusBadge")
+    local badgeLabel = badge and badge:FindFirstChild("Label")
+
+    local telemetryCards = telemetry and telemetry:FindFirstChild("Cards")
+    local controlList = controls and controls:FindFirstChild("List")
+
+    local toggleButton = statusCard:FindFirstChild("ToggleButton")
+    assert(toggleButton, "Toggle button missing from AutoParry UI")
+
+    local snapshot = {
         screenGui = {
             name = gui.Name,
             resetOnSpawn = gui.ResetOnSpawn,
             zIndexBehavior = gui.ZIndexBehavior.Name,
-            frame = {
-                size = serializeUDim2(frame.Size),
-                position = serializeUDim2(frame.Position),
-                backgroundColor3 = serializeColor3(frame.BackgroundColor3),
-                borderSizePixel = frame.BorderSizePixel,
-                active = frame.Active,
-                draggable = frame.Draggable,
-                title = serializeTextLabel(titleLabel),
-                button = serializeButton(button),
-                hotkeyLabel = hotkeyLabel and serializeTextLabel(hotkeyLabel) or nil,
-                tooltip = tooltipLabel and serializeTextLabel(tooltipLabel) or nil,
+            dashboard = {
+                size = serializeUDim2(dashboard.Size),
+                position = serializeUDim2(dashboard.Position),
+                backgroundColor3 = serializeColor3(dashboard.BackgroundColor3),
+                automaticSize = dashboard.AutomaticSize.Name,
+                borderSizePixel = dashboard.BorderSizePixel,
+                active = dashboard.Active,
+                draggable = dashboard.Draggable,
+                header = {
+                    title = header:FindFirstChild("Title") and serializeTextLabel(header.Title) or nil,
+                    tagline = header:FindFirstChild("Tagline") and serializeTextLabel(header.Tagline) or nil,
+                    hotkeyLabel = header:FindFirstChild("HotkeyLabel") and serializeTextLabel(header.HotkeyLabel) or nil,
+                    badge = badge and {
+                        backgroundColor3 = serializeColor3(badge.BackgroundColor3),
+                        text = badgeLabel and badgeLabel.Text or nil,
+                        textColor3 = badgeLabel and serializeColor3(badgeLabel.TextColor3) or nil,
+                    } or nil,
+                },
+                statusCard = {
+                    backgroundColor3 = serializeColor3(statusCard.BackgroundColor3),
+                    heading = statusCard:FindFirstChild("StatusHeading") and serializeTextLabel(statusCard.StatusHeading) or nil,
+                    support = statusCard:FindFirstChild("StatusSupport") and serializeTextLabel(statusCard.StatusSupport) or nil,
+                    hotkeyLabel = statusCard:FindFirstChild("HotkeyLabel") and serializeTextLabel(statusCard.HotkeyLabel) or nil,
+                    tooltip = statusCard:FindFirstChild("Tooltip") and serializeTextLabel(statusCard.Tooltip) or nil,
+                    button = serializeButton(toggleButton),
+                },
+                telemetry = {
+                    title = telemetry and telemetry:FindFirstChild("Title") and serializeTextLabel(telemetry.Title) or nil,
+                    cards = serializeTelemetryCards(telemetryCards),
+                },
+                controls = {
+                    title = controls and controls:FindFirstChild("Title") and serializeTextLabel(controls.Title) or nil,
+                    toggles = serializeControlToggles(controlList),
+                },
+                actions = (function()
+                    local visible = actions and actions.Visible or false
+                    local buttonCount = 0
+
+                    if actions then
+                        for _, child in ipairs(actions:GetChildren()) do
+                            if child:IsA("TextButton") then
+                                buttonCount += 1
+                            end
+                        end
+                    end
+
+                    return {
+                        visible = visible,
+                        buttonCount = buttonCount,
+                    }
+                end)(),
             },
         },
     }
+
+    return snapshot
 end
 
 local function readBaseline()
