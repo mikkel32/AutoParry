@@ -19,6 +19,17 @@
               "$path": "AutoParrySourceMap.lua"
             }
           }
+        },
+        "Specs": {
+          "$className": "Folder",
+          "BootstrapSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../autoparry/bootstrap.spec.lua"
+              }
+            }
+          }
         }
       }
     },

@@ -27,3 +27,6 @@ jobs:
 
       - name: Execute loader harness
         run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/init.server.lua
+
+      - name: Run bootstrap spec
+        run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/spec.server.lua
