@@ -1,4 +1,5 @@
 -- mikkel32/AutoParry : loader.lua  (Lua / Luau)
+-- selene: allow(global_usage)
 -- Remote bootstrapper that fetches repository modules, exposes a cached
 -- global require, and hands execution to the entrypoint module.
 

@@ -1,247 +1,8 @@
 -- Auto-generated source map for AutoParry tests
 return {
-    ['loader.lua'] = [===[
--- mikkel32/AutoParry : loader.lua  (Lua / Luau)
--- Remote bootstrapper that fetches repository modules, exposes a cached
--- global require, and hands execution to the entrypoint module.
-
-local RAW_HOST = "https://raw.githubusercontent.com"
-local DEFAULT_REPO = "mikkel32/AutoParry"
-local DEFAULT_BRANCH = "main"
-local DEFAULT_ENTRY = "src/main.lua"
-
-local globalSourceCache = {}
-
-local function buildUrl(repo, branch, path)
-    return ("%s/%s/%s/%s"):format(RAW_HOST, repo, branch, path)
-end
-
-local function fetch(repo, branch, path, refresh)
-    local url = buildUrl(repo, branch, path)
-    if not refresh and globalSourceCache[url] then
-        return globalSourceCache[url]
-    end
-
-    local ok, res = pcall(game.HttpGet, game, url, true)
-    if not ok then
-        error(("AutoParry loader: failed to fetch %s\nReason: %s"):format(url, tostring(res)), 0)
-    end
-
-    if not refresh then
-        globalSourceCache[url] = res
-    end
-
-    return res
-end
-
-local function createContext(options)
-    local context = {
-        repo = options.repo or DEFAULT_REPO,
-        branch = options.branch or DEFAULT_BRANCH,
-        entrypoint = options.entrypoint or DEFAULT_ENTRY,
-        refresh = options.refresh == true,
-        cache = {},
-    }
-
-    local function remoteRequire(path)
-        local cacheKey = path
-        if not context.refresh and context.cache[cacheKey] ~= nil then
-            return context.cache[cacheKey]
-        end
-
-        local source = fetch(context.repo, context.branch, path, context.refresh)
-        local chunk, err = loadstring(source, "=" .. path)
-        if not chunk then
-            error(("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err)), 0)
-        end
-
-        local previousRequire = rawget(_G, "ARequire")
-        rawset(_G, "ARequire", remoteRequire)
-
-        local ok, result = pcall(chunk)
-
-        rawset(_G, "ARequire", previousRequire)
-
-        if not ok then
-            error(("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result)), 0)
-        end
-
-        context.cache[cacheKey] = result
-        return result
-    end
-
-    context.require = remoteRequire
-    return context
-end
-
-local function bootstrap(options)
-    options = options or {}
-    local context = createContext(options)
-
-    local previousRequire = rawget(_G, "ARequire")
-    local previousLoader = rawget(_G, "AutoParryLoader")
-
-    local function run()
-        rawset(_G, "ARequire", context.require)
-        rawset(_G, "AutoParryLoader", {
-            require = context.require,
-            context = context,
-        })
-
-        local mainModule = context.require(context.entrypoint)
-        if typeof(mainModule) == "function" then
-            return mainModule(options, context)
-        end
-
-        return mainModule
-    end
-
-    local ok, result = pcall(run)
-    if not ok then
-        if previousRequire == nil then
-            rawset(_G, "ARequire", nil)
-        else
-            rawset(_G, "ARequire", previousRequire)
-        end
-
-        if previousLoader == nil then
-            rawset(_G, "AutoParryLoader", nil)
-        else
-            rawset(_G, "AutoParryLoader", previousLoader)
-        end
-
-        error(result, 0)
-    end
-
-    return result
-end
-
-return bootstrap(...)
-
-]===],
-    ['src/main.lua'] = [===[
--- mikkel32/AutoParry : src/main.lua
--- Bootstraps the AutoParry experience, wiring together the UI and core logic
--- and returning a friendly developer API.
-
-local Require = rawget(_G, "ARequire")
-assert(Require, "AutoParry: ARequire missing (loader.lua not executed)")
-
-local UI = Require("src/ui/init.lua")
-local Parry = Require("src/core/autoparry.lua")
-local Util = Require("src/shared/util.lua")
-
-local VERSION = "1.1.0"
-
-local function normalizeOptions(options)
-    options = options or {}
-    local defaults = {
-        title = "AutoParry",
-        autoStart = false,
-        defaultEnabled = false,
-        hotkey = nil,
-        tooltip = nil,
-        parry = nil,
-    }
-
-    return Util.merge(Util.deepCopy(defaults), options)
-end
-
-return function(options)
-    local opts = normalizeOptions(options)
-
-    if typeof(opts.parry) == "table" then
-        Parry.configure(opts.parry)
-    end
-
-    local controller = UI.mount({
-        title = opts.title,
-        initialState = opts.autoStart or opts.defaultEnabled,
-        hotkey = opts.hotkey,
-        tooltip = opts.tooltip,
-        onToggle = function(enabled, context)
-            Parry.setEnabled(enabled)
-        end,
-    })
-
-    local parryConn = Parry.onStateChanged(function(enabled)
-        controller.setEnabled(enabled, { silent = true, source = "parry" })
-    end)
-
-    if opts.autoStart or opts.defaultEnabled then
-        Parry.enable()
-    else
-        controller.setEnabled(Parry.isEnabled(), { silent = true })
-    end
-
-    local api = {}
-
-    function api.getVersion()
-        return VERSION
-    end
-
-    function api.isEnabled()
-        return Parry.isEnabled()
-    end
-
-    function api.setEnabled(enabled)
-        controller.setEnabled(enabled)
-        return Parry.isEnabled()
-    end
-
-    function api.toggle()
-        controller.toggle()
-        return Parry.isEnabled()
-    end
-
-    function api.configure(config)
-        Parry.configure(config)
-        return Parry.getConfig()
-    end
-
-    function api.getConfig()
-        return Parry.getConfig()
-    end
-
-    function api.resetConfig()
-        return Parry.resetConfig()
-    end
-
-    function api.setLogger(fn)
-        Parry.setLogger(fn)
-    end
-
-    function api.getLastParryTime()
-        return Parry.getLastParryTime()
-    end
-
-    function api.onStateChanged(callback)
-        return Parry.onStateChanged(callback)
-    end
-
-    function api.onParry(callback)
-        return Parry.onParry(callback)
-    end
-
-    function api.getUiController()
-        return controller
-    end
-
-    function api.destroy()
-        Parry.destroy()
-        if parryConn then
-            parryConn:Disconnect()
-            parryConn = nil
-        end
-        controller.destroy()
-    end
-
-    return api
-end
-
-]===],
     ['src/core/autoparry.lua'] = [===[
 -- mikkel32/AutoParry : src/core/autoparry.lua
+-- selene: allow(global_usage)
 -- Frame-driven parry engine with developer-friendly configuration hooks.
 
 local Players = game:GetService("Players")
@@ -586,8 +347,215 @@ end
 return AutoParry
 
 ]===],
+    ['src/main.lua'] = [===[
+-- mikkel32/AutoParry : src/main.lua
+-- selene: allow(global_usage)
+-- Bootstraps the AutoParry experience, wiring together the UI and core logic
+-- and returning a friendly developer API.
+
+local Require = rawget(_G, "ARequire")
+assert(Require, "AutoParry: ARequire missing (loader.lua not executed)")
+
+local UI = Require("src/ui/init.lua")
+local Parry = Require("src/core/autoparry.lua")
+local Util = Require("src/shared/util.lua")
+
+local VERSION = "1.1.0"
+
+local function normalizeOptions(options)
+    options = options or {}
+    local defaults = {
+        title = "AutoParry",
+        autoStart = false,
+        defaultEnabled = false,
+        hotkey = nil,
+        tooltip = nil,
+        parry = nil,
+    }
+
+    return Util.merge(Util.deepCopy(defaults), options)
+end
+
+return function(options)
+    local opts = normalizeOptions(options)
+
+    if typeof(opts.parry) == "table" then
+        Parry.configure(opts.parry)
+    end
+
+    local controller = UI.mount({
+        title = opts.title,
+        initialState = opts.autoStart or opts.defaultEnabled,
+        hotkey = opts.hotkey,
+        tooltip = opts.tooltip,
+        onToggle = function(enabled, _context)
+            Parry.setEnabled(enabled)
+        end,
+    })
+
+    local parryConn = Parry.onStateChanged(function(enabled)
+        controller.setEnabled(enabled, { silent = true, source = "parry" })
+    end)
+
+    if opts.autoStart or opts.defaultEnabled then
+        Parry.enable()
+    else
+        controller.setEnabled(Parry.isEnabled(), { silent = true })
+    end
+
+    local api = {}
+
+    function api.getVersion()
+        return VERSION
+    end
+
+    function api.isEnabled()
+        return Parry.isEnabled()
+    end
+
+    function api.setEnabled(enabled)
+        controller.setEnabled(enabled)
+        return Parry.isEnabled()
+    end
+
+    function api.toggle()
+        controller.toggle()
+        return Parry.isEnabled()
+    end
+
+    function api.configure(config)
+        Parry.configure(config)
+        return Parry.getConfig()
+    end
+
+    function api.getConfig()
+        return Parry.getConfig()
+    end
+
+    function api.resetConfig()
+        return Parry.resetConfig()
+    end
+
+    function api.setLogger(fn)
+        Parry.setLogger(fn)
+    end
+
+    function api.getLastParryTime()
+        return Parry.getLastParryTime()
+    end
+
+    function api.onStateChanged(callback)
+        return Parry.onStateChanged(callback)
+    end
+
+    function api.onParry(callback)
+        return Parry.onParry(callback)
+    end
+
+    function api.getUiController()
+        return controller
+    end
+
+    function api.destroy()
+        Parry.destroy()
+        if parryConn then
+            parryConn:Disconnect()
+            parryConn = nil
+        end
+        controller.destroy()
+    end
+
+    return api
+end
+
+]===],
+    ['src/shared/util.lua'] = [===[
+-- mikkel32/AutoParry : src/shared/util.lua
+-- Shared helpers for table utilities and lightweight signals.
+
+local Util = {}
+
+local Signal = {}
+Signal.__index = Signal
+
+function Signal.new()
+    return setmetatable({ _connections = {}, _nextId = 0 }, Signal)
+end
+
+function Signal:connect(handler)
+    assert(typeof(handler) == "function", "Signal:connect expects a function")
+    if not self._connections then
+        local stub = { Disconnect = function() end }
+        stub.disconnect = stub.Disconnect
+        return stub
+    end
+
+    self._nextId = self._nextId + 1
+    local id = self._nextId
+    self._connections[id] = handler
+
+    local connection = { _signal = self, _id = id }
+
+    function connection.Disconnect(conn)
+        local signal = rawget(conn, "_signal")
+        if signal and signal._connections then
+            signal._connections[conn._id] = nil
+        end
+        conn._signal = nil
+    end
+
+    connection.disconnect = connection.Disconnect
+
+    return connection
+end
+
+function Signal:fire(...)
+    if not self._connections then
+        return
+    end
+
+    for _, handler in pairs(self._connections) do
+        task.spawn(handler, ...)
+    end
+end
+
+function Signal:destroy()
+    self._connections = nil
+end
+
+Util.Signal = Signal
+
+function Util.deepCopy(value)
+    if typeof(value) ~= "table" then
+        return value
+    end
+
+    local copy = {}
+    for key, val in pairs(value) do
+        copy[Util.deepCopy(key)] = Util.deepCopy(val)
+    end
+    return copy
+end
+
+function Util.merge(into, from)
+    assert(typeof(into) == "table", "Util.merge: into must be a table")
+    if typeof(from) ~= "table" then
+        return into
+    end
+
+    for key, value in pairs(from) do
+        into[key] = value
+    end
+
+    return into
+end
+
+return Util
+
+]===],
     ['src/ui/init.lua'] = [===[
 -- mikkel32/AutoParry : src/ui/init.lua
+-- selene: allow(global_usage)
 -- Lightweight, developer-friendly UI controller with toggle button + hotkey support.
 
 local CoreGui = game:GetService("CoreGui")
@@ -889,88 +857,155 @@ end
 return UI
 
 ]===],
-    ['src/shared/util.lua'] = [===[
--- mikkel32/AutoParry : src/shared/util.lua
--- Shared helpers for table utilities and lightweight signals.
+    ['loader.lua'] = [===[
+-- mikkel32/AutoParry : loader.lua  (Lua / Luau)
+-- selene: allow(global_usage)
+-- Remote bootstrapper that fetches repository modules, exposes a cached
+-- global require, and hands execution to the entrypoint module.
 
-local Util = {}
+local RAW_HOST = "https://raw.githubusercontent.com"
+local DEFAULT_REPO = "mikkel32/AutoParry"
+local DEFAULT_BRANCH = "main"
+local DEFAULT_ENTRY = "src/main.lua"
 
-local Signal = {}
-Signal.__index = Signal
+local globalSourceCache = {}
 
-function Signal.new()
-    return setmetatable({ _connections = {}, _nextId = 0 }, Signal)
+local function buildUrl(repo, branch, path)
+    return ("%s/%s/%s/%s"):format(RAW_HOST, repo, branch, path)
 end
 
-function Signal:connect(handler)
-    assert(typeof(handler) == "function", "Signal:connect expects a function")
-    if not self._connections then
-        local stub = { Disconnect = function() end }
-        stub.disconnect = stub.Disconnect
-        return stub
+local function fetch(repo, branch, path, refresh)
+    local url = buildUrl(repo, branch, path)
+    if not refresh and globalSourceCache[url] then
+        return globalSourceCache[url]
     end
 
-    self._nextId = self._nextId + 1
-    local id = self._nextId
-    self._connections[id] = handler
+    local ok, res = pcall(game.HttpGet, game, url, true)
+    if not ok then
+        error(("AutoParry loader: failed to fetch %s\nReason: %s"):format(url, tostring(res)), 0)
+    end
 
-    local connection = { _signal = self, _id = id }
+    if not refresh then
+        globalSourceCache[url] = res
+    end
 
-    function connection:Disconnect()
-        local signal = rawget(self, "_signal")
-        if signal and signal._connections then
-            signal._connections[self._id] = nil
+    return res
+end
+
+local function createContext(options)
+    local context = {
+        repo = options.repo or DEFAULT_REPO,
+        branch = options.branch or DEFAULT_BRANCH,
+        entrypoint = options.entrypoint or DEFAULT_ENTRY,
+        refresh = options.refresh == true,
+        cache = {},
+    }
+
+    local function remoteRequire(path)
+        local cacheKey = path
+        if not context.refresh and context.cache[cacheKey] ~= nil then
+            return context.cache[cacheKey]
         end
-        self._signal = nil
+
+        local source = fetch(context.repo, context.branch, path, context.refresh)
+        local chunk, err = loadstring(source, "=" .. path)
+        if not chunk then
+            error(("AutoParry loader: compile error in %s\n%s"):format(path, tostring(err)), 0)
+        end
+
+        local previousRequire = rawget(_G, "ARequire")
+        rawset(_G, "ARequire", remoteRequire)
+
+        local ok, result = pcall(chunk)
+
+        rawset(_G, "ARequire", previousRequire)
+
+        if not ok then
+            error(("AutoParry loader: runtime error in %s\n%s"):format(path, tostring(result)), 0)
+        end
+
+        context.cache[cacheKey] = result
+        return result
     end
 
-    connection.disconnect = connection.Disconnect
-
-    return connection
+    context.require = remoteRequire
+    return context
 end
 
-function Signal:fire(...)
-    if not self._connections then
-        return
+local function bootstrap(options)
+    options = options or {}
+    local context = createContext(options)
+
+    local previousRequire = rawget(_G, "ARequire")
+    local previousLoader = rawget(_G, "AutoParryLoader")
+
+    local function run()
+        rawset(_G, "ARequire", context.require)
+        rawset(_G, "AutoParryLoader", {
+            require = context.require,
+            context = context,
+        })
+
+        local mainModule = context.require(context.entrypoint)
+        if typeof(mainModule) == "function" then
+            return mainModule(options, context)
+        end
+
+        return mainModule
     end
 
-    for _, handler in pairs(self._connections) do
-        task.spawn(handler, ...)
+    local ok, result = pcall(run)
+    if not ok then
+        if previousRequire == nil then
+            rawset(_G, "ARequire", nil)
+        else
+            rawset(_G, "ARequire", previousRequire)
+        end
+
+        if previousLoader == nil then
+            rawset(_G, "AutoParryLoader", nil)
+        else
+            rawset(_G, "AutoParryLoader", previousLoader)
+        end
+
+        error(result, 0)
     end
+
+    return result
 end
 
-function Signal:destroy()
-    self._connections = nil
-end
+return bootstrap(...)
 
-Util.Signal = Signal
+]===],
+    ['tests/perf/config.lua'] = [===[
+return {
+    -- Number of frames to run before samples are collected.
+    warmupFrames = 8,
 
-function Util.deepCopy(value)
-    if typeof(value) ~= "table" then
-        return value
-    end
+    -- Number of samples collected for each ball population target.
+    samplesPerBatch = 120,
 
-    local copy = {}
-    for key, val in pairs(value) do
-        copy[Util.deepCopy(key)] = Util.deepCopy(val)
-    end
-    return copy
-end
+    -- Simulated frame duration passed to the heartbeat step.
+    frameDuration = 1 / 120,
 
-function Util.merge(into, from)
-    assert(typeof(into) == "table", "Util.merge: into must be a table")
-    if typeof(from) ~= "table" then
-        return into
-    end
+    -- Populations of synthetic balls to evaluate during the benchmark.
+    ballPopulations = { 0, 16, 32, 64, 96, 128 },
 
-    for key, value in pairs(from) do
-        into[key] = value
-    end
+    -- Ball spawn tuning for the synthetic workload.
+    ballSpawn = {
+        baseDistance = 28,
+        distanceJitter = 7,
+        speedBase = 120,
+        speedJitter = 24,
+    },
 
-    return into
-end
-
-return Util
+    -- Regression thresholds in seconds. If either metric exceeds the value the
+    -- benchmark fails the current run.
+    thresholds = {
+        average = 0.0016,
+        p95 = 0.0035,
+    },
+}
 
 ]===],
     ['tests/fixtures/ui_snapshot.json'] = [===[
@@ -1064,35 +1099,5 @@ return Util
   }
 }
 
-]===],
-    ['tests/perf/config.lua'] = [===[
-return {
-    -- Number of frames to run before samples are collected.
-    warmupFrames = 8,
-
-    -- Number of samples collected for each ball population target.
-    samplesPerBatch = 120,
-
-    -- Simulated frame duration passed to the heartbeat step.
-    frameDuration = 1 / 120,
-
-    -- Populations of synthetic balls to evaluate during the benchmark.
-    ballPopulations = { 0, 16, 32, 64, 96, 128 },
-
-    -- Ball spawn tuning for the synthetic workload.
-    ballSpawn = {
-        baseDistance = 28,
-        distanceJitter = 7,
-        speedBase = 120,
-        speedJitter = 24,
-    },
-
-    -- Regression thresholds in seconds. If either metric exceeds the value the
-    -- benchmark fails the current run.
-    thresholds = {
-        average = 0.0016,
-        p95 = 0.0035,
-    },
-}
 ]===],
 }

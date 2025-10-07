@@ -1,0 +1,552 @@
+# This is for general Luau functionality.
+# Valid: math.sign(), bit32.countlz()
+# Invalid (put in selene-lib/default_std/roblox_base.yml instead): CFrame.new(), Instance.new(), task.spawn()
+---
+base: lua51
+lua_versions:
+  - luau
+globals:
+  bit32.arshift:
+    args:
+      - type: number
+      - type: number
+    must_use: true
+  bit32.band:
+    args:
+      - type: "..."
+    must_use: true
+  bit32.bnot:
+    args:
+      - type: number
+    must_use: true
+  bit32.bor:
+    args:
+      - type: "..."
+    must_use: true
+  bit32.btest:
+    args:
+      - type: "..."
+    must_use: true
+  bit32.bxor:
+    args:
+      - type: "..."
+    must_use: true
+  bit32.byteswap:
+    args:
+      - type: number
+    must_use: true
+  bit32.countlz:
+    args:
+      - type: number
+    must_use: true
+  bit32.countrz:
+    args:
+      - type: number
+    must_use: true
+  bit32.extract:
+    args:
+      - type: number
+      - type: number
+      - required: false
+        type: number
+    must_use: true
+  bit32.lrotate:
+    args:
+      - type: number
+      - type: number
+    must_use: true
+  bit32.lshift:
+    args:
+      - type: number
+      - type: number
+    must_use: true
+  bit32.replace:
+    args:
+      - type: number
+      - type: number
+      - type: number
+      - required: false
+        type: number
+    must_use: true
+  bit32.rrotate:
+    args:
+      - type: number
+      - type: number
+    must_use: true
+  bit32.rshift:
+    args:
+      - type: number
+      - type: number
+    must_use: true
+  buffer.copy:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type:
+          display: buffer
+      - required: false
+        type: number
+      - required: false
+        type: number
+  buffer.create:
+    args:
+      - type: number
+    must_use: true
+  buffer.fill:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+      - required: false
+        type: number
+  buffer.fromstring:
+    args:
+      - type: string
+    must_use: true
+  buffer.len:
+    args:
+      - type:
+          display: buffer
+    must_use: true
+  buffer.readf32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readf64:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readi8:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readi16:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readi32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readstring:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+    must_use: true
+  buffer.readu8:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readu16:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.readu32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+    must_use: true
+  buffer.tostring:
+    args:
+      - type:
+          display: buffer
+    must_use: true
+  buffer.writef32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writef64:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writei8:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writei16:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writei32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writestring:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: string
+      - required: false
+        type: number
+  buffer.writeu8:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writeu16:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  buffer.writeu32:
+    args:
+      - type:
+          display: buffer
+      - type: number
+      - type: number
+  collectgarbage:
+    args:
+      - type:
+          - count
+    must_use: true
+  coroutine.close:
+    args:
+      - type:
+          display: thread
+  coroutine.isyieldable:
+    args: []
+  debug.debug:
+    removed: true
+  debug.getfenv:
+    removed: true
+  debug.gethook:
+    removed: true
+  debug.getinfo:
+    removed: true
+  debug.getlocal:
+    removed: true
+  debug.getmetatable:
+    removed: true
+  debug.getregistry:
+    removed: true
+  debug.getupvalue:
+    removed: true
+  debug.info:
+    args:
+      - type: any
+      - type: any
+      - required: false
+        type: string
+    must_use: true
+  debug.setfenv:
+    removed: true
+  debug.sethook:
+    removed: true
+  debug.setlocal:
+    removed: true
+  debug.setmetatable:
+    removed: true
+  debug.setupvalue:
+    removed: true
+  dofile:
+    removed: true
+  # Redefined to take any instead of just string
+  error:
+    args:
+      - required: Erroring without an explanation is unhelpful to users.
+        type: any
+      - required: false
+        type: number
+  gcinfo:
+    args: []
+    must_use: true
+  io:
+    removed: true
+  load:
+    removed: true
+  loadfile:
+    removed: true
+  math.clamp:
+    args:
+      - type: number
+      - type: number
+      - type: number
+    must_use: true
+  math.lerp:
+    args:
+      - type: number
+      - type: number
+      - type: number
+    must_use: true
+  math.log:
+    args:
+      - type: number
+      - required: false
+        type: number
+    must_use: true
+  math.map:
+    args:
+      - type: number
+      - type: number
+      - type: number
+      - type: number
+      - type: number
+    must_use: true
+  math.noise:
+    args:
+      - type: number
+      - required: false
+        type: number
+      - required: false
+        type: number
+    must_use: true
+  math.round:
+    args:
+      - type: number
+    must_use: true
+  math.sign:
+    args:
+      - type: number
+    must_use: true
+  module:
+    removed: true
+  os.execute:
+    removed: true
+  os.exit:
+    removed: true
+  os.getenv:
+    removed: true
+  os.remove:
+    removed: true
+  os.rename:
+    removed: true
+  os.setlocale:
+    removed: true
+  os.tmpname:
+    removed: true
+  package:
+    removed: true
+  rawlen:
+    args:
+      - type: table
+    must_use: true
+  string.dump:
+    removed: true
+  string.pack:
+    args:
+      - type: string
+      - type: "..."
+    must_use: true
+  string.packsize:
+    args:
+      - type: string
+    must_use: true
+  string.split:
+    args:
+      - type: string
+      - required: false
+        type: string
+    must_use: true
+  string.unpack:
+    args:
+      - type: string
+      - type: string
+      - required: false
+        type: number
+    must_use: true
+  table.clear:
+    args:
+      - type: table
+  table.clone:
+    args:
+      - type: table
+    must_use: true
+  table.create:
+    args:
+      - type: number
+      - required: false
+        type: any
+    must_use: true
+  table.find:
+    args:
+      - type: table
+      - type: any
+      - required: false
+        type: number
+    must_use: true
+  table.freeze:
+    args:
+      - type: table
+  table.isfrozen:
+    args:
+      - type: table
+    must_use: true
+  table.move:
+    args:
+      - type: table
+      - type: number
+      - type: number
+      - type: number
+      - required: false
+        type: table
+  table.pack:
+    args:
+      - type: "..."
+    must_use: true
+  table.unpack:
+    args:
+      - type: table
+      - required: false
+        type: number
+      - required: false
+        type: number
+    must_use: true
+  typeof:
+    args:
+      - type: any
+  utf8.char:
+    args:
+      - required: utf8.char should be used with an argument despite it not throwing
+        type: number
+      - required: false
+        type: "..."
+    must_use: true
+  utf8.charpattern:
+    property: read-only
+  utf8.codepoint:
+    args:
+      - type: string
+      - required: false
+        type: number
+      - required: false
+        type: number
+    must_use: true
+  utf8.codes:
+    args:
+      - type: string
+    must_use: true
+  utf8.len:
+    args:
+      - type: string
+      - required: false
+        type: number
+      - required: false
+        type: number
+    must_use: true
+  utf8.offset:
+    args:
+      - type: string
+      - required: false
+        type: number
+      - required: false
+        type: number
+    must_use: true
+  vector.abs:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.angle:
+    args:
+      - type:
+          display: vector
+      - type:
+          display: vector
+      - required: false
+        type:
+          display: vector
+    must_use: true
+  vector.ceil:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.clamp:
+    args:
+      - type:
+          display: vector
+      - type:
+          display: vector
+      - type:
+          display: vector
+    must_use: true
+  vector.create:
+    args:
+      - type: number
+      - type: number
+      - type: number
+    must_use: true
+  vector.cross:
+    args:
+      - type:
+          display: vector
+      - type:
+          display: vector
+    must_use: true
+  vector.dot:
+    args:
+      - type:
+          display: vector
+      - type:
+          display: vector
+    must_use: true
+  vector.floor:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.magnitude:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.max:
+    args:
+      - type:
+          display: vector
+      - type: "..."
+        required: false
+    must_use: true
+  vector.min:
+    args:
+      - type:
+          display: vector
+      - type: "..."
+        required: false
+    must_use: true
+  vector.normalize:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.one:
+    property: read-only
+  vector.sign:
+    args:
+      - type:
+          display: vector
+    must_use: true
+  vector.zero:
+    property: read-only

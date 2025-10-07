@@ -1,4 +1,6 @@
 # Test artifacts
 tests/artifacts/*.json
+# Generated harness place
+tests/AutoParryHarness.rbxl
 # Spec output logs generated during CI
 tests/spec-output.log

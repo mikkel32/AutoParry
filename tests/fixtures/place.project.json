@@ -13,102 +13,42 @@
       "TestHarness": {
         "$className": "Folder",
         "AutoParrySourceMap": {
-          "$className": "ModuleScript",
-          "$properties": {
-            "Source": {
-              "$path": "AutoParrySourceMap.lua"
-            }
-          }
+          "$path": "AutoParrySourceMap.lua"
         },
         "Harness": {
-          "$className": "ModuleScript",
-          "$properties": {
-            "Source": {
-              "$path": "../autoparry/harness.lua"
-            }
-          }
+          "$path": "../autoparry/harness.lua"
         },
         "Specs": {
           "$className": "Folder",
           "ApiMainSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../api/main.spec.lua"
-              }
-            }
+            "$path": "../api/main.spec.lua"
           },
           "BootstrapSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../autoparry/bootstrap.spec.lua"
-              }
-            }
+            "$path": "../autoparry/bootstrap.spec.lua"
           },
           "ConfigSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../autoparry/config.spec.lua"
-              }
-            }
+            "$path": "../autoparry/config.spec.lua"
           },
           "DestroySpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../autoparry/destroy.spec.lua"
-              }
-            }
+            "$path": "../autoparry/destroy.spec.lua"
           },
           "LoaderSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../loader/loader.spec.lua"
-              }
-            }
+            "$path": "../loader/loader.spec.lua"
           },
           "SharedSignalSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../shared/signal.spec.lua"
-              }
-            }
+            "$path": "../shared/signal.spec.lua"
           },
           "PingSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../autoparry/ping.spec.lua"
-              }
-            }
+            "$path": "../autoparry/ping.spec.lua"
           },
           "UiHotkeySpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../ui/hotkey.spec.lua"
-              }
-            }
+            "$path": "../ui/hotkey.spec.lua"
           },
           "UiLifecycleSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../ui/lifecycle.spec.lua"
-              }
-            }
+            "$path": "../ui/lifecycle.spec.lua"
           },
           "UiSnapshotSpec": {
-            "$className": "ModuleScript",
-            "$properties": {
-              "Source": {
-                "$path": "../ui/snapshot.spec.lua"
-              }
-            }
+            "$path": "../ui/snapshot.spec.lua"
           }
         }
       }

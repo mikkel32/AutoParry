@@ -1,3 +1,4 @@
+-- selene: allow(global_usage)
 local TestHarness = script.Parent.Parent
 local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 
@@ -51,7 +52,7 @@ local function runLoaderScenario(config, callback)
     local requested = {}
     local originalHttpGet = game.HttpGet
 
-    local function httpGet(self, url)
+    local function httpGet(_, url)
         table.insert(requested, url)
         local source = fixtures[url]
         if source == nil then
@@ -275,7 +276,7 @@ return function(t)
 
         local requested = {}
         local originalHttpGet = game.HttpGet
-        local function httpGet(self, url)
+        local function httpGet(_, url)
             table.insert(requested, url)
             local source = fixtures[url]
             if not source then

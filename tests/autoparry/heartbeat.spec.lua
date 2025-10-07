@@ -1,3 +1,5 @@
+-- selene: allow(global_usage)
+-- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent.Parent
 local Harness = require(TestHarness:WaitForChild("Harness"))
 
@@ -52,11 +54,7 @@ function BallsFolder:Remove(ball)
 end
 
 function BallsFolder:GetChildren()
-    local copy = {}
-    for index, child in ipairs(self._children) do
-        copy[index] = child
-    end
-    return copy
+    return table.clone(self._children)
 end
 
 local function createRunServiceStub()
@@ -71,7 +69,7 @@ local function createRunServiceStub()
         local index = #stub._connections
         local connection = {}
 
-        function connection:Disconnect()
+        function connection.Disconnect()
             stub._connections[index] = nil
         end
 
@@ -154,6 +152,7 @@ return function(t)
         })
 
         local originalClock = os.clock
+        -- selene: allow(incorrect_standard_library_use)
         os.clock = function()
             return scheduler:clock()
         end
@@ -200,6 +199,7 @@ return function(t)
                 autoparry.destroy()
             end
             rawset(_G, "workspace", originalWorkspace)
+            -- selene: allow(incorrect_standard_library_use)
             os.clock = originalClock
         end
 
@@ -259,7 +259,7 @@ return function(t)
                 attemptsByFrame[entry.frame] = (attemptsByFrame[entry.frame] or 0) + 1
             end
 
-            for frame, attempts in pairs(attemptsByFrame) do
+            for _, attempts in pairs(attemptsByFrame) do
                 expect(attempts):toEqual(1)
             end
 

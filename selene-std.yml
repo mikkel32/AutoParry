@@ -1,0 +1,46 @@
+---
+base: lua51
+globals:
+  task:
+    property: new-fields
+  os:
+    property: new-fields
+  HttpService:
+    property: new-fields
+  Stats:
+    property: new-fields
+  debug:
+    property: new-fields
+  typeof:
+    args:
+      - type: any
+    returns:
+      - type: string
+  Enum:
+    property: new-fields
+  Color3:
+    property: new-fields
+  workspace:
+    property: new-fields
+  Instance:
+    property: new-fields
+  Random:
+    property: new-fields
+  Vector2:
+    property: new-fields
+  Vector3:
+    property: new-fields
+  CFrame:
+    property: new-fields
+  UDim2:
+    property: new-fields
+  UDim:
+    property: new-fields
+  game:
+    property: new-fields
+  script:
+    property: new-fields
+  warn:
+    args:
+      - required: false
+        type: "..."

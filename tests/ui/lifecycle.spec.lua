@@ -1,3 +1,4 @@
+-- selene: allow(global_usage)
 local TestHarness = script.Parent.Parent
 local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 

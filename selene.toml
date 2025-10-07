@@ -1,0 +1,18 @@
+std = "lua51+luau+selene-std"
+
+[config]
+exclude = [
+  "tests/fixtures/AutoParrySourceMap.lua",
+]
+
+[config.global_usage]
+ignore_pattern = "^(ARequire|AutoParryLoader|__loaderSpecActiveContext|workspace|_G)$"
+
+
+[lints]
+global_usage = "allow"
+undefined_variable = "warn"
+unused_variable = "warn"
+shadowing = "warn"
+incorrect_standard_library_use = "warn"
+manual_table_clone = "warn"

@@ -4,11 +4,7 @@ local TestHarness = ReplicatedStorage:WaitForChild("TestHarness")
 local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 
 local function cloneTable(source)
-    local copy = {}
-    for index, value in ipairs(source) do
-        copy[index] = value
-    end
-    return copy
+    return table.clone(source)
 end
 
 local function loadConfig()
@@ -51,10 +47,7 @@ local function loadConfig()
         return defaults
     end
 
-    local config = {}
-    for key, value in pairs(defaults) do
-        config[key] = value
-    end
+    local config = table.clone(defaults)
     for key, value in pairs(result) do
         config[key] = value
     end
@@ -75,7 +68,7 @@ local function makeSignal(onConnect)
 
         local connection = {}
 
-        function connection:Disconnect()
+        function connection.Disconnect()
             for index, fn in ipairs(handlers) do
                 if fn == handler then
                     table.remove(handlers, index)
