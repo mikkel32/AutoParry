@@ -1,0 +1,4 @@
+# Test artifacts
+tests/artifacts/*.json
+# Spec output logs generated during CI
+tests/spec-output.log

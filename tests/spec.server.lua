@@ -1,4 +1,5 @@
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
 local TestHarness = ReplicatedStorage:WaitForChild("TestHarness")
 local SpecsFolder = TestHarness:WaitForChild("Specs")
 
@@ -61,6 +62,7 @@ local function makeExpect(testName)
 end
 
 local cases = {}
+local artifacts = {}
 
 for _, moduleScript in ipairs(collectSpecs()) do
     local register = require(moduleScript)
@@ -72,6 +74,9 @@ for _, moduleScript in ipairs(collectSpecs()) do
                 name = string.format("%s %s", specName, name),
                 callback = fn,
             })
+        end,
+        artifact = function(name, payload)
+            artifacts[name] = payload
         end,
     })
 end
@@ -91,6 +96,26 @@ for _, case in ipairs(cases) do
         warn(string.format("[FAIL] %s\n%s", case.name, err))
     end
 end
+
+local function emitArtifacts()
+    local names = {}
+    for name in pairs(artifacts) do
+        table.insert(names, name)
+    end
+    table.sort(names)
+
+    for _, name in ipairs(names) do
+        local payload = artifacts[name]
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+        if ok then
+            print(string.format("[ARTIFACT] %s %s", name, encoded))
+        else
+            warn(string.format("[ARTIFACT] failed to encode %s: %s", tostring(name), tostring(encoded)))
+        end
+    end
+end
+
+emitArtifacts()
 
 if failures > 0 then
     error(string.format("[AutoParrySpec] %d test(s) failed", failures), 0)
