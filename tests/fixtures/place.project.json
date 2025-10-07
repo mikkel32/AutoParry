@@ -38,6 +38,14 @@
               }
             }
           },
+          "ConfigSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../autoparry/config.spec.lua"
+              }
+            }
+          },
           "PingSpec": {
             "$className": "ModuleScript",
             "$properties": {
