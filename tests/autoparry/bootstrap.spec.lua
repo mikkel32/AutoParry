@@ -177,4 +177,34 @@ return function(t)
         expect(ok):toEqual(false)
         expect(err):toEqual("AutoParry: ParryButtonPress remote missing")
     end)
+
+    t.test("errors when the parry remote lacks a supported fire method", function(expect)
+        local scheduler = Scheduler.new(1)
+        local services, remotes = Harness.createBaseServices(scheduler, {
+            initialLocalPlayer = { Name = "LocalPlayer" },
+        })
+
+        local invalidRemote = { Name = "ParryButtonPress", ClassName = "Folder" }
+        remotes:Add(invalidRemote)
+
+        local autoparry = Harness.loadAutoparry({
+            scheduler = scheduler,
+            services = services,
+        })
+
+        local progress = waitForStage(scheduler, autoparry, "error", 20)
+
+        expect(progress.stage):toEqual("error")
+        expect(progress.target):toEqual("remote")
+        expect(progress.reason):toEqual("parry-remote-unsupported")
+        expect(progress.className):toEqual("Folder")
+        expect(progress.message):toEqual("AutoParry: ParryButtonPress remote unsupported type (Folder)")
+
+        local ok, err = pcall(function()
+            autoparry.enable()
+        end)
+
+        expect(ok):toEqual(false)
+        expect(err):toEqual("AutoParry: ParryButtonPress remote unsupported type (Folder)")
+    end)
 end

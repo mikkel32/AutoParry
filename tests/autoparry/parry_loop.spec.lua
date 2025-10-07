@@ -121,7 +121,21 @@ local function createRunServiceStub()
     return stub
 end
 
-local function createContext()
+local luauTypeof = rawget(_G, "typeof")
+
+local function isCallable(value)
+    if luauTypeof then
+        local ok, kind = pcall(luauTypeof, value)
+        if ok and kind == "function" then
+            return true
+        end
+    end
+
+    return type(value) == "function"
+end
+
+local function createContext(options)
+    options = options or {}
     local scheduler = Scheduler.new(1 / 120)
     local runService = createRunServiceStub()
 
@@ -158,7 +172,7 @@ local function createContext()
         stats = stats,
     })
 
-    local remote = Harness.createRemote()
+    local remote = Harness.createRemote(options.remote)
     remotes:Add(remote)
 
     local ballsFolder = BallsFolder.new("Balls")
@@ -188,14 +202,17 @@ local function createContext()
     end
 
     local remoteLog = {}
-    local originalFireServer = remote.FireServer
+    local parryMethodName = remote._parryMethod or "FireServer"
+    local originalParryMethod = remote[parryMethodName]
 
-    function remote:FireServer(...)
+    assert(isCallable(originalParryMethod), "Harness remote missing parry method")
+
+    remote[parryMethodName] = function(self, ...)
         table.insert(remoteLog, {
             timestamp = scheduler:clock(),
             payload = { ... },
         })
-        return originalFireServer(self, ...)
+        return originalParryMethod(self, ...)
     end
 
     local parryLog = {}
@@ -211,6 +228,7 @@ local function createContext()
         runService = runService,
         autoparry = autoparry,
         remote = remote,
+        remoteMethod = parryMethodName,
         remoteLog = remoteLog,
         parryLog = parryLog,
         ballsFolder = ballsFolder,
@@ -253,7 +271,7 @@ local function createContext()
         autoparry.destroy()
         -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
-        remote.FireServer = originalFireServer
+        remote[parryMethodName] = originalParryMethod
         if originalWorkspace == nil then
             rawset(_G, "workspace", nil)
         else
@@ -362,6 +380,40 @@ return function(t)
 
         expect(#context.parryLog).toEqual(1)
         expect(context.parryLog[1].ball).toEqual(ball)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop fires bindable parry remotes", function(expect)
+        local context = createContext({
+            remote = {
+                kind = "BindableEvent",
+            },
+        })
+
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "BindableThreat",
+            position = Vector3.new(0, 0, 36),
+            velocity = Vector3.new(0, 0, -180),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+        expect(context.parryLog[1].ball).toEqual(ball)
+        expect(context.remoteMethod).toEqual("Fire")
+        expect(#context.remoteLog).toEqual(1)
+        expect(context.remote.lastPayload).toEqual({})
 
         context:destroy()
     end)
