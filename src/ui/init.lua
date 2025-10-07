@@ -1,6 +1,6 @@
 -- mikkel32/AutoParry : src/ui/init.lua
 -- selene: allow(global_usage)
--- Futuristic dashboard controller for AutoParry with status, telemetry,
+-- Professional dashboard controller for AutoParry with status, telemetry,
 -- control toggles, and hotkey support. The module exposes a lightweight API
 -- used by the runtime to keep the UI in sync with the parry core while giving
 -- downstream experiences room to customise the presentation.
@@ -19,81 +19,81 @@ Controller.__index = Controller
 
 local DASHBOARD_THEME = {
     width = 460,
-    backgroundColor = Color3.fromRGB(12, 16, 32),
-    backgroundTransparency = 0.04,
-    strokeColor = Color3.fromRGB(0, 160, 255),
-    strokeTransparency = 0.55,
+    backgroundColor = Color3.fromRGB(24, 28, 36),
+    backgroundTransparency = 0.05,
+    strokeColor = Color3.fromRGB(94, 148, 214),
+    strokeTransparency = 0.5,
     gradient = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 20, 36)),
-        ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 120, 200)),
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(28, 32, 42)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(82, 156, 255)),
     }),
     gradientTransparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0.8),
+        NumberSequenceKeypoint.new(0, 0.9),
         NumberSequenceKeypoint.new(1, 0.35),
     }),
-    glowColor = Color3.fromRGB(0, 210, 255),
-    glowTransparency = 0.82,
-    headingColor = Color3.fromRGB(230, 242, 255),
-    subheadingColor = Color3.fromRGB(180, 199, 230),
-    badgeActiveColor = Color3.fromRGB(0, 210, 180),
-    badgeIdleColor = Color3.fromRGB(62, 72, 96),
-    badgeTextActive = Color3.fromRGB(10, 14, 24),
-    badgeTextIdle = Color3.fromRGB(215, 228, 255),
-    toggleOnColor = Color3.fromRGB(0, 210, 185),
-    toggleOffColor = Color3.fromRGB(42, 52, 80),
-    toggleOnTextColor = Color3.fromRGB(12, 16, 20),
-    toggleOffTextColor = Color3.fromRGB(220, 234, 255),
-    telemetryCardColor = Color3.fromRGB(18, 24, 40),
-    telemetryStrokeColor = Color3.fromRGB(0, 155, 240),
-    controlCardColor = Color3.fromRGB(14, 20, 34),
-    controlStrokeColor = Color3.fromRGB(0, 135, 215),
+    glowColor = Color3.fromRGB(82, 156, 255),
+    glowTransparency = 0.85,
+    headingColor = Color3.fromRGB(232, 238, 248),
+    subheadingColor = Color3.fromRGB(188, 202, 224),
+    badgeActiveColor = Color3.fromRGB(88, 206, 157),
+    badgeIdleColor = Color3.fromRGB(56, 64, 82),
+    badgeTextActive = Color3.fromRGB(12, 16, 26),
+    badgeTextIdle = Color3.fromRGB(216, 226, 244),
+    toggleOnColor = Color3.fromRGB(82, 156, 255),
+    toggleOffColor = Color3.fromRGB(44, 50, 62),
+    toggleOnTextColor = Color3.fromRGB(12, 16, 26),
+    toggleOffTextColor = Color3.fromRGB(216, 226, 244),
+    telemetryCardColor = Color3.fromRGB(26, 30, 40),
+    telemetryStrokeColor = Color3.fromRGB(94, 148, 214),
+    controlCardColor = Color3.fromRGB(24, 28, 36),
+    controlStrokeColor = Color3.fromRGB(94, 148, 214),
 }
 
 local DEFAULT_TELEMETRY_CARDS = {
     {
         id = "latency",
-        label = "Latency",
+        label = "Network Latency",
         value = "-- ms",
-        hint = "Ping to Blade Ball server",
+        hint = "Round-trip time to the Blade Ball server.",
     },
     {
         id = "uptime",
-        label = "Session",
+        label = "Session Length",
         value = "00:00",
-        hint = "Runtime since activation",
+        hint = "Elapsed runtime since activation.",
     },
     {
-        id = "mesh",
-        label = "Neural Mesh",
+        id = "assist",
+        label = "Timing Engine",
         value = "Calibrating",
-        hint = "Adaptive reaction model state",
+        hint = "Status of AutoParry's adaptive timing model.",
     },
 }
 
 local DEFAULT_CONTROL_SWITCHES = {
     {
         id = "adaptive",
-        title = "Adaptive Reaction",
-        description = "Learns opponent speed to retime parries.",
+        title = "Adaptive Timing",
+        description = "Adjusts parry timing from recent plays.",
         default = true,
-        badge = "AI",
+        badge = "SMART",
     },
     {
         id = "failsafe",
-        title = "Failsafe Recall",
-        description = "Falls back to manual play if anomalies spike.",
+        title = "Safety Net",
+        description = "Returns control to you if anomalies spike.",
         default = true,
         badge = "SAFE",
     },
     {
         id = "edge",
-        title = "Edge Prediction",
-        description = "Predicts ricochet chains before they happen.",
+        title = "Advanced Prediction",
+        description = "Forecasts ricochet chains before they happen.",
         default = false,
     },
     {
         id = "sync",
-        title = "Squad Sync",
+        title = "Team Sync",
         description = "Shares telemetry with party members instantly.",
         default = true,
         badge = "LINK",
@@ -348,7 +348,7 @@ local function createHeader(parent, titleText, hotkeyText)
     tagline.TextColor3 = DASHBOARD_THEME.subheadingColor
     tagline.TextXAlignment = Enum.TextXAlignment.Left
     tagline.TextYAlignment = Enum.TextYAlignment.Top
-    tagline.Text = "Neural shield online"
+    tagline.Text = "Precision parry automation"
     tagline.Position = UDim2.new(0, 0, 0, 38)
     tagline.Size = UDim2.new(1, 0, 0, 26)
     tagline.Parent = header
@@ -454,7 +454,7 @@ local function createStatusCard(parent)
     header.TextSize = 16
     header.TextColor3 = Color3.fromRGB(170, 188, 220)
     header.TextXAlignment = Enum.TextXAlignment.Left
-    header.Text = "Shield control"
+    header.Text = "Control status"
     header.Size = UDim2.new(1, -160, 0, 18)
     header.Parent = card
 
@@ -478,7 +478,7 @@ local function createStatusCard(parent)
     statusSupport.TextColor3 = DASHBOARD_THEME.subheadingColor
     statusSupport.TextXAlignment = Enum.TextXAlignment.Left
     statusSupport.TextWrapped = true
-    statusSupport.Text = "Neural mesh waiting for activation signal."
+    statusSupport.Text = "Assist engine standing by for activation."
     statusSupport.Position = UDim2.new(0, 0, 0, 66)
     statusSupport.Size = UDim2.new(1, -160, 0, 44)
     statusSupport.Parent = card
@@ -493,7 +493,7 @@ local function createStatusCard(parent)
     toggleButton.TextColor3 = DASHBOARD_THEME.toggleOffTextColor
     toggleButton.Font = Enum.Font.GothamBold
     toggleButton.TextSize = 19
-    toggleButton.Text = "Activate shield"
+    toggleButton.Text = "Enable AutoParry"
     toggleButton.BorderSizePixel = 0
     toggleButton.Parent = card
 
@@ -798,7 +798,7 @@ local function createControlsSection(parent, definitions, onToggle)
     title.TextSize = 18
     title.TextColor3 = Color3.fromRGB(185, 205, 240)
     title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Text = "Control mesh"
+    title.Text = "Control center"
     title.Size = UDim2.new(1, 0, 0, 22)
     title.Parent = section
 
@@ -880,11 +880,11 @@ function Controller:_applyVisualState(options)
 
     if self.button then
         if enabled then
-            self.button.Text = "Disengage shield"
+            self.button.Text = "Disable AutoParry"
             self.button.BackgroundColor3 = DASHBOARD_THEME.toggleOnColor
             self.button.TextColor3 = DASHBOARD_THEME.toggleOnTextColor
         else
-            self.button.Text = "Activate shield"
+            self.button.Text = "Enable AutoParry"
             self.button.BackgroundColor3 = DASHBOARD_THEME.toggleOffColor
             self.button.TextColor3 = DASHBOARD_THEME.toggleOffTextColor
         end
@@ -909,13 +909,13 @@ function Controller:_applyVisualState(options)
     if self._statusCard then
         if (not self._statusManual) or options.forceStatusRefresh then
             if self._statusCard.heading then
-                self._statusCard.heading.Text = enabled and "AutoParry online" or "AutoParry standby"
+                self._statusCard.heading.Text = enabled and "AutoParry active" or "AutoParry standby"
             end
             if self._statusCard.support then
                 if enabled then
-                    self._statusCard.support.Text = "Neural mesh guarding every ball."
+                    self._statusCard.support.Text = "Assist engine monitoring every ball in play."
                 else
-                    self._statusCard.support.Text = "Neural mesh waiting for activation signal."
+                    self._statusCard.support.Text = "Assist engine standing by for activation."
                 end
             end
         end

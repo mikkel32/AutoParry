@@ -535,7 +535,7 @@ function LoadingOverlay.new(options)
     heroSubtitle.Font = (theme.hero and theme.hero.subtitleFont) or DEFAULT_THEME.hero.subtitleFont
     heroSubtitle.TextSize = (theme.hero and theme.hero.subtitleTextSize) or DEFAULT_THEME.hero.subtitleTextSize
     heroSubtitle.TextColor3 = (theme.hero and theme.hero.subtitleColor) or DEFAULT_THEME.hero.subtitleColor
-    heroSubtitle.Text = "Neural shield calibrating advanced parry heuristics"
+    heroSubtitle.Text = "AutoParry calibrating advanced parry heuristics"
     heroSubtitle.TextWrapped = true
     heroSubtitle.TextXAlignment = Enum.TextXAlignment.Center
     heroSubtitle.LayoutOrder = 3
@@ -558,7 +558,7 @@ function LoadingOverlay.new(options)
 
     local heroPills = {}
     for _, labelText in ipairs({
-        "Adaptive reaction mesh",
+        "Adaptive timing engine",
         "Lag-safe prediction",
         "Quantum ball tracing",
     }) do
@@ -725,7 +725,7 @@ function LoadingOverlay.new(options)
         _heroTitleText = heroTitle.Text,
         _heroSubtitleText = heroSubtitle.Text,
         _heroHighlightTexts = {
-            heroPills[1] and heroPills[1].label and heroPills[1].label.Text or "Adaptive reaction mesh",
+            heroPills[1] and heroPills[1].label and heroPills[1].label.Text or "Adaptive timing engine",
             heroPills[2] and heroPills[2].label and heroPills[2].label.Text or "Lag-safe prediction",
             heroPills[3] and heroPills[3].label and heroPills[3].label.Text or "Quantum ball tracing",
         },
