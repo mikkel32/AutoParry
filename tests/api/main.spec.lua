@@ -49,8 +49,6 @@ local function createState()
             defaultConfig = deepCopy(defaultConfig),
             config = deepCopy(defaultConfig),
             lastParryTime = 2.5,
-            lastParrySuccessTime = 1.25,
-            lastParryBroadcastTime = 1.75,
             primaryConnection = createConnection(),
             primaryConnectionAssigned = false,
             primaryCallback = nil,
@@ -66,12 +64,8 @@ local function createState()
                 resetConfig = 0,
                 setLogger = {},
                 getLastParryTime = 0,
-                getLastParrySuccessTime = 0,
-                getLastParryBroadcastTime = 0,
                 onStateChanged = 0,
                 onParry = {},
-                onParrySuccess = {},
-                onParryBroadcast = {},
                 destroy = 0,
                 enable = 0,
             },
@@ -242,16 +236,6 @@ function Parry.getLastParryTime()
     return parryState.lastParryTime
 end
 
-function Parry.getLastParrySuccessTime()
-    parryState.calls.getLastParrySuccessTime = parryState.calls.getLastParrySuccessTime + 1
-    return parryState.lastParrySuccessTime
-end
-
-function Parry.getLastParryBroadcastTime()
-    parryState.calls.getLastParryBroadcastTime = parryState.calls.getLastParryBroadcastTime + 1
-    return parryState.lastParryBroadcastTime
-end
-
 function Parry.onStateChanged(callback)
     parryState.calls.onStateChanged = parryState.calls.onStateChanged + 1
     table.insert(parryState.stateChangedCallbacks, callback)
@@ -270,16 +254,6 @@ end
 
 function Parry.onParry(callback)
     table.insert(parryState.calls.onParry, callback)
-    return createConnection()
-end
-
-function Parry.onParrySuccess(callback)
-    table.insert(parryState.calls.onParrySuccess, callback)
-    return createConnection()
-end
-
-function Parry.onParryBroadcast(callback)
-    table.insert(parryState.calls.onParryBroadcast, callback)
     return createConnection()
 end
 
