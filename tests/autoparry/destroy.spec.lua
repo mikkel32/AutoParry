@@ -225,6 +225,8 @@ return function(t)
             expect(firstConnection.disconnected):toBeTruthy()
             expect(runServiceProbe.disconnectCount):toEqual(1)
             expect(autoparry1.getLastParryTime()):toEqual(0)
+            expect(autoparry1.getLastParrySuccessTime()):toEqual(0)
+            expect(autoparry1.getLastParryBroadcastTime()):toEqual(0)
             expect(autoparry1.getConfig().cooldown):toEqual(defaults.cooldown)
 
             -- Second session setup via loader
@@ -307,6 +309,8 @@ return function(t)
             expect(secondConnection.disconnected):toBeTruthy()
             expect(runServiceProbe.disconnectCount):toEqual(2)
             expect(autoparry2.getLastParryTime()):toEqual(0)
+            expect(autoparry2.getLastParrySuccessTime()):toEqual(0)
+            expect(autoparry2.getLastParryBroadcastTime()):toEqual(0)
 
             -- Ensure final config reset matches defaults again
             local finalConfig = autoparry2.getConfig()
