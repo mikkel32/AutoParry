@@ -246,10 +246,11 @@ local function main()
         return originalGetService(self, name)
     end
 
-    local parryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+    local parryContainer = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+    local parryRemote = parryContainer:WaitForChild("parryButtonPress")
     local parryAttempts = 0
     local lastPayload
-    function parryRemote:FireServer(...)
+    function parryRemote:Fire(...)
         parryAttempts += 1
         lastPayload = { ... }
         return self

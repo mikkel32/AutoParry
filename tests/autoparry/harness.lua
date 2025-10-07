@@ -234,7 +234,35 @@ function Harness.createRemote(options)
         error(string.format("Unsupported remote kind: %s", tostring(kind)))
     end
 
+    function remote:IsA(className)
+        return self.ClassName == className
+    end
+
     return remote
+end
+
+function Harness.createParryButtonPress(options)
+    options = options or {}
+    local scheduler = options.scheduler
+    if not scheduler then
+        error("createParryButtonPress requires a scheduler", 0)
+    end
+
+    local containerName = options.name or "ParryButtonPress"
+    local childName = options.childName or "parryButtonPress"
+    local container = createContainer(scheduler, containerName)
+    container.ClassName = options.className or "Folder"
+
+    local remote = Harness.createRemote({
+        kind = options.remoteKind or "BindableEvent",
+        name = childName,
+        className = options.remoteClassName,
+    })
+
+    container:Add(remote)
+    container._parryRemote = remote
+
+    return container, remote
 end
 
 function Harness.fireRemoteClient(remote, ...)
