@@ -1,0 +1,346 @@
+local TestHarness = script.Parent
+local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
+
+local Harness = {}
+
+local Scheduler = {}
+Scheduler.__index = Scheduler
+
+function Scheduler.new(step)
+    return setmetatable({
+        now = 0,
+        step = step or 1,
+        queue = {},
+    }, Scheduler)
+end
+
+function Scheduler:clock()
+    return self.now
+end
+
+function Scheduler:_runDueEvents()
+    local index = 1
+    while index <= #self.queue do
+        local item = self.queue[index]
+        if item.time <= self.now then
+            table.remove(self.queue, index)
+            item.callback()
+        else
+            index += 1
+        end
+    end
+end
+
+function Scheduler:wait(duration)
+    duration = duration or self.step
+    self.now += duration
+    self:_runDueEvents()
+    return duration
+end
+
+function Scheduler:schedule(delay, callback)
+    table.insert(self.queue, {
+        time = self.now + delay,
+        callback = callback,
+    })
+end
+
+Harness.Scheduler = Scheduler
+
+local function createContainer(scheduler, name)
+    local children = {}
+    local container = { Name = name }
+
+    function container:Add(child)
+        children[child.Name] = child
+        child.Parent = container
+        return child
+    end
+
+    function container:FindFirstChild(childName)
+        return children[childName]
+    end
+
+    function container:WaitForChild(childName, timeout)
+        timeout = timeout or math.huge
+        local start = scheduler:clock()
+        local child = children[childName]
+        while not child do
+            if scheduler:clock() - start >= timeout then
+                break
+            end
+            scheduler:wait()
+            child = children[childName]
+        end
+        return child
+    end
+
+    function container:GetChildren()
+        local result = {}
+        for _, child in pairs(children) do
+            table.insert(result, child)
+        end
+        return result
+    end
+
+    return container
+end
+
+Harness.createContainer = createContainer
+
+function Harness.createRemote()
+    local remote = { Name = "ParryButtonPress" }
+
+    function remote:FireServer(...)
+        self.lastPayload = { ... }
+    end
+
+    return remote
+end
+
+function Harness.createRunService()
+    local heartbeat = {}
+
+    function heartbeat:Connect()
+        return {
+            Disconnect = function() end,
+            disconnect = function(self)
+                self:Disconnect()
+            end,
+        }
+    end
+
+    return { Heartbeat = heartbeat }
+end
+
+local function copyResponse(response)
+    local clone = {}
+    for key, value in pairs(response) do
+        clone[key] = value
+    end
+    return clone
+end
+
+function Harness.createStats(options)
+    options = options or {}
+    local responses = {}
+
+    if options.pingResponses then
+        for _, response in ipairs(options.pingResponses) do
+            table.insert(responses, copyResponse(response))
+        end
+    else
+        responses[1] = { value = 95 }
+    end
+
+    if #responses == 0 then
+        error("createStats requires at least one ping response", 0)
+    end
+
+    local lastIndex = #responses
+    local responseIndex = 0
+    local onPingRequested = options.onPingRequested
+
+    local function selectResponse()
+        if responseIndex < lastIndex then
+            responseIndex += 1
+        end
+        local response = responses[math.max(responseIndex, 1)]
+        if onPingRequested then
+            onPingRequested(response, responseIndex)
+        end
+        return response
+    end
+
+    local serverStatsItem = {}
+
+    setmetatable(serverStatsItem, {
+        __index = function(_, key)
+            if key ~= "Data Ping" then
+                return nil
+            end
+
+            local response = selectResponse()
+
+            if response.statError then
+                error(response.statError)
+            end
+
+            if response.statMissing then
+                return nil
+            end
+
+            local item = {}
+
+            function item:GetValue()
+                if response.valueError then
+                    error(response.valueError)
+                end
+
+                if response.valueIsNil then
+                    return nil
+                end
+
+                return response.value
+            end
+
+            return item
+        end,
+    })
+
+    local stats = {
+        Network = {
+            ServerStatsItem = serverStatsItem,
+        },
+    }
+
+    stats._pingResponses = responses
+    stats._responseIndex = function()
+        return responseIndex
+    end
+
+    return stats
+end
+
+local function createVirtualRequire()
+    local cache = {}
+
+    local function virtualRequire(path)
+        local source = SourceMap[path]
+        assert(source, "Missing source map entry for " .. tostring(path))
+
+        if cache[path] ~= nil then
+            return cache[path]
+        end
+
+        local chunk, err = loadstring(source, "=" .. path)
+        assert(chunk, err)
+
+        local previous = rawget(_G, "ARequire")
+        rawset(_G, "ARequire", virtualRequire)
+
+        local ok, result = pcall(chunk)
+
+        if previous == nil then
+            rawset(_G, "ARequire", nil)
+        else
+            rawset(_G, "ARequire", previous)
+        end
+
+        if not ok then
+            error(result, 0)
+        end
+
+        cache[path] = result
+        return result
+    end
+
+    return virtualRequire
+end
+
+function Harness.loadAutoparry(options)
+    local scheduler = options.scheduler
+    local services = options.services
+
+    local originalWait = task.wait
+    local originalClock = os.clock
+    local originalGetService = game.GetService
+    local previousRequire = rawget(_G, "ARequire")
+
+    task.wait = function(duration)
+        return scheduler:wait(duration)
+    end
+
+    os.clock = function()
+        return scheduler:clock()
+    end
+
+    game.GetService = function(self, name)
+        local stub = services[name]
+        if stub ~= nil then
+            return stub
+        end
+        return originalGetService(self, name)
+    end
+
+    rawset(_G, "ARequire", createVirtualRequire())
+
+    local chunk, err = loadstring(SourceMap["src/core/autoparry.lua"], "=src/core/autoparry.lua")
+    assert(chunk, err)
+
+    local function cleanup()
+        task.wait = originalWait
+        os.clock = originalClock
+        game.GetService = originalGetService
+        if previousRequire == nil then
+            rawset(_G, "ARequire", nil)
+        else
+            rawset(_G, "ARequire", previousRequire)
+        end
+    end
+
+    local ok, result = pcall(chunk)
+    cleanup()
+
+    if not ok then
+        error(result, 0)
+    end
+
+    return result
+end
+
+function Harness.createBaseServices(scheduler, options)
+    options = options or {}
+    local players = options.players or { LocalPlayer = options.initialLocalPlayer }
+
+    if players.LocalPlayer == nil and options.initialLocalPlayer ~= nil then
+        players.LocalPlayer = options.initialLocalPlayer
+    end
+
+    local replicated = options.replicated or createContainer(scheduler, "ReplicatedStorage")
+    local remotes
+
+    if options.includeRemotes ~= false then
+        remotes = options.remotes or createContainer(scheduler, "Remotes")
+        replicated:Add(remotes)
+    end
+
+    local services = {
+        Players = players,
+        ReplicatedStorage = replicated,
+        RunService = options.runService or Harness.createRunService(),
+        Stats = options.stats or Harness.createStats(options.statsOptions),
+    }
+
+    return services, remotes, players
+end
+
+local function findUpvalue(fn, target)
+    local index = 1
+    while true do
+        local name, value = debug.getupvalue(fn, index)
+        if not name then
+            break
+        end
+        if name == target then
+            return value
+        end
+        index += 1
+    end
+end
+
+function Harness.extractInternals(api)
+    local step = findUpvalue(api.enable, "step")
+    if not step then
+        return {}
+    end
+
+    local internals = {}
+    internals.step = step
+    internals.evaluateBall = findUpvalue(step, "evaluateBall")
+    internals.currentPing = findUpvalue(step, "currentPing")
+
+    return internals
+end
+
+return Harness

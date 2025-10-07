@@ -20,6 +20,14 @@
             }
           }
         },
+        "Harness": {
+          "$className": "ModuleScript",
+          "$properties": {
+            "Source": {
+              "$path": "../autoparry/harness.lua"
+            }
+          }
+        },
         "Specs": {
           "$className": "Folder",
           "BootstrapSpec": {
@@ -27,6 +35,14 @@
             "$properties": {
               "Source": {
                 "$path": "../autoparry/bootstrap.spec.lua"
+              }
+            }
+          },
+          "PingSpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../autoparry/ping.spec.lua"
               }
             }
           }

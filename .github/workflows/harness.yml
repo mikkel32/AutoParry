@@ -28,5 +28,39 @@ jobs:
       - name: Execute loader harness
         run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/init.server.lua
 
-      - name: Run bootstrap spec
-        run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/spec.server.lua
+      - name: Run specs
+        run: |
+          set -o pipefail
+          run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/spec.server.lua | tee tests/spec-output.log
+
+      - name: Extract ping metrics artifact
+        run: |
+          python - <<'PY'
+import json
+import os
+import re
+
+log_path = "tests/spec-output.log"
+pattern = re.compile(r'^\[ARTIFACT\]\s+(\S+)\s+(.+)$')
+artifacts = {}
+
+with open(log_path, 'r', encoding='utf-8') as handle:
+    for line in handle:
+        match = pattern.match(line.strip())
+        if match:
+            name, payload = match.groups()
+            artifacts[name] = json.loads(payload)
+
+if "ping-tti" not in artifacts:
+    raise SystemExit("ping-tti artifact missing from spec output")
+
+os.makedirs("tests/artifacts", exist_ok=True)
+with open("tests/artifacts/ping_tti.json", "w", encoding="utf-8") as handle:
+    json.dump(artifacts["ping-tti"], handle, indent=2)
+PY
+
+      - name: Upload ping metrics artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ping-tti-metrics
+          path: tests/artifacts/ping_tti.json
