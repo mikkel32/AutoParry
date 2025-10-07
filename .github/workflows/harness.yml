@@ -1,0 +1,29 @@
+name: Harness
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  sandbox:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rojo
+        uses: rojo-rbx/setup-rojo@v0
+        with:
+          version: v7
+
+      - name: Install run-in-roblox
+        uses: rojo-rbx/setup-run-in-roblox@v0
+        with:
+          version: v0.6.2
+
+      - name: Build AutoParry harness place
+        run: ./tests/build-place.sh
+
+      - name: Execute loader harness
+        run: run-in-roblox --place tests/AutoParryHarness.rbxl --script tests/init.server.lua
