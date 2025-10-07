@@ -223,7 +223,7 @@ local function createContext(options)
     local instrumentedRemotes = {}
 
     local function hookRemote(remoteInstance)
-        local methodName = remoteInstance._parryMethod or "Fire"
+        local methodName = remoteInstance._parryMethod or "FireServer"
         local original = remoteInstance[methodName]
 
         assert(isCallable(original), "Harness remote missing parry method")
@@ -503,7 +503,6 @@ return function(t)
             remote = {
                 name = "ParryAttempt",
                 kind = "RemoteEvent",
-                parryMethod = "FireServer",
             },
         })
 
