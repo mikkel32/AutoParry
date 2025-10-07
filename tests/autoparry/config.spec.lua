@@ -46,6 +46,11 @@ return function(t)
             safeRadius = defaults.safeRadius + 5,
             targetHighlightName = (defaults.targetHighlightName and (defaults.targetHighlightName .. "_Override")) or "HighlightOverride",
             ballsFolderName = (defaults.ballsFolderName and (defaults.ballsFolderName .. "_Override")) or "Projectiles",
+            playerTimeout = defaults.playerTimeout + 5,
+            remotesTimeout = defaults.remotesTimeout + 5,
+            parryRemoteTimeout = defaults.parryRemoteTimeout + 5,
+            ballsFolderTimeout = defaults.ballsFolderTimeout + 5,
+            verificationRetryInterval = defaults.verificationRetryInterval + 0.1,
         }
 
         for key, value in pairs(validOverrides) do
@@ -83,6 +88,11 @@ return function(t)
             safeRadius = -10,
             targetHighlightName = "",
             ballsFolderName = "",
+            playerTimeout = -1,
+            remotesTimeout = -1,
+            parryRemoteTimeout = -1,
+            ballsFolderTimeout = -1,
+            verificationRetryInterval = -0.1,
         }
 
         for key, value in pairs(invalidOverrides) do
