@@ -7,6 +7,7 @@ local UserInputService = game:GetService("UserInputService")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
+local LoadingOverlay = Require("src/ui/loading_overlay.lua")
 
 local UI = {}
 
@@ -309,6 +310,14 @@ function UI.mount(options)
     makeTitle(frame, options.title or "AutoParry")
     local button = makeButton(frame)
 
+    local overlay = LoadingOverlay.getActive and LoadingOverlay.getActive()
+    if overlay and not overlay:isComplete() then
+        frame.Visible = false
+        gui.Enabled = false
+    else
+        gui.Enabled = true
+    end
+
     local controller = setmetatable({
         gui = gui,
         button = button,
@@ -341,7 +350,34 @@ function UI.mount(options)
 
     controller:setEnabled(options.initialState == true, { silent = true })
 
+    if overlay and not overlay:isComplete() then
+        local connection
+        connection = overlay:onCompleted(function()
+            if controller._destroyed then
+                return
+            end
+            frame.Visible = true
+            gui.Enabled = true
+            if connection then
+                connection:Disconnect()
+                connection = nil
+            end
+        end)
+        table.insert(controller._connections, connection)
+    end
+
     return controller
+end
+
+function UI.createLoadingOverlay(options)
+    return LoadingOverlay.create(options)
+end
+
+function UI.getLoadingOverlay()
+    if LoadingOverlay.getActive then
+        return LoadingOverlay.getActive()
+    end
+    return nil
 end
 
 return UI
