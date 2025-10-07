@@ -249,14 +249,11 @@ local function main()
     local parryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
     local parryAttempts = 0
     local lastPayload
-
-    function parryRemote:Fire(...)
+    function parryRemote:FireServer(...)
         parryAttempts += 1
         lastPayload = { ... }
         return self
     end
-
-    parryRemote.FireServer = parryRemote.Fire
 
     local loaderChunk = assert(loadstring(SourceMap["loader.lua"], "=loader.lua"))
     local ok, apiResult = pcall(loaderChunk, {
