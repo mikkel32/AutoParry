@@ -107,6 +107,37 @@ local DEFAULT_THEME = {
             NumberSequenceKeypoint.new(1, 0.2),
         }),
     },
+    hero = {
+        titleFont = Enum.Font.GothamBlack,
+        titleTextSize = 28,
+        titleColor = Color3.fromRGB(235, 245, 255),
+        subtitleFont = Enum.Font.Gotham,
+        subtitleTextSize = 18,
+        subtitleColor = Color3.fromRGB(188, 210, 255),
+        pillFont = Enum.Font.GothamSemibold,
+        pillTextSize = 14,
+        pillTextColor = Color3.fromRGB(205, 225, 255),
+        pillBackgroundColor = Color3.fromRGB(16, 24, 40),
+        pillTransparency = 0.1,
+        pillAccentColor = Color3.fromRGB(0, 210, 255),
+        pillStrokeTransparency = 0.55,
+        gridPadding = 12,
+    },
+    dashboardPanel = {
+        backgroundColor = Color3.fromRGB(12, 18, 32),
+        backgroundTransparency = 0.05,
+        strokeColor = Color3.fromRGB(0, 170, 255),
+        strokeTransparency = 0.45,
+        cornerRadius = UDim.new(0, 16),
+        gradient = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(10, 16, 28)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 110, 180)),
+        }),
+        gradientTransparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.8),
+            NumberSequenceKeypoint.new(1, 0.3),
+        }),
+    },
     iconography = {
         spinner = SPINNER_ASSET,
         check = "rbxassetid://6031068421",
@@ -275,6 +306,60 @@ local function createTipLabel(parent, theme)
     return label
 end
 
+local function createHeroPill(parent, theme, text)
+    local heroTheme = theme.hero or DEFAULT_THEME.hero or {}
+
+    local pill = Instance.new("Frame")
+    pill.Name = "HeroPill"
+    pill.BackgroundTransparency = heroTheme.pillTransparency or 0.1
+    pill.BackgroundColor3 = heroTheme.pillBackgroundColor or Color3.fromRGB(16, 24, 40)
+    pill.BorderSizePixel = 0
+    pill.Size = UDim2.new(0, 180, 0, 34)
+    pill.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 14)
+    corner.Parent = pill
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1
+    stroke.Transparency = heroTheme.pillStrokeTransparency or 0.55
+    stroke.Color = theme.accentColor or DEFAULT_THEME.accentColor
+    stroke.Parent = pill
+
+    local accent = Instance.new("Frame")
+    accent.Name = "Accent"
+    accent.AnchorPoint = Vector2.new(0, 0.5)
+    accent.Position = UDim2.new(0, 10, 0.5, 0)
+    accent.Size = UDim2.new(0, 10, 0, 10)
+    accent.BackgroundColor3 = heroTheme.pillAccentColor or theme.accentColor or DEFAULT_THEME.accentColor
+    accent.BorderSizePixel = 0
+    accent.Parent = pill
+
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(1, 0)
+    accentCorner.Parent = accent
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, -36, 1, 0)
+    label.Position = UDim2.new(0, 28, 0, 0)
+    label.Font = heroTheme.pillFont or Enum.Font.GothamSemibold
+    label.TextSize = heroTheme.pillTextSize or 14
+    label.TextColor3 = heroTheme.pillTextColor or Color3.fromRGB(205, 225, 255)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = text or ""
+    label.Parent = pill
+
+    return {
+        frame = pill,
+        label = label,
+        accent = accent,
+        stroke = stroke,
+    }
+end
+
 local function createActionsRow(parent, theme)
     local frame = Instance.new("Frame")
     frame.Name = "Actions"
@@ -377,78 +462,49 @@ function LoadingOverlay.new(options)
         glow.Parent = container
     end
 
-    local infoColumn = Instance.new("Frame")
-    infoColumn.Name = "InfoColumn"
-    infoColumn.AnchorPoint = Vector2.new(0, 0.5)
-    infoColumn.Position = UDim2.new(0, 24, 0.5, 0)
-    infoColumn.Size = UDim2.new(0.45, -12, 1, -48)
-    infoColumn.BackgroundTransparency = 1
-    infoColumn.ZIndex = 2
-    infoColumn.Parent = container
+    local containerPadding = Instance.new("UIPadding")
+    containerPadding.PaddingTop = UDim.new(0, 28)
+    containerPadding.PaddingBottom = UDim.new(0, 28)
+    containerPadding.PaddingLeft = UDim.new(0, 28)
+    containerPadding.PaddingRight = UDim.new(0, 28)
+    containerPadding.Parent = container
 
-    local dashboardColumn = Instance.new("Frame")
-    dashboardColumn.Name = "DashboardColumn"
-    dashboardColumn.AnchorPoint = Vector2.new(1, 0.5)
-    dashboardColumn.Position = UDim2.new(1, -24, 0.5, 0)
-    dashboardColumn.Size = UDim2.new(0.5, -12, 1, -48)
-    dashboardColumn.BackgroundTransparency = 1
-    dashboardColumn.ZIndex = 2
-    dashboardColumn.Parent = container
+    local containerLayout = Instance.new("UIListLayout")
+    containerLayout.FillDirection = Enum.FillDirection.Vertical
+    containerLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    containerLayout.Padding = UDim.new(0, 18)
+    containerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    containerLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    containerLayout.Parent = container
 
-    local spinner = createSpinner(infoColumn, theme)
-    local progressBar, progressFill = createProgressBar(infoColumn, theme)
-    local statusLabel = createStatusLabel(infoColumn, theme)
-    local tipLabel = createTipLabel(infoColumn, theme)
-    local actionsRow, actionsLayout = createActionsRow(infoColumn, theme)
+    local heroFrame = Instance.new("Frame")
+    heroFrame.Name = "Hero"
+    heroFrame.BackgroundTransparency = 1
+    heroFrame.Size = UDim2.new(1, 0, 0, 150)
+    heroFrame.LayoutOrder = 1
+    heroFrame.Parent = container
 
-    local dashboardMount = Instance.new("Frame")
-    dashboardMount.Name = "DashboardMount"
-    dashboardMount.BackgroundTransparency = 1
-    dashboardMount.Size = theme.dashboardMountSize or DEFAULT_THEME.dashboardMountSize
-    dashboardMount.Position = UDim2.new(0.5, 0, 0.5, 0)
-    dashboardMount.AnchorPoint = Vector2.new(0.5, 0.5)
-    dashboardMount.Parent = dashboardColumn
-
-    local progressArc = Instance.new("ImageLabel")
-    progressArc.Name = "ProgressArc"
-    progressArc.AnchorPoint = Vector2.new(0.5, 0.5)
-    progressArc.Position = spinner.Position
-    progressArc.Size = UDim2.new(0, math.max((spinner.Size.X.Offset or 0) + 40, 120), 0, math.max((spinner.Size.Y.Offset or 0) + 40, 120))
-    progressArc.BackgroundTransparency = 1
-    progressArc.Image = theme.iconography and theme.iconography.progressArc or "rbxassetid://10957012643"
-    progressArc.ImageColor3 = theme.progressArcColor or DEFAULT_THEME.progressArcColor
-    progressArc.ImageTransparency = theme.progressArcTransparency or DEFAULT_THEME.progressArcTransparency
-    progressArc.ZIndex = spinner.ZIndex - 1
-    progressArc.Parent = infoColumn
-
-    local arcGradient = Instance.new("UIGradient")
-    arcGradient.Name = "ProgressGradient"
-    arcGradient.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, (theme.progressArcColor or DEFAULT_THEME.progressArcColor)),
-        ColorSequenceKeypoint.new(1, (theme.progressArcColor or DEFAULT_THEME.progressArcColor)),
-    })
-    arcGradient.Transparency = NumberSequence.new({
-        NumberSequenceKeypoint.new(0, 0),
-        NumberSequenceKeypoint.new(0.5, 0.35),
-        NumberSequenceKeypoint.new(1, 1),
-    })
-    arcGradient.Rotation = 0
-    arcGradient.Offset = Vector2.new(-1, 0)
-    arcGradient.Parent = progressArc
+    local heroLayout = Instance.new("UIListLayout")
+    heroLayout.FillDirection = Enum.FillDirection.Vertical
+    heroLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    heroLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    heroLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    heroLayout.Padding = UDim.new(0, 8)
+    heroLayout.Parent = heroFrame
 
     local badge = Instance.new("TextLabel")
     badge.Name = "Badge"
     badge.AnchorPoint = Vector2.new(0.5, 0)
-    badge.Position = UDim2.new(0.5, 0, 0, 0)
-    badge.Size = UDim2.new(0.75, 0, 0, 28)
     badge.BackgroundColor3 = theme.hologramBadgeColor or DEFAULT_THEME.hologramBadgeColor
     badge.BackgroundTransparency = theme.hologramBadgeTransparency or DEFAULT_THEME.hologramBadgeTransparency
-    badge.TextColor3 = Color3.new(1, 1, 1)
+    badge.Size = UDim2.new(0, 320, 0, 30)
     badge.Font = (theme.typography and theme.typography.badgeFont) or DEFAULT_THEME.typography.badgeFont
     badge.TextSize = (theme.typography and theme.typography.badgeTextSize) or DEFAULT_THEME.typography.badgeTextSize
+    badge.TextColor3 = Color3.fromRGB(255, 255, 255)
     badge.Text = "Initializing AutoParry"
-    badge.ZIndex = 3
-    badge.Parent = infoColumn
+    badge.TextXAlignment = Enum.TextXAlignment.Center
+    badge.LayoutOrder = 1
+    badge.Parent = heroFrame
 
     local badgeCorner = Instance.new("UICorner")
     badgeCorner.CornerRadius = UDim.new(0, 10)
@@ -459,6 +515,179 @@ function LoadingOverlay.new(options)
     badgeStroke.Transparency = 0.35
     badgeStroke.Color = (theme.accentColor or DEFAULT_THEME.accentColor)
     badgeStroke.Parent = badge
+
+    local heroTitle = Instance.new("TextLabel")
+    heroTitle.Name = "HeroTitle"
+    heroTitle.BackgroundTransparency = 1
+    heroTitle.Size = UDim2.new(1, -32, 0, 34)
+    heroTitle.Font = (theme.hero and theme.hero.titleFont) or DEFAULT_THEME.hero.titleFont
+    heroTitle.TextSize = (theme.hero and theme.hero.titleTextSize) or DEFAULT_THEME.hero.titleTextSize
+    heroTitle.TextColor3 = (theme.hero and theme.hero.titleColor) or DEFAULT_THEME.hero.titleColor
+    heroTitle.Text = "Command Center Online"
+    heroTitle.TextXAlignment = Enum.TextXAlignment.Center
+    heroTitle.LayoutOrder = 2
+    heroTitle.Parent = heroFrame
+
+    local heroSubtitle = Instance.new("TextLabel")
+    heroSubtitle.Name = "HeroSubtitle"
+    heroSubtitle.BackgroundTransparency = 1
+    heroSubtitle.Size = UDim2.new(0.9, 0, 0, 28)
+    heroSubtitle.Font = (theme.hero and theme.hero.subtitleFont) or DEFAULT_THEME.hero.subtitleFont
+    heroSubtitle.TextSize = (theme.hero and theme.hero.subtitleTextSize) or DEFAULT_THEME.hero.subtitleTextSize
+    heroSubtitle.TextColor3 = (theme.hero and theme.hero.subtitleColor) or DEFAULT_THEME.hero.subtitleColor
+    heroSubtitle.Text = "Neural shield calibrating advanced parry heuristics"
+    heroSubtitle.TextWrapped = true
+    heroSubtitle.TextXAlignment = Enum.TextXAlignment.Center
+    heroSubtitle.LayoutOrder = 3
+    heroSubtitle.Parent = heroFrame
+
+    local heroHighlights = Instance.new("Frame")
+    heroHighlights.Name = "HeroHighlights"
+    heroHighlights.BackgroundTransparency = 1
+    heroHighlights.Size = UDim2.new(1, -40, 0, 40)
+    heroHighlights.LayoutOrder = 4
+    heroHighlights.Parent = heroFrame
+
+    local heroHighlightsLayout = Instance.new("UIListLayout")
+    heroHighlightsLayout.FillDirection = Enum.FillDirection.Horizontal
+    heroHighlightsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    heroHighlightsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    heroHighlightsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    heroHighlightsLayout.Padding = UDim.new(0, (theme.hero and theme.hero.gridPadding) or DEFAULT_THEME.hero.gridPadding)
+    heroHighlightsLayout.Parent = heroHighlights
+
+    local heroPills = {}
+    for _, labelText in ipairs({
+        "Adaptive reaction mesh",
+        "Lag-safe prediction",
+        "Quantum ball tracing",
+    }) do
+        local pill = createHeroPill(heroHighlights, theme, labelText)
+        table.insert(heroPills, pill)
+    end
+
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Name = "Content"
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Size = UDim2.new(1, 0, 1, -160)
+    contentFrame.LayoutOrder = 2
+    contentFrame.Parent = container
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Horizontal
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    contentLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.Padding = UDim.new(0, (theme.responsive and theme.responsive.columnSpacing) or DEFAULT_THEME.responsive.columnSpacing or 32)
+    contentLayout.Parent = contentFrame
+
+    local infoColumn = Instance.new("Frame")
+    infoColumn.Name = "InfoColumn"
+    infoColumn.Size = UDim2.new(0.46, -12, 1, -12)
+    infoColumn.BackgroundTransparency = 1
+    infoColumn.LayoutOrder = 1
+    infoColumn.Parent = contentFrame
+
+    local infoLayout = Instance.new("UIListLayout")
+    infoLayout.FillDirection = Enum.FillDirection.Vertical
+    infoLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    infoLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    infoLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    infoLayout.Padding = UDim.new(0, 12)
+    infoLayout.Parent = infoColumn
+
+    local visualStack = Instance.new("Frame")
+    visualStack.Name = "VisualStack"
+    visualStack.BackgroundTransparency = 1
+    visualStack.Size = UDim2.new(1, 0, 0, 150)
+    visualStack.LayoutOrder = 1
+    visualStack.Parent = infoColumn
+
+    local spinner = createSpinner(visualStack, theme)
+    spinner.AnchorPoint = Vector2.new(0.5, 0.5)
+    spinner.Position = UDim2.new(0.5, 0, 0.5, 0)
+
+    local progressArc = Instance.new("ImageLabel")
+    progressArc.Name = "ProgressArc"
+    progressArc.AnchorPoint = Vector2.new(0.5, 0.5)
+    progressArc.Position = UDim2.new(0.5, 0, 0.5, 0)
+    progressArc.Size = UDim2.new(0, math.max((spinner.Size.X.Offset or 0) + 56, 136), 0, math.max((spinner.Size.Y.Offset or 0) + 56, 136))
+    progressArc.BackgroundTransparency = 1
+    progressArc.Image = theme.iconography and theme.iconography.progressArc or "rbxassetid://10957012643"
+    progressArc.ImageColor3 = theme.progressArcColor or DEFAULT_THEME.progressArcColor
+    progressArc.ImageTransparency = theme.progressArcTransparency or DEFAULT_THEME.progressArcTransparency
+    progressArc.ZIndex = spinner.ZIndex - 1
+    progressArc.Parent = visualStack
+
+    local arcGradient = Instance.new("UIGradient")
+    arcGradient.Name = "ProgressGradient"
+    arcGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, theme.progressArcColor or DEFAULT_THEME.progressArcColor),
+        ColorSequenceKeypoint.new(1, theme.progressArcColor or DEFAULT_THEME.progressArcColor),
+    })
+    arcGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, 0),
+        NumberSequenceKeypoint.new(0.5, 0.35),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    arcGradient.Rotation = 0
+    arcGradient.Offset = Vector2.new(-1, 0)
+    arcGradient.Parent = progressArc
+
+    local progressBar, progressFill = createProgressBar(infoColumn, theme)
+    progressBar.LayoutOrder = 2
+
+    local statusLabel = createStatusLabel(infoColumn, theme)
+    statusLabel.LayoutOrder = 3
+
+    local tipLabel = createTipLabel(infoColumn, theme)
+    tipLabel.LayoutOrder = 4
+
+    local actionsRow, actionsLayout = createActionsRow(infoColumn, theme)
+    actionsRow.AnchorPoint = Vector2.new(0.5, 0)
+    actionsRow.Position = UDim2.new(0.5, 0, 0, 0)
+    actionsRow.LayoutOrder = 5
+
+    local dashboardColumn = Instance.new("Frame")
+    dashboardColumn.Name = "DashboardColumn"
+    dashboardColumn.Size = UDim2.new(0.54, 0, 1, 0)
+    dashboardColumn.BackgroundTransparency = 1
+    dashboardColumn.LayoutOrder = 2
+    dashboardColumn.Parent = contentFrame
+
+    local dashboardSurface = Instance.new("Frame")
+    dashboardSurface.Name = "DashboardSurface"
+    dashboardSurface.AnchorPoint = Vector2.new(0.5, 0.5)
+    dashboardSurface.Position = UDim2.new(0.5, 0, 0.5, 0)
+    dashboardSurface.Size = UDim2.new(1, -4, 1, -4)
+    dashboardSurface.BackgroundColor3 = (theme.dashboardPanel and theme.dashboardPanel.backgroundColor) or DEFAULT_THEME.dashboardPanel.backgroundColor
+    dashboardSurface.BackgroundTransparency = (theme.dashboardPanel and theme.dashboardPanel.backgroundTransparency) or DEFAULT_THEME.dashboardPanel.backgroundTransparency
+    dashboardSurface.BorderSizePixel = 0
+    dashboardSurface.Parent = dashboardColumn
+
+    local dashboardCorner = Instance.new("UICorner")
+    dashboardCorner.CornerRadius = (theme.dashboardPanel and theme.dashboardPanel.cornerRadius) or DEFAULT_THEME.dashboardPanel.cornerRadius
+    dashboardCorner.Parent = dashboardSurface
+
+    local dashboardStroke = Instance.new("UIStroke")
+    dashboardStroke.Thickness = 1.6
+    dashboardStroke.Color = (theme.dashboardPanel and theme.dashboardPanel.strokeColor) or DEFAULT_THEME.dashboardPanel.strokeColor
+    dashboardStroke.Transparency = (theme.dashboardPanel and theme.dashboardPanel.strokeTransparency) or DEFAULT_THEME.dashboardPanel.strokeTransparency
+    dashboardStroke.Parent = dashboardSurface
+
+    local dashboardGradient = Instance.new("UIGradient")
+    dashboardGradient.Color = (theme.dashboardPanel and theme.dashboardPanel.gradient) or DEFAULT_THEME.dashboardPanel.gradient
+    dashboardGradient.Transparency = (theme.dashboardPanel and theme.dashboardPanel.gradientTransparency) or DEFAULT_THEME.dashboardPanel.gradientTransparency
+    dashboardGradient.Rotation = 120
+    dashboardGradient.Parent = dashboardSurface
+
+    local dashboardMount = Instance.new("Frame")
+    dashboardMount.Name = "DashboardMount"
+    dashboardMount.BackgroundTransparency = 1
+    dashboardMount.Size = theme.dashboardMountSize or DEFAULT_THEME.dashboardMountSize
+    dashboardMount.Position = UDim2.new(0.5, 0, 0.5, 0)
+    dashboardMount.AnchorPoint = Vector2.new(0.5, 0.5)
+    dashboardMount.Parent = dashboardSurface
 
     preloadAssets({
         spinner,
@@ -488,8 +717,27 @@ function LoadingOverlay.new(options)
         _progressArc = progressArc,
         _progressArcGradient = arcGradient,
         _badge = badge,
+        _heroFrame = heroFrame,
+        _heroTitle = heroTitle,
+        _heroSubtitle = heroSubtitle,
+        _heroHighlightsFrame = heroHighlights,
+        _heroPills = heroPills,
+        _heroTitleText = heroTitle.Text,
+        _heroSubtitleText = heroSubtitle.Text,
+        _heroHighlightTexts = {
+            heroPills[1] and heroPills[1].label and heroPills[1].label.Text or "Adaptive reaction mesh",
+            heroPills[2] and heroPills[2].label and heroPills[2].label.Text or "Lag-safe prediction",
+            heroPills[3] and heroPills[3].label and heroPills[3].label.Text or "Quantum ball tracing",
+        },
+        _contentFrame = contentFrame,
+        _contentLayout = contentLayout,
         _infoColumn = infoColumn,
+        _infoLayout = infoLayout,
+        _visualStack = visualStack,
         _dashboardColumn = dashboardColumn,
+        _dashboardSurface = dashboardSurface,
+        _dashboardStroke = dashboardStroke,
+        _dashboardGradient = dashboardGradient,
         _containerGlow = glow,
         _containerGradient = containerGradient,
         _viewportConnection = nil,
@@ -521,6 +769,16 @@ function LoadingOverlay.new(options)
         self:setTips(options.tips)
     end
 
+    if typeof(options.heroTitle) == "string" then
+        self:setHeroTitle(options.heroTitle)
+    end
+    if typeof(options.heroSubtitle) == "string" then
+        self:setHeroSubtitle(options.heroSubtitle)
+    end
+    if typeof(options.heroHighlights) == "table" then
+        self:setHeroHighlights(options.heroHighlights)
+    end
+
     self:_refreshBadge()
 
     return self
@@ -548,29 +806,55 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
 
     container.Size = UDim2.new(0, desiredWidth, 0, defaultHeight)
 
+    local contentLayout = self._contentLayout
     local infoColumn = self._infoColumn
     local dashboardColumn = self._dashboardColumn
+    local heroFrame = self._heroFrame
     if not infoColumn or not dashboardColumn then
         return
     end
 
     local columnSpacing = responsive.columnSpacing or 32
+    if contentLayout then
+        contentLayout.Padding = UDim.new(0, columnSpacing)
+    end
+
     if viewportWidth <= (responsive.mediumWidth or 540) then
-        infoColumn.AnchorPoint = Vector2.new(0.5, 0)
-        infoColumn.Position = UDim2.new(0.5, 0, 0, 24)
-        infoColumn.Size = UDim2.new(1, -48, 0.45, 0)
+        if contentLayout then
+            contentLayout.FillDirection = Enum.FillDirection.Vertical
+            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
 
-        dashboardColumn.AnchorPoint = Vector2.new(0.5, 1)
-        dashboardColumn.Position = UDim2.new(0.5, 0, 1, -24)
-        dashboardColumn.Size = UDim2.new(1, -48, 0.5, 0)
+        infoColumn.Size = UDim2.new(1, -32, 0, 260)
+        dashboardColumn.Size = UDim2.new(1, -32, 0, 320)
+
+        if heroFrame then
+            heroFrame.Size = UDim2.new(1, 0, 0, 190)
+        end
+    elseif viewportWidth <= (responsive.largeWidth or 720) then
+        if contentLayout then
+            contentLayout.FillDirection = Enum.FillDirection.Vertical
+            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+
+        infoColumn.Size = UDim2.new(1, -32, 0, 300)
+        dashboardColumn.Size = UDim2.new(1, -32, 0, 340)
+
+        if heroFrame then
+            heroFrame.Size = UDim2.new(1, 0, 0, 180)
+        end
     else
-        infoColumn.AnchorPoint = Vector2.new(0, 0.5)
-        infoColumn.Position = UDim2.new(0, columnSpacing * 0.5, 0.5, 0)
-        infoColumn.Size = UDim2.new(0.48, -columnSpacing, 1, -48)
+        if contentLayout then
+            contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
 
-        dashboardColumn.AnchorPoint = Vector2.new(1, 0.5)
-        dashboardColumn.Position = UDim2.new(1, -columnSpacing * 0.5, 0.5, 0)
-        dashboardColumn.Size = UDim2.new(0.52, -columnSpacing, 1, -48)
+        infoColumn.Size = UDim2.new(0.46, -columnSpacing, 1, -12)
+        dashboardColumn.Size = UDim2.new(0.54, 0, 1, -12)
+
+        if heroFrame then
+            heroFrame.Size = UDim2.new(1, 0, 0, 150)
+        end
     end
 end
 
@@ -668,6 +952,63 @@ function LoadingOverlay:_applyTipVisibility()
     self._tipLabel.Visible = visible
 end
 
+function LoadingOverlay:setHeroTitle(text)
+    if self._destroyed then
+        return
+    end
+
+    if typeof(text) ~= "string" then
+        return
+    end
+
+    self._heroTitleText = text
+    if self._heroTitle then
+        self._heroTitle.Text = text
+    end
+end
+
+function LoadingOverlay:setHeroSubtitle(text)
+    if self._destroyed then
+        return
+    end
+
+    if typeof(text) ~= "string" then
+        return
+    end
+
+    self._heroSubtitleText = text
+    if self._heroSubtitle then
+        self._heroSubtitle.Text = text
+    end
+end
+
+function LoadingOverlay:setHeroHighlights(highlights)
+    if self._destroyed then
+        return
+    end
+
+    if typeof(highlights) ~= "table" then
+        return
+    end
+
+    self._heroHighlightTexts = {}
+
+    if not self._heroPills then
+        return
+    end
+
+    for index, pill in ipairs(self._heroPills) do
+        local value = highlights[index]
+        if typeof(value) ~= "string" then
+            value = pill.label and pill.label.Text or ""
+        end
+        self._heroHighlightTexts[index] = value
+        if pill.label then
+            pill.label.Text = value
+        end
+    end
+end
+
 function LoadingOverlay:getTheme()
     return self._theme
 end
@@ -700,6 +1041,26 @@ function LoadingOverlay:attachDashboard(dashboard)
         if dashboard.setStatusText and self._statusLabel then
             dashboard:setStatusText(self._statusLabel.Text)
         end
+    end
+end
+
+function LoadingOverlay:updateDashboardTelemetry(telemetry)
+    if self._destroyed then
+        return
+    end
+
+    if self._dashboard and self._dashboard.setTelemetry then
+        self._dashboard:setTelemetry(telemetry)
+    end
+end
+
+function LoadingOverlay:setDashboardControls(controls)
+    if self._destroyed then
+        return
+    end
+
+    if self._dashboard and self._dashboard.setControls then
+        self._dashboard:setControls(controls)
     end
 end
 
@@ -958,7 +1319,7 @@ function LoadingOverlay:applyTheme(themeOverrides)
     if self._spinner then
         self._spinner.ImageColor3 = theme.spinnerColor or DEFAULT_THEME.spinnerColor
         self._spinner.Size = theme.spinnerSize or DEFAULT_THEME.spinnerSize
-        self._spinner.Position = theme.spinnerPosition or DEFAULT_THEME.spinnerPosition
+        self._spinner.Position = UDim2.new(0.5, 0, 0.5, 0)
         local spinnerImage = (theme.iconography and theme.iconography.spinner)
             or theme.spinnerAsset
             or SPINNER_ASSET
@@ -968,7 +1329,6 @@ function LoadingOverlay:applyTheme(themeOverrides)
     end
     if self._progressBar then
         self._progressBar.Size = theme.progressBarSize or DEFAULT_THEME.progressBarSize
-        self._progressBar.Position = theme.progressBarPosition or DEFAULT_THEME.progressBarPosition
         self._progressBar.BackgroundColor3 = theme.progressBackgroundColor or DEFAULT_THEME.progressBackgroundColor
     end
     if self._progressFill then
@@ -995,13 +1355,11 @@ function LoadingOverlay:applyTheme(themeOverrides)
         self._statusLabel.TextColor3 = theme.statusTextColor or DEFAULT_THEME.statusTextColor
         self._statusLabel.Font = (theme.typography and theme.typography.statusFont) or DEFAULT_THEME.typography.statusFont
         self._statusLabel.TextSize = (theme.typography and theme.typography.statusTextSize) or DEFAULT_THEME.typography.statusTextSize
-        self._statusLabel.Position = theme.statusPosition or DEFAULT_THEME.statusPosition
     end
     if self._tipLabel then
         self._tipLabel.TextColor3 = theme.tipTextColor or DEFAULT_THEME.tipTextColor
         self._tipLabel.Font = (theme.typography and theme.typography.tipFont) or DEFAULT_THEME.typography.tipFont
         self._tipLabel.TextSize = (theme.typography and theme.typography.tipTextSize) or DEFAULT_THEME.typography.tipTextSize
-        self._tipLabel.Position = theme.tipPosition or DEFAULT_THEME.tipPosition
     end
     if self._badge then
         self._badge.BackgroundColor3 = theme.hologramBadgeColor or DEFAULT_THEME.hologramBadgeColor
@@ -1010,11 +1368,74 @@ function LoadingOverlay:applyTheme(themeOverrides)
         self._badge.TextSize = (theme.typography and theme.typography.badgeTextSize) or DEFAULT_THEME.typography.badgeTextSize
     end
     if self._actionsRow then
-        self._actionsRow.Position = theme.actionsPosition or DEFAULT_THEME.actionsPosition
+        self._actionsRow.AnchorPoint = Vector2.new(0.5, 0)
+        self._actionsRow.Position = UDim2.new(0.5, 0, 0, 0)
         self._actionsRow.Size = theme.actionsSize or DEFAULT_THEME.actionsSize
     end
     if self._actionsLayout then
         self._actionsLayout.Padding = theme.actionsPadding or DEFAULT_THEME.actionsPadding
+    end
+    local heroTheme = theme.hero or DEFAULT_THEME.hero
+    if self._heroTitle then
+        self._heroTitle.Font = heroTheme.titleFont or DEFAULT_THEME.hero.titleFont
+        self._heroTitle.TextSize = heroTheme.titleTextSize or DEFAULT_THEME.hero.titleTextSize
+        self._heroTitle.TextColor3 = heroTheme.titleColor or DEFAULT_THEME.hero.titleColor
+        if self._heroTitleText then
+            self._heroTitle.Text = self._heroTitleText
+        end
+    end
+    if self._heroSubtitle then
+        self._heroSubtitle.Font = heroTheme.subtitleFont or DEFAULT_THEME.hero.subtitleFont
+        self._heroSubtitle.TextSize = heroTheme.subtitleTextSize or DEFAULT_THEME.hero.subtitleTextSize
+        self._heroSubtitle.TextColor3 = heroTheme.subtitleColor or DEFAULT_THEME.hero.subtitleColor
+        if self._heroSubtitleText then
+            self._heroSubtitle.Text = self._heroSubtitleText
+        end
+    end
+    if self._heroHighlightsFrame then
+        local layout = self._heroHighlightsFrame:FindFirstChildOfClass("UIListLayout")
+        if layout then
+            layout.Padding = UDim.new(0, heroTheme.gridPadding or DEFAULT_THEME.hero.gridPadding)
+        end
+    end
+    if self._heroPills then
+        for index, pill in ipairs(self._heroPills) do
+            if pill.frame then
+                pill.frame.BackgroundColor3 = heroTheme.pillBackgroundColor or DEFAULT_THEME.hero.pillBackgroundColor
+                pill.frame.BackgroundTransparency = heroTheme.pillTransparency or DEFAULT_THEME.hero.pillTransparency
+            end
+            if pill.stroke then
+                pill.stroke.Color = theme.accentColor or DEFAULT_THEME.accentColor
+                pill.stroke.Transparency = heroTheme.pillStrokeTransparency or DEFAULT_THEME.hero.pillStrokeTransparency
+            end
+            if pill.accent then
+                pill.accent.BackgroundColor3 = heroTheme.pillAccentColor or theme.accentColor or DEFAULT_THEME.accentColor
+            end
+            if pill.label then
+                pill.label.Font = heroTheme.pillFont or DEFAULT_THEME.hero.pillFont
+                pill.label.TextSize = heroTheme.pillTextSize or DEFAULT_THEME.hero.pillTextSize
+                pill.label.TextColor3 = heroTheme.pillTextColor or DEFAULT_THEME.hero.pillTextColor
+                if self._heroHighlightTexts and typeof(self._heroHighlightTexts[index]) == "string" then
+                    pill.label.Text = self._heroHighlightTexts[index]
+                end
+            end
+        end
+    end
+    if self._contentLayout then
+        self._contentLayout.Padding = UDim.new(0, (theme.responsive and theme.responsive.columnSpacing) or DEFAULT_THEME.responsive.columnSpacing or 32)
+    end
+    local panelTheme = theme.dashboardPanel or DEFAULT_THEME.dashboardPanel
+    if self._dashboardSurface then
+        self._dashboardSurface.BackgroundColor3 = panelTheme.backgroundColor or DEFAULT_THEME.dashboardPanel.backgroundColor
+        self._dashboardSurface.BackgroundTransparency = panelTheme.backgroundTransparency or DEFAULT_THEME.dashboardPanel.backgroundTransparency
+    end
+    if self._dashboardStroke then
+        self._dashboardStroke.Color = panelTheme.strokeColor or DEFAULT_THEME.dashboardPanel.strokeColor
+        self._dashboardStroke.Transparency = panelTheme.strokeTransparency or DEFAULT_THEME.dashboardPanel.strokeTransparency
+    end
+    if self._dashboardGradient then
+        self._dashboardGradient.Color = panelTheme.gradient or DEFAULT_THEME.dashboardPanel.gradient
+        self._dashboardGradient.Transparency = panelTheme.gradientTransparency or DEFAULT_THEME.dashboardPanel.gradientTransparency
     end
     if self._actions then
         self:setActions(self._actions)

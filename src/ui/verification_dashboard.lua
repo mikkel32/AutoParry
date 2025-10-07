@@ -124,6 +124,112 @@ local DEFAULT_THEME = {
         warning = "rbxassetid://6031071051",
         error = "rbxassetid://6031094678",
     },
+    telemetry = {
+        titleFont = Enum.Font.GothamBold,
+        titleTextSize = 16,
+        valueFont = Enum.Font.GothamBlack,
+        valueTextSize = 24,
+        labelFont = Enum.Font.Gotham,
+        labelTextSize = 14,
+        cardColor = Color3.fromRGB(18, 24, 40),
+        cardTransparency = 0.08,
+        cardStrokeColor = Color3.fromRGB(0, 160, 255),
+        cardStrokeTransparency = 0.45,
+        accentColor = Color3.fromRGB(0, 210, 255),
+    },
+    controls = {
+        headerFont = Enum.Font.GothamBold,
+        headerTextSize = 16,
+        headerColor = Color3.fromRGB(220, 234, 255),
+        descriptionFont = Enum.Font.Gotham,
+        descriptionTextSize = 14,
+        descriptionColor = Color3.fromRGB(178, 194, 230),
+        toggleOnColor = Color3.fromRGB(0, 210, 255),
+        toggleOffColor = Color3.fromRGB(32, 42, 64),
+        toggleOnTextColor = Color3.fromRGB(12, 16, 20),
+        toggleOffTextColor = Color3.fromRGB(220, 234, 255),
+        toggleCorner = UDim.new(0, 12),
+        toggleStrokeColor = Color3.fromRGB(0, 210, 255),
+        toggleStrokeTransparency = 0.4,
+        toggleBadgeFont = Enum.Font.GothamSemibold,
+        toggleBadgeSize = 13,
+        toggleBadgeColor = Color3.fromRGB(170, 200, 255),
+        sectionBackground = Color3.fromRGB(14, 18, 32),
+        sectionTransparency = 0.08,
+        sectionStrokeColor = Color3.fromRGB(0, 170, 255),
+        sectionStrokeTransparency = 0.5,
+        sectionGradient = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(12, 18, 30)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(0, 120, 200)),
+        }),
+        sectionGradientTransparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.85),
+            NumberSequenceKeypoint.new(1, 0.3),
+        }),
+    },
+}
+
+local DEFAULT_TELEMETRY = {
+    {
+        id = "latency",
+        label = "Latency",
+        value = "-- ms",
+        hint = "Ping to Blade Ball server",
+    },
+    {
+        id = "uptime",
+        label = "Session",
+        value = "00:00",
+        hint = "Runtime since activation",
+    },
+    {
+        id = "autotune",
+        label = "Auto-Tune",
+        value = "Calibrating",
+        hint = "Adaptive neural mesh status",
+    },
+}
+
+local CONTROL_DEFINITIONS = {
+    {
+        id = "adaptive",
+        title = "Adaptive Reaction",
+        description = "Auto-learns opponent speed to retime parries in real-time.",
+        default = true,
+        badge = "AI",
+    },
+    {
+        id = "failsafe",
+        title = "Failsafe Recall",
+        description = "Instantly revert to manual control if anomalies are detected.",
+        default = true,
+        badge = "SAFE",
+    },
+    {
+        id = "edge",
+        title = "Edge Prediction",
+        description = "Predict ricochet vectors and pre-aim at the next ball handoff.",
+        default = false,
+    },
+    {
+        id = "audible",
+        title = "Audible Cues",
+        description = "Emit positional pings for high-priority parry windows.",
+        default = true,
+    },
+    {
+        id = "ghost",
+        title = "Ghost Anticipation",
+        description = "Simulate incoming trajectories to pre-charge counter windows.",
+        default = false,
+    },
+    {
+        id = "autosync",
+        title = "Autosync Party",
+        description = "Synchronise teammates with shared parry telemetry.",
+        default = true,
+        badge = "TEAM",
+    },
 }
 
 local STATUS_STYLE = {
@@ -445,6 +551,233 @@ local function createStep(parent, definition, theme)
     return step
 end
 
+local function createTelemetryCard(parent, theme, definition)
+    local telemetryTheme = theme.telemetry or DEFAULT_THEME.telemetry
+
+    local card = Instance.new("Frame")
+    card.Name = string.format("Telemetry_%s", definition.id)
+    card.BackgroundColor3 = telemetryTheme.cardColor
+    card.BackgroundTransparency = telemetryTheme.cardTransparency
+    card.BorderSizePixel = 0
+    card.Size = UDim2.new(0, 0, 0, 96)
+    card.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, 12)
+    corner.Parent = card
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.1
+    stroke.Transparency = telemetryTheme.cardStrokeTransparency
+    stroke.Color = telemetryTheme.cardStrokeColor
+    stroke.Parent = card
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 10)
+    padding.PaddingBottom = UDim.new(0, 12)
+    padding.PaddingLeft = UDim.new(0, 12)
+    padding.PaddingRight = UDim.new(0, 12)
+    padding.Parent = card
+
+    local label = Instance.new("TextLabel")
+    label.Name = "Label"
+    label.BackgroundTransparency = 1
+    label.Size = UDim2.new(1, 0, 0, 18)
+    label.Font = telemetryTheme.labelFont
+    label.TextSize = telemetryTheme.labelTextSize
+    label.TextColor3 = (telemetryTheme.accentColor or theme.accentColor):Lerp(Color3.new(1, 1, 1), 0.35)
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    label.Text = definition.label or definition.id
+    label.Parent = card
+
+    local value = Instance.new("TextLabel")
+    value.Name = "Value"
+    value.BackgroundTransparency = 1
+    value.Size = UDim2.new(1, 0, 0, 32)
+    value.Position = UDim2.new(0, 0, 0, 20)
+    value.Font = telemetryTheme.valueFont
+    value.TextSize = telemetryTheme.valueTextSize
+    value.TextXAlignment = Enum.TextXAlignment.Left
+    value.TextColor3 = Color3.fromRGB(235, 245, 255)
+    value.Text = tostring(definition.value or "--")
+    value.Parent = card
+
+    local hint = Instance.new("TextLabel")
+    hint.Name = "Hint"
+    hint.BackgroundTransparency = 1
+    hint.Size = UDim2.new(1, 0, 0, 22)
+    hint.Position = UDim2.new(0, 0, 0, 54)
+    hint.Font = telemetryTheme.labelFont
+    hint.TextSize = telemetryTheme.labelTextSize - 1
+    hint.TextColor3 = Color3.fromRGB(176, 196, 230)
+    hint.TextXAlignment = Enum.TextXAlignment.Left
+    hint.TextTransparency = 0.15
+    hint.TextWrapped = true
+    hint.Text = definition.hint or ""
+    hint.Parent = card
+
+    return {
+        frame = card,
+        stroke = stroke,
+        label = label,
+        value = value,
+        hint = hint,
+        definition = definition,
+    }
+end
+
+local function createControlToggle(parent, theme, definition)
+    local controlsTheme = theme.controls or DEFAULT_THEME.controls
+
+    local button = Instance.new("TextButton")
+    button.Name = definition.id or "Control"
+    button.AutoButtonColor = false
+    button.BackgroundColor3 = controlsTheme.toggleOffColor
+    button.BorderSizePixel = 0
+    button.Size = UDim2.new(0, 240, 0, 96)
+    button.Text = ""
+    button.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = controlsTheme.toggleCorner or DEFAULT_THEME.controls.toggleCorner
+    corner.Parent = button
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Thickness = 1.25
+    stroke.Color = controlsTheme.toggleStrokeColor or DEFAULT_THEME.controls.toggleStrokeColor
+    stroke.Transparency = controlsTheme.toggleStrokeTransparency or DEFAULT_THEME.controls.toggleStrokeTransparency
+    stroke.Parent = button
+
+    local padding = Instance.new("UIPadding")
+    padding.PaddingTop = UDim.new(0, 14)
+    padding.PaddingBottom = UDim.new(0, 14)
+    padding.PaddingLeft = UDim.new(0, 16)
+    padding.PaddingRight = UDim.new(0, 16)
+    padding.Parent = button
+
+    local indicator = Instance.new("Frame")
+    indicator.Name = "Indicator"
+    indicator.BackgroundColor3 = controlsTheme.toggleOnColor or DEFAULT_THEME.controls.toggleOnColor
+    indicator.BackgroundTransparency = 0.35
+    indicator.BorderSizePixel = 0
+    indicator.Size = UDim2.new(0, 4, 1, -28)
+    indicator.Position = UDim2.new(0, -2, 0, 14)
+    indicator.Visible = false
+    indicator.Parent = button
+
+    local indicatorCorner = Instance.new("UICorner")
+    indicatorCorner.CornerRadius = UDim.new(1, 0)
+    indicatorCorner.Parent = indicator
+
+    local title = Instance.new("TextLabel")
+    title.Name = "Title"
+    title.BackgroundTransparency = 1
+    title.Size = UDim2.new(1, -8, 0, 24)
+    title.Position = UDim2.new(0, 0, 0, 0)
+    title.Font = controlsTheme.headerFont or DEFAULT_THEME.controls.headerFont
+    title.TextSize = controlsTheme.headerTextSize or DEFAULT_THEME.controls.headerTextSize
+    title.TextColor3 = controlsTheme.headerColor or DEFAULT_THEME.controls.headerColor
+    title.TextXAlignment = Enum.TextXAlignment.Left
+    title.Text = definition.title or definition.id
+    title.Parent = button
+
+    local badge
+    if definition.badge then
+        badge = Instance.new("TextLabel")
+        badge.Name = "Badge"
+        badge.AnchorPoint = Vector2.new(1, 0)
+        badge.Position = UDim2.new(1, 0, 0, 0)
+        badge.Size = UDim2.new(0, 52, 0, 22)
+        badge.BackgroundTransparency = 0.2
+        badge.BackgroundColor3 = (controlsTheme.toggleStrokeColor or DEFAULT_THEME.controls.toggleStrokeColor):Lerp(Color3.new(1, 1, 1), 0.3)
+        badge.Font = controlsTheme.toggleBadgeFont or DEFAULT_THEME.controls.toggleBadgeFont
+        badge.TextSize = controlsTheme.toggleBadgeSize or DEFAULT_THEME.controls.toggleBadgeSize
+        badge.TextColor3 = controlsTheme.toggleBadgeColor or DEFAULT_THEME.controls.toggleBadgeColor
+        badge.TextXAlignment = Enum.TextXAlignment.Center
+        badge.Text = tostring(definition.badge)
+        badge.Parent = button
+
+        local badgeCorner = Instance.new("UICorner")
+        badgeCorner.CornerRadius = UDim.new(0, 10)
+        badgeCorner.Parent = badge
+    end
+
+    local description = Instance.new("TextLabel")
+    description.Name = "Description"
+    description.BackgroundTransparency = 1
+    description.Position = UDim2.new(0, 0, 0, 30)
+    description.Size = UDim2.new(1, -8, 0, 38)
+    description.TextWrapped = true
+    description.TextXAlignment = Enum.TextXAlignment.Left
+    description.Font = controlsTheme.descriptionFont or DEFAULT_THEME.controls.descriptionFont
+    description.TextSize = controlsTheme.descriptionTextSize or DEFAULT_THEME.controls.descriptionTextSize
+    description.TextColor3 = controlsTheme.descriptionColor or DEFAULT_THEME.controls.descriptionColor
+    description.Text = definition.description or ""
+    description.Parent = button
+
+    local status = Instance.new("TextLabel")
+    status.Name = "Status"
+    status.AnchorPoint = Vector2.new(1, 1)
+    status.Position = UDim2.new(1, 0, 1, -2)
+    status.Size = UDim2.new(0, 70, 0, 18)
+    status.BackgroundTransparency = 1
+    status.Font = controlsTheme.descriptionFont or DEFAULT_THEME.controls.descriptionFont
+    status.TextSize = (controlsTheme.descriptionTextSize or DEFAULT_THEME.controls.descriptionTextSize) - 1
+    status.TextColor3 = controlsTheme.descriptionColor or DEFAULT_THEME.controls.descriptionColor
+    status.TextXAlignment = Enum.TextXAlignment.Right
+    status.Text = "OFF"
+    status.Parent = button
+
+    return {
+        button = button,
+        indicator = indicator,
+        title = title,
+        description = description,
+        badge = badge,
+        status = status,
+        stroke = stroke,
+        definition = definition,
+        enabled = false,
+    }
+end
+
+local function styleControlToggle(toggle, theme, enabled)
+    local controlsTheme = theme.controls or DEFAULT_THEME.controls
+    local onColor = controlsTheme.toggleOnColor or DEFAULT_THEME.controls.toggleOnColor
+    local offColor = controlsTheme.toggleOffColor or DEFAULT_THEME.controls.toggleOffColor
+    local onTextColor = controlsTheme.toggleOnTextColor or DEFAULT_THEME.controls.toggleOnTextColor
+    local offTextColor = controlsTheme.toggleOffTextColor or controlsTheme.headerColor or DEFAULT_THEME.controls.headerColor
+    local descriptionColor = controlsTheme.descriptionColor or DEFAULT_THEME.controls.descriptionColor
+
+    if toggle.button then
+        toggle.button.BackgroundColor3 = enabled and onColor:Lerp(Color3.new(1, 1, 1), 0.08) or offColor
+    end
+    if toggle.stroke then
+        toggle.stroke.Color = controlsTheme.toggleStrokeColor or DEFAULT_THEME.controls.toggleStrokeColor
+        toggle.stroke.Transparency = enabled and 0.18 or (controlsTheme.toggleStrokeTransparency or DEFAULT_THEME.controls.toggleStrokeTransparency)
+    end
+    if toggle.indicator then
+        toggle.indicator.Visible = enabled
+        toggle.indicator.BackgroundColor3 = onColor
+    end
+    if toggle.title then
+        toggle.title.TextColor3 = enabled and onTextColor or offTextColor
+    end
+    if toggle.description then
+        toggle.description.TextColor3 = enabled and descriptionColor or descriptionColor:Lerp(Color3.new(0.6, 0.66, 0.8), 0.35)
+    end
+    if toggle.status then
+        toggle.status.Text = enabled and "ON" or "OFF"
+        toggle.status.TextColor3 = enabled and onTextColor or descriptionColor
+    end
+    if toggle.badge then
+        toggle.badge.TextColor3 = controlsTheme.toggleBadgeColor or DEFAULT_THEME.controls.toggleBadgeColor
+        toggle.badge.BackgroundTransparency = enabled and 0.1 or 0.35
+    end
+
+    toggle.enabled = enabled
+end
+
 local function styleActionButton(button, theme, action)
     local isSecondary = action.variant == "secondary" or action.kind == "cancel"
     button.AutoButtonColor = true
@@ -487,10 +820,19 @@ function VerificationDashboard.new(options)
     padding.PaddingRight = UDim.new(0, 12)
     padding.Parent = root
 
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Stretch
+    layout.VerticalAlignment = Enum.VerticalAlignment.Top
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 18)
+    layout.Parent = root
+
     local header = Instance.new("Frame")
     header.Name = "Header"
     header.BackgroundTransparency = 1
-    header.Size = UDim2.new(1, 0, 0, 82)
+    header.Size = UDim2.new(1, 0, 0, 96)
+    header.LayoutOrder = 1
     header.Parent = root
 
     local headerLayout = Instance.new("UIListLayout")
@@ -547,15 +889,152 @@ function VerificationDashboard.new(options)
     subtitle.LayoutOrder = 2
     subtitle.Parent = textContainer
 
+    local telemetryFrame = Instance.new("Frame")
+    telemetryFrame.Name = "Telemetry"
+    telemetryFrame.BackgroundTransparency = 1
+    telemetryFrame.Size = UDim2.new(1, 0, 0, 110)
+    telemetryFrame.LayoutOrder = 2
+    telemetryFrame.Parent = root
+
+    local telemetryGrid = Instance.new("UIGridLayout")
+    telemetryGrid.FillDirection = Enum.FillDirection.Horizontal
+    telemetryGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    telemetryGrid.VerticalAlignment = Enum.VerticalAlignment.Top
+    telemetryGrid.SortOrder = Enum.SortOrder.LayoutOrder
+    telemetryGrid.CellPadding = UDim2.new(0, 12, 0, 12)
+    telemetryGrid.CellSize = UDim2.new(0.333, -12, 0, 96)
+    telemetryGrid.Parent = telemetryFrame
+
+    local telemetryCards = {}
+    for index, definition in ipairs(DEFAULT_TELEMETRY) do
+        local card = createTelemetryCard(telemetryFrame, theme, definition)
+        card.frame.LayoutOrder = index
+        telemetryCards[definition.id] = card
+    end
+
+    local controlPanel = Instance.new("Frame")
+    controlPanel.Name = "ControlPanel"
+    controlPanel.BackgroundColor3 = theme.controls.sectionBackground or DEFAULT_THEME.controls.sectionBackground
+    controlPanel.BackgroundTransparency = theme.controls.sectionTransparency or DEFAULT_THEME.controls.sectionTransparency
+    controlPanel.BorderSizePixel = 0
+    controlPanel.LayoutOrder = 3
+    controlPanel.AutomaticSize = Enum.AutomaticSize.Y
+    controlPanel.Size = UDim2.new(1, 0, 0, 200)
+    controlPanel.Parent = root
+
+    local controlCorner = Instance.new("UICorner")
+    controlCorner.CornerRadius = DEFAULT_THEME.controls.toggleCorner
+    controlCorner.Parent = controlPanel
+
+    local controlStroke = Instance.new("UIStroke")
+    controlStroke.Thickness = 1.2
+    controlStroke.Color = theme.controls.sectionStrokeColor or DEFAULT_THEME.controls.sectionStrokeColor
+    controlStroke.Transparency = theme.controls.sectionStrokeTransparency or DEFAULT_THEME.controls.sectionStrokeTransparency
+    controlStroke.Parent = controlPanel
+
+    local controlGradient = Instance.new("UIGradient")
+    controlGradient.Color = theme.controls.sectionGradient or DEFAULT_THEME.controls.sectionGradient
+    controlGradient.Transparency = theme.controls.sectionGradientTransparency or DEFAULT_THEME.controls.sectionGradientTransparency
+    controlGradient.Rotation = 115
+    controlGradient.Parent = controlPanel
+
+    local controlPadding = Instance.new("UIPadding")
+    controlPadding.PaddingTop = UDim.new(0, 18)
+    controlPadding.PaddingBottom = UDim.new(0, 18)
+    controlPadding.PaddingLeft = UDim.new(0, 18)
+    controlPadding.PaddingRight = UDim.new(0, 18)
+    controlPadding.Parent = controlPanel
+
+    local controlStack = Instance.new("Frame")
+    controlStack.Name = "ControlStack"
+    controlStack.BackgroundTransparency = 1
+    controlStack.AutomaticSize = Enum.AutomaticSize.Y
+    controlStack.Size = UDim2.new(1, 0, 0, 0)
+    controlStack.Parent = controlPanel
+
+    local controlLayout = Instance.new("UIListLayout")
+    controlLayout.FillDirection = Enum.FillDirection.Vertical
+    controlLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    controlLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    controlLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    controlLayout.Padding = UDim.new(0, 12)
+    controlLayout.Parent = controlStack
+
+    local controlHeader = Instance.new("TextLabel")
+    controlHeader.Name = "ControlHeader"
+    controlHeader.BackgroundTransparency = 1
+    controlHeader.Size = UDim2.new(1, 0, 0, 26)
+    controlHeader.Font = theme.controls.headerFont or DEFAULT_THEME.controls.headerFont
+    controlHeader.TextSize = theme.controls.headerTextSize or DEFAULT_THEME.controls.headerTextSize
+    controlHeader.TextColor3 = theme.controls.headerColor or DEFAULT_THEME.controls.headerColor
+    controlHeader.TextXAlignment = Enum.TextXAlignment.Left
+    controlHeader.Text = "Command matrix"
+    controlHeader.LayoutOrder = 1
+    controlHeader.Parent = controlStack
+
+    local controlGridContainer = Instance.new("Frame")
+    controlGridContainer.Name = "ControlGrid"
+    controlGridContainer.BackgroundTransparency = 1
+    controlGridContainer.AutomaticSize = Enum.AutomaticSize.Y
+    controlGridContainer.Size = UDim2.new(1, 0, 0, 0)
+    controlGridContainer.LayoutOrder = 2
+    controlGridContainer.Parent = controlStack
+
+    local controlGrid = Instance.new("UIGridLayout")
+    controlGrid.FillDirection = Enum.FillDirection.Horizontal
+    controlGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    controlGrid.VerticalAlignment = Enum.VerticalAlignment.Top
+    controlGrid.SortOrder = Enum.SortOrder.LayoutOrder
+    controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
+    controlGrid.CellSize = UDim2.new(0.5, -12, 0, 96)
+    controlGrid.FillDirectionMaxCells = 2
+    controlGrid.Parent = controlGridContainer
+
+    local controlButtons = {}
+
+    local timelineCard = Instance.new("Frame")
+    timelineCard.Name = "TimelineCard"
+    timelineCard.BackgroundColor3 = theme.cardColor
+    timelineCard.BackgroundTransparency = theme.cardTransparency
+    timelineCard.BorderSizePixel = 0
+    timelineCard.AutomaticSize = Enum.AutomaticSize.Y
+    timelineCard.Size = UDim2.new(1, 0, 0, 200)
+    timelineCard.LayoutOrder = 4
+    timelineCard.Parent = root
+
+    local timelineCorner = Instance.new("UICorner")
+    timelineCorner.CornerRadius = UDim.new(0, 14)
+    timelineCorner.Parent = timelineCard
+
+    local timelineStroke = Instance.new("UIStroke")
+    timelineStroke.Thickness = 1.4
+    timelineStroke.Color = theme.cardStrokeColor
+    timelineStroke.Transparency = theme.cardStrokeTransparency
+    timelineStroke.Parent = timelineCard
+
+    local timelinePadding = Instance.new("UIPadding")
+    timelinePadding.PaddingTop = UDim.new(0, 18)
+    timelinePadding.PaddingBottom = UDim.new(0, 18)
+    timelinePadding.PaddingLeft = UDim.new(0, 18)
+    timelinePadding.PaddingRight = UDim.new(0, 18)
+    timelinePadding.Parent = timelineCard
+
+    local timelineLayout = Instance.new("UIListLayout")
+    timelineLayout.FillDirection = Enum.FillDirection.Vertical
+    timelineLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    timelineLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    timelineLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    timelineLayout.Padding = UDim.new(0, 14)
+    timelineLayout.Parent = timelineCard
+
     local progressTrack = Instance.new("Frame")
     progressTrack.Name = "ProgressTrack"
-    progressTrack.AnchorPoint = Vector2.new(0, 0)
-    progressTrack.Position = UDim2.new(0, 0, 0, 96)
-    progressTrack.Size = UDim2.new(1, 0, 0, 6)
+    progressTrack.Size = UDim2.new(1, 0, 0, 8)
     progressTrack.BackgroundColor3 = Color3.fromRGB(26, 32, 52)
-    progressTrack.BackgroundTransparency = 0.15
+    progressTrack.BackgroundTransparency = 0.2
     progressTrack.BorderSizePixel = 0
-    progressTrack.Parent = root
+    progressTrack.LayoutOrder = 1
+    progressTrack.Parent = timelineCard
 
     local trackCorner = Instance.new("UICorner")
     trackCorner.CornerRadius = UDim.new(0, 6)
@@ -585,11 +1064,11 @@ function VerificationDashboard.new(options)
 
     local listFrame = Instance.new("Frame")
     listFrame.Name = "Steps"
-    listFrame.AnchorPoint = Vector2.new(0, 0)
-    listFrame.Position = UDim2.new(0, 0, 0, 128)
-    listFrame.Size = UDim2.new(1, 0, 1, -(theme.actionHeight + 208))
     listFrame.BackgroundTransparency = 1
-    listFrame.Parent = root
+    listFrame.AutomaticSize = Enum.AutomaticSize.Y
+    listFrame.Size = UDim2.new(1, 0, 0, 0)
+    listFrame.LayoutOrder = 2
+    listFrame.Parent = timelineCard
 
     local listLayout = Instance.new("UIListLayout")
     listLayout.FillDirection = Enum.FillDirection.Vertical
@@ -610,10 +1089,9 @@ function VerificationDashboard.new(options)
 
     local actionsFrame = Instance.new("Frame")
     actionsFrame.Name = "Actions"
-    actionsFrame.AnchorPoint = Vector2.new(0, 1)
-    actionsFrame.Position = UDim2.new(0, 0, 1, 0)
-    actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.BackgroundTransparency = 1
+    actionsFrame.LayoutOrder = 5
+    actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
     actionsFrame.Parent = root
 
@@ -627,9 +1105,25 @@ function VerificationDashboard.new(options)
     local self = setmetatable({
         _theme = theme,
         _root = root,
+        _layout = layout,
         _header = header,
         _title = title,
         _subtitle = subtitle,
+        _telemetryFrame = telemetryFrame,
+        _telemetryGrid = telemetryGrid,
+        _telemetryCards = telemetryCards,
+        _controlPanel = controlPanel,
+        _controlStroke = controlStroke,
+        _controlGradient = controlGradient,
+        _controlHeader = controlHeader,
+        _controlGrid = controlGrid,
+        _controlButtons = controlButtons,
+        _controlConnections = {},
+        _controlState = {},
+        _controlDefinitions = CONTROL_DEFINITIONS,
+        _onControlChanged = options and options.onControlToggle or nil,
+        _timelineCard = timelineCard,
+        _timelineStroke = timelineStroke,
         _progressFill = progressFill,
         _progressTween = nil,
         _stepsFrame = listFrame,
@@ -659,6 +1153,8 @@ function VerificationDashboard.new(options)
 
     self:_applyLogoTheme()
     self:_startLogoShimmer()
+    self:setControls(options.controls)
+    self:setTelemetry(options.telemetry)
     self:setProgress(0)
 
     return self
@@ -772,10 +1268,29 @@ function VerificationDashboard:destroy()
         end
     end
 
+    for _, connection in ipairs(self._controlConnections) do
+        if connection then
+            if connection.Disconnect then
+                connection:Disconnect()
+            elseif connection.disconnect then
+                connection:disconnect()
+            end
+        end
+    end
+
     for _, button in ipairs(self._actionButtons) do
         if button and button.Destroy then
             button:Destroy()
         end
+    end
+
+    if self._controlButtons then
+        for _, toggle in pairs(self._controlButtons) do
+            if toggle and toggle.button and toggle.button.Destroy then
+                toggle.button:Destroy()
+            end
+        end
+        self._controlButtons = {}
     end
 
     if self._root then
@@ -815,12 +1330,78 @@ function VerificationDashboard:applyTheme(theme)
         self._subtitle.TextSize = currentTheme.subtitleTextSize
     end
 
-    if self._stepsFrame then
-        self._stepsFrame.Size = UDim2.new(1, 0, 1, -(currentTheme.actionHeight + 208))
-    end
-
     if self._actionsFrame then
         self._actionsFrame.Size = UDim2.new(1, 0, 0, currentTheme.actionHeight + 12)
+    end
+
+    if self._progressFill then
+        self._progressFill.BackgroundColor3 = currentTheme.accentColor
+    end
+
+    if self._telemetryCards then
+        local telemetryTheme = currentTheme.telemetry or DEFAULT_THEME.telemetry
+        for _, card in pairs(self._telemetryCards) do
+            if card.frame then
+                card.frame.BackgroundColor3 = telemetryTheme.cardColor
+                card.frame.BackgroundTransparency = telemetryTheme.cardTransparency
+            end
+            if card.stroke then
+                card.stroke.Color = telemetryTheme.cardStrokeColor
+                card.stroke.Transparency = telemetryTheme.cardStrokeTransparency
+            end
+            if card.label then
+                card.label.Font = telemetryTheme.labelFont
+                card.label.TextSize = telemetryTheme.labelTextSize
+                card.label.TextColor3 = (telemetryTheme.accentColor or currentTheme.accentColor):Lerp(Color3.new(1, 1, 1), 0.35)
+            end
+            if card.value then
+                card.value.Font = telemetryTheme.valueFont
+                card.value.TextSize = telemetryTheme.valueTextSize
+                card.value.TextColor3 = Color3.fromRGB(235, 245, 255)
+            end
+            if card.hint then
+                card.hint.Font = telemetryTheme.labelFont
+                card.hint.TextSize = math.max((telemetryTheme.labelTextSize or DEFAULT_THEME.telemetry.labelTextSize) - 1, 10)
+                card.hint.TextColor3 = Color3.fromRGB(176, 196, 230)
+            end
+        end
+    end
+
+    if self._controlPanel then
+        local controlsTheme = currentTheme.controls or DEFAULT_THEME.controls
+        self._controlPanel.BackgroundColor3 = controlsTheme.sectionBackground or DEFAULT_THEME.controls.sectionBackground
+        self._controlPanel.BackgroundTransparency = controlsTheme.sectionTransparency or DEFAULT_THEME.controls.sectionTransparency
+        if self._controlStroke then
+            self._controlStroke.Color = controlsTheme.sectionStrokeColor or DEFAULT_THEME.controls.sectionStrokeColor
+            self._controlStroke.Transparency = controlsTheme.sectionStrokeTransparency or DEFAULT_THEME.controls.sectionStrokeTransparency
+        end
+        if self._controlGradient then
+            self._controlGradient.Color = controlsTheme.sectionGradient or DEFAULT_THEME.controls.sectionGradient
+            self._controlGradient.Transparency = controlsTheme.sectionGradientTransparency or DEFAULT_THEME.controls.sectionGradientTransparency
+        end
+        if self._controlHeader then
+            self._controlHeader.Font = controlsTheme.headerFont or DEFAULT_THEME.controls.headerFont
+            self._controlHeader.TextSize = controlsTheme.headerTextSize or DEFAULT_THEME.controls.headerTextSize
+            self._controlHeader.TextColor3 = controlsTheme.headerColor or DEFAULT_THEME.controls.headerColor
+        end
+        if self._controlButtons then
+            for id, toggle in pairs(self._controlButtons) do
+                local state = self._controlState and self._controlState[id]
+                if state == nil then
+                    state = toggle.enabled
+                end
+                styleControlToggle(toggle, currentTheme, not not state)
+            end
+        end
+    end
+
+    if self._timelineCard then
+        self._timelineCard.BackgroundColor3 = currentTheme.cardColor
+        self._timelineCard.BackgroundTransparency = currentTheme.cardTransparency
+    end
+    if self._timelineStroke then
+        self._timelineStroke.Color = currentTheme.cardStrokeColor
+        self._timelineStroke.Transparency = currentTheme.cardStrokeTransparency
     end
 
     for _, definition in ipairs(STEP_DEFINITIONS) do
@@ -885,6 +1466,47 @@ function VerificationDashboard:setStatusText(text)
     end
     if self._subtitle then
         self._subtitle.Text = text or ""
+    end
+end
+
+function VerificationDashboard:setTelemetry(telemetry)
+    if self._destroyed then
+        return
+    end
+
+    telemetry = telemetry or {}
+
+    if not self._telemetryCards then
+        return
+    end
+
+    for id, card in pairs(self._telemetryCards) do
+        local payload = telemetry[id]
+        if payload == nil and typeof(telemetry) == "table" then
+            payload = telemetry[string.upper(id or "")] or telemetry[string.lower(id or "")]
+        end
+
+        local valueText = payload
+        local hintText
+
+        if typeof(payload) == "table" then
+            valueText = payload.value or payload.text or payload.display or payload[1]
+            hintText = payload.hint or payload.description or payload.label
+        end
+
+        if valueText ~= nil and card.value then
+            card.value.Text = tostring(valueText)
+        elseif card.definition and card.definition.value and card.value then
+            card.value.Text = tostring(card.definition.value)
+        end
+
+        if card.hint then
+            if hintText ~= nil then
+                card.hint.Text = tostring(hintText)
+            elseif card.definition then
+                card.hint.Text = card.definition.hint or ""
+            end
+        end
     end
 end
 
@@ -1239,6 +1861,127 @@ function VerificationDashboard:setActions(actions)
         table.insert(self._actionButtons, button)
         table.insert(self._actionConnections, connection)
     end
+end
+
+function VerificationDashboard:setControls(controls)
+    if self._destroyed then
+        return
+    end
+
+    controls = controls or self._controlDefinitions or CONTROL_DEFINITIONS
+
+    if typeof(controls) ~= "table" then
+        controls = CONTROL_DEFINITIONS
+    end
+
+    self._controlDefinitions = controls
+
+    for _, connection in ipairs(self._controlConnections) do
+        if connection then
+            if connection.Disconnect then
+                connection:Disconnect()
+            elseif connection.disconnect then
+                connection:disconnect()
+            end
+        end
+    end
+    self._controlConnections = {}
+
+    if self._controlButtons then
+        for _, toggle in pairs(self._controlButtons) do
+            if toggle and toggle.button and toggle.button.Destroy then
+                toggle.button:Destroy()
+            end
+        end
+    end
+
+    self._controlButtons = {}
+    self._controlState = {}
+
+    local grid = self._controlGrid
+    if not grid then
+        return
+    end
+
+    local container = grid.Parent
+    if not container then
+        return
+    end
+
+    for index, definition in ipairs(controls) do
+        local id = definition.id or string.format("Control%d", index)
+        local toggle = createControlToggle(container, self._theme, definition)
+        toggle.button.LayoutOrder = index
+        toggle.definition = definition
+        self._controlButtons[id] = toggle
+
+        local enabled = definition.enabled
+        if enabled == nil then
+            enabled = definition.default
+        end
+        if enabled == nil then
+            enabled = true
+        end
+        enabled = not not enabled
+        self._controlState[id] = enabled
+        styleControlToggle(toggle, self._theme, enabled)
+
+        local connection = toggle.button.MouseButton1Click:Connect(function()
+            self:toggleControl(id)
+        end)
+        table.insert(self._controlConnections, connection)
+    end
+end
+
+function VerificationDashboard:setControlState(id, enabled)
+    if self._destroyed then
+        return
+    end
+
+    if id == nil then
+        return
+    end
+
+    id = tostring(id)
+    enabled = not not enabled
+
+    if not self._controlState then
+        self._controlState = {}
+    end
+
+    self._controlState[id] = enabled
+
+    local toggle = self._controlButtons and self._controlButtons[id]
+    if toggle then
+        styleControlToggle(toggle, self._theme, enabled)
+        if toggle.definition and typeof(toggle.definition.callback) == "function" then
+            toggle.definition.callback(self, enabled, toggle)
+        end
+    end
+
+    if self._onControlChanged then
+        self._onControlChanged(id, enabled, toggle and toggle.definition or nil)
+    end
+end
+
+function VerificationDashboard:toggleControl(id)
+    if self._destroyed or id == nil then
+        return
+    end
+
+    id = tostring(id)
+    local current = self._controlState and self._controlState[id]
+    if current == nil then
+        return
+    end
+    self:setControlState(id, not current)
+end
+
+function VerificationDashboard:getControlState(id)
+    if not self._controlState then
+        return nil
+    end
+    return self._controlState[id]
 end
 
 return VerificationDashboard
