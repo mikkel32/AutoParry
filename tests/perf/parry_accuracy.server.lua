@@ -322,15 +322,16 @@ function Environment.new(config)
     env.api.resetConfig()
     env.api.setEnabled(false)
 
-    env.parryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+    local parryContainer = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+    env.parryRemote = parryContainer:WaitForChild("parryButtonPress")
     env.parryAttempts = 0
 
     local remote = env.parryRemote
-    local originalFireServer = remote.FireServer
-    env.originalFireServer = originalFireServer
+    local originalFire = remote.Fire
+    env.originalFire = originalFire
     local environment = env
 
-    function remote:FireServer(...)
+    function remote:Fire(...)
         environment.parryAttempts += 1
         local payload = { ... }
         table.insert(environment.remoteLog, {
@@ -339,7 +340,7 @@ function Environment.new(config)
             scenario = environment.currentScenario,
             payload = payload,
         })
-        return originalFireServer(self, ...)
+        return originalFire(self, ...)
     end
 
     env.parryConnection = env.api.onParry(function(ball, timestamp)
@@ -487,8 +488,8 @@ function Environment:cleanup()
         self.parryConnection = nil
     end
 
-    if self.parryRemote and self.originalFireServer then
-        self.parryRemote.FireServer = self.originalFireServer
+    if self.parryRemote and self.originalFire then
+        self.parryRemote.Fire = self.originalFire
     end
 
     if self.originalGetService then

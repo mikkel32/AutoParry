@@ -33,10 +33,11 @@ local function makeSignal()
 end
 
 local heartbeatSignal = makeSignal()
-local parryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+local parryContainer = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
+local parryRemote = parryContainer:WaitForChild("parryButtonPress")
 local parryCalls = 0
 
-function parryRemote:FireServer(...)
+function parryRemote:Fire(...)
     parryCalls = parryCalls + 1
     self.LastPayload = { ... }
 end

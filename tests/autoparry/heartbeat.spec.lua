@@ -130,20 +130,20 @@ return function(t)
             runService = runService,
         })
 
-        local remote = Harness.createRemote()
-        remotes:Add(remote)
+        local remoteContainer, remote = Harness.createParryButtonPress({ scheduler = scheduler })
+        remotes:Add(remoteContainer)
 
         local parryLog = {}
         local currentFrame = 0
 
-        local originalFireServer = remote.FireServer
-        remote.FireServer = function(self, ...)
+        local originalFire = remote.Fire
+        remote.Fire = function(self, ...)
             table.insert(parryLog, {
                 frame = currentFrame,
                 time = scheduler:clock(),
                 payload = { ... },
             })
-            return originalFireServer(self, ...)
+            return originalFire(self, ...)
         end
 
         local autoparry = Harness.loadAutoparry({

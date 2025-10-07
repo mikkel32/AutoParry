@@ -190,8 +190,13 @@ local function createContext(options)
         stats = stats,
     })
 
-    local remote = Harness.createRemote(options.remote)
-    remotes:Add(remote)
+    local remoteOptions = options.remote or {}
+    local parryContainer, remote = Harness.createParryButtonPress({
+        scheduler = scheduler,
+        remoteKind = remoteOptions.kind,
+        remoteClassName = remoteOptions.className,
+    })
+    remotes:Add(parryContainer)
 
     local ballsFolder = BallsFolder.new("Balls")
 
@@ -223,7 +228,7 @@ local function createContext(options)
     local instrumentedRemotes = {}
 
     local function hookRemote(remoteInstance)
-        local methodName = remoteInstance._parryMethod or "FireServer"
+        local methodName = remoteInstance._parryMethod or "Fire"
         local original = remoteInstance[methodName]
 
         assert(isCallable(original), "Harness remote missing parry method")
@@ -247,16 +252,22 @@ local function createContext(options)
 
     local context
 
-    local function setActiveRemote(remoteInstance)
+    local activeRemoteContainer = parryContainer
+
+    local function setActiveRemote(remoteInstance, containerInstance)
         local methodName = hookRemote(remoteInstance)
+        if containerInstance then
+            activeRemoteContainer = containerInstance
+        end
         if context then
             context.remote = remoteInstance
             context.remoteMethod = methodName
+            context.remoteContainer = activeRemoteContainer
         end
         return methodName
     end
 
-    local parryMethodName = setActiveRemote(remote)
+    local parryMethodName = setActiveRemote(remote, parryContainer)
 
     local parryLog = {}
     local parryConnection = autoparry.onParry(function(ball, timestamp)
@@ -272,6 +283,7 @@ local function createContext(options)
         autoparry = autoparry,
         remote = remote,
         remoteMethod = parryMethodName,
+        remoteContainer = parryContainer,
         remotes = remotes,
         remoteLog = remoteLog,
         parryLog = parryLog,
@@ -313,15 +325,17 @@ local function createContext(options)
             return nil
         end
 
-        local targetName = self.remote and self.remote.Name
+        local container = self.remoteContainer
+        local targetName = container and container.Name
         if not targetName then
             return nil
         end
 
         local removed = self.remotes:Remove(targetName)
-        if removed == self.remote then
+        if removed == container then
             self.remote = nil
             self.remoteMethod = nil
+            self.remoteContainer = nil
         end
 
         return removed
@@ -332,11 +346,16 @@ local function createContext(options)
             return nil
         end
 
-        local newRemote = Harness.createRemote(remoteOptions)
-        self.remotes:Add(newRemote)
-        local methodName = setActiveRemote(newRemote)
+        local newContainer, newRemote = Harness.createParryButtonPress({
+            scheduler = scheduler,
+            remoteKind = remoteOptions and remoteOptions.kind,
+            remoteClassName = remoteOptions and remoteOptions.className,
+        })
+        self.remotes:Add(newContainer)
+        local methodName = setActiveRemote(newRemote, newContainer)
         self.remote = newRemote
         self.remoteMethod = methodName
+        self.remoteContainer = newContainer
         return newRemote
     end
 
@@ -460,87 +479,6 @@ return function(t)
 
         expect(#context.parryLog).toEqual(1)
         expect(context.parryLog[1].ball).toEqual(ball)
-
-        context:destroy()
-    end)
-
-    t.test("parry loop fires bindable parry remotes", function(expect)
-        local context = createContext({
-            remote = {
-                kind = "BindableEvent",
-            },
-        })
-
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.12,
-        })
-
-        local ball = context:addBall({
-            name = "BindableThreat",
-            position = Vector3.new(0, 0, 36),
-            velocity = Vector3.new(0, 0, -180),
-        })
-
-        autoparry.setEnabled(true)
-        context:step(1 / 60)
-
-        expect(#context.parryLog).toEqual(1)
-        expect(context.parryLog[1].ball).toEqual(ball)
-        expect(context.remoteMethod).toEqual("Fire")
-        expect(#context.remoteLog).toEqual(1)
-        expect(context.remote.lastPayload).toEqual({})
-
-        context:destroy()
-    end)
-
-    t.test("parry loop builds a legacy parry attempt payload", function(expect)
-        local context = createContext({
-            remote = {
-                name = "ParryAttempt",
-                kind = "RemoteEvent",
-            },
-        })
-
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.12,
-        })
-
-        local ball = context:addBall({
-            name = "LegacyThreat",
-            position = Vector3.new(0, 0, 36),
-            velocity = Vector3.new(0, 0, -180),
-        })
-
-        autoparry.setEnabled(true)
-        context:step(1 / 60)
-
-        expect(#context.parryLog).toEqual(1)
-        expect(context.parryLog[1].ball).toEqual(ball)
-        expect(context.remoteMethod).toEqual("FireServer")
-
-        local payload = context.remote.lastPayload
-        expect(#payload).toEqual(5)
-        expect(type(payload[1])).toEqual("number")
-        expect(payload[2]).toEqual(ball.CFrame)
-        expect(type(payload[4])).toEqual("number")
-        expect(type(payload[5])).toEqual("number")
-
-        local snapshot = payload[3]
-        expect(type(snapshot)).toEqual("table")
-        local localEntry = snapshot["LocalPlayer"]
-        expect(type(localEntry)).toEqual("table")
-        expect(localEntry.position).toEqual(context.rootPart.Position)
-        expect(localEntry.velocity).toEqual(context.rootPart.AssemblyLinearVelocity)
 
         context:destroy()
     end)
