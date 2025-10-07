@@ -209,7 +209,7 @@ local handleParryRemoteInvalidated
 local disconnectParryRemoteMonitors
 local scheduleParryRemoteRestart
 
-local PARRY_REMOTE_CANDIDATES = { "ParryButtonPress.parryButtonPress" }
+local PARRY_REMOTE_CANDIDATES = { "ParryButtonPress", "ParryAttempt" }
 
 local function disconnectSuccessListeners()
     safeDisconnect(ParrySuccessConnection)
@@ -426,11 +426,24 @@ local function configureParryRemoteInvoker(remoteInfo)
         return
     end
 
-    local variant = remoteInfo and remoteInfo.variant or ParryRemoteVariant or "modern"
+    local variant = remoteInfo and remoteInfo.variant or ParryRemoteVariant
+    if not variant and ParryRemote then
+        variant = ParryRemote.Name == "ParryAttempt" and "legacy" or "modern"
+    end
+
     ParryRemoteVariant = variant
 
-    ParryRemoteFire = function()
-        return ParryRemoteBaseFire()
+    if variant == "legacy" then
+        ParryRemoteFire = function(ball, analysis)
+            local context = createLegacyContext(ball, analysis)
+            local payload = buildLegacyPayload(context)
+            local length = payload.n or #payload
+            return ParryRemoteBaseFire(arrayUnpack(payload, 1, length))
+        end
+    else
+        ParryRemoteFire = function()
+            return ParryRemoteBaseFire()
+        end
     end
 end
 
@@ -495,12 +508,8 @@ local function beginInitialization()
                 report = report,
                 retryInterval = config.verificationRetryInterval,
                 candidates = {
-                    {
-                        name = "ParryButtonPress",
-                        childName = "parryButtonPress",
-                        variant = "modern",
-                        displayName = "ParryButtonPress.parryButtonPress",
-                    },
+                    { name = "ParryButtonPress", variant = "modern" },
+                    { name = "ParryAttempt", variant = "legacy" },
                 },
             })
         end)

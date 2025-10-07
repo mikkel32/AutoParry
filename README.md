@@ -131,8 +131,8 @@ events with the neon verification dashboard above so players can follow each
 stage:
 
 - **Player Sync** — waits for `Players.LocalPlayer` and the character rig.
-- **Remotes** — locates `ReplicatedStorage.Remotes` and validates the
-  `ParryButtonPress.parryButtonPress` bindable used to trigger parries.
+- **Remotes** — locates `ReplicatedStorage.Remotes` and validates the parry
+  remote (`ParryButtonPress` or the legacy `ParryAttempt`).
 - **Success Events** — wires listeners for `ParrySuccess` / `ParrySuccessAll`
   so the core can reset cooldowns as soon as Blade Ball confirms a parry.
 - **Ball Telemetry** — verifies the configured workspace folder (defaults to
@@ -225,8 +225,7 @@ Call `resetConfig()` to restore defaults at runtime.
 
 ## Reliability safeguards
 
-- The core waits for the local player and the `ParryButtonPress.parryButtonPress`
-  bindable with a
+- The core waits for the local player and the `ParryButtonPress` remote with a
   sensible timeout before starting the heartbeat loop, raising a clear error if
   Blade Ball is not ready yet.
 - Config overrides are validated to prevent invalid values from breaking the
