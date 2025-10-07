@@ -594,13 +594,13 @@ return function(options)
     })
 
     local parryConn = Parry.onStateChanged(function(enabled)
-        controller.setEnabled(enabled, { silent = true, source = "parry" })
+        controller:setEnabled(enabled, { silent = true, source = "parry" })
     end)
 
     if opts.autoStart or opts.defaultEnabled then
         Parry.enable()
     else
-        controller.setEnabled(Parry.isEnabled(), { silent = true })
+        controller:setEnabled(Parry.isEnabled(), { silent = true })
     end
 
     local api = {}
@@ -614,12 +614,12 @@ return function(options)
     end
 
     function api.setEnabled(enabled)
-        controller.setEnabled(enabled)
+        controller:setEnabled(enabled)
         return Parry.isEnabled()
     end
 
     function api.toggle()
-        controller.toggle()
+        controller:toggle()
         return Parry.isEnabled()
     end
 
@@ -662,7 +662,7 @@ return function(options)
             parryConn:Disconnect()
             parryConn = nil
         end
-        controller.destroy()
+        controller:destroy()
     end
 
     return api

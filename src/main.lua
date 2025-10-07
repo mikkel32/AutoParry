@@ -508,7 +508,7 @@ return function(options, loaderContext)
 
     parryConn = Parry.onStateChanged(function(enabled)
         if controller then
-            controller.setEnabled(enabled, { silent = true, source = "parry" })
+            controller:setEnabled(enabled, { silent = true, source = "parry" })
         end
     end)
 
@@ -548,35 +548,35 @@ return function(options, loaderContext)
         checkReady()
     end)
 
-    finalize = function()
-        if bootstrapCancelled then
-            return
-        end
-
-        controller = UI.mount({
-            title = opts.title,
-            initialState = opts.autoStart or opts.defaultEnabled or Parry.isEnabled(),
-            hotkey = opts.hotkey,
-            tooltip = opts.tooltip,
-            onToggle = function(enabled)
-                Parry.setEnabled(enabled)
-            end,
-        })
-
-        if controller then
-            controller.setEnabled(Parry.isEnabled(), { silent = true })
-        end
-
-        if opts.autoStart or opts.defaultEnabled then
-            Parry.enable()
-        else
-            if controller then
-                controller.setEnabled(Parry.isEnabled(), { silent = true })
+        finalize = function()
+            if bootstrapCancelled then
+                return
             end
-        end
 
-        if overlay then
-            overlay:setActions(nil)
+            controller = UI.mount({
+                title = opts.title,
+                initialState = opts.autoStart or opts.defaultEnabled or Parry.isEnabled(),
+                hotkey = opts.hotkey,
+                tooltip = opts.tooltip,
+                onToggle = function(enabled)
+                    Parry.setEnabled(enabled)
+                end,
+            })
+
+            if controller then
+                controller:setEnabled(Parry.isEnabled(), { silent = true })
+            end
+
+            if opts.autoStart or opts.defaultEnabled then
+                Parry.enable()
+            else
+                if controller then
+                    controller:setEnabled(Parry.isEnabled(), { silent = true })
+                end
+            end
+
+            if overlay then
+                overlay:setActions(nil)
             overlay:complete({
                 fadeDuration = overlayOpts.fadeDuration,
                 progressDuration = overlayOpts.progressDuration,
@@ -599,7 +599,7 @@ return function(options, loaderContext)
 
     function api.setEnabled(enabled)
         if controller then
-            controller.setEnabled(enabled)
+            controller:setEnabled(enabled)
         else
             Parry.setEnabled(enabled)
         end
@@ -608,7 +608,7 @@ return function(options, loaderContext)
 
     function api.toggle()
         if controller then
-            controller.toggle()
+            controller:toggle()
         else
             Parry.toggle()
         end
@@ -669,7 +669,7 @@ return function(options, loaderContext)
         end
 
         if controller then
-            controller.destroy()
+            controller:destroy()
             controller = nil
         end
 
