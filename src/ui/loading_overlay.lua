@@ -64,6 +64,18 @@ local DEFAULT_THEME = {
     progressBarSize = UDim2.new(0, 280, 0, 12),
     progressTweenSeconds = 0.35,
     statusTweenSeconds = 0.18,
+    actionsPadding = UDim.new(0, 12),
+    actionsPosition = UDim2.new(0.5, 0, 1, -20),
+    actionsSize = UDim2.new(0.9, 0, 0, 40),
+    actionButtonHeight = 38,
+    actionButtonMinWidth = 132,
+    actionButtonCorner = UDim.new(0, 6),
+    actionButtonFont = Enum.Font.GothamBold,
+    actionButtonTextSize = 18,
+    actionPrimaryColor = Color3.fromRGB(0, 170, 255),
+    actionPrimaryTextColor = Color3.fromRGB(15, 15, 15),
+    actionSecondaryColor = Color3.fromRGB(65, 65, 65),
+    actionSecondaryTextColor = Color3.fromRGB(240, 240, 240),
 }
 
 local FONT_ASSET = "rbxasset://fonts/families/GothamSSm.json"
@@ -179,6 +191,26 @@ local function createTipLabel(parent, theme)
     return label
 end
 
+local function createActionsRow(parent, theme)
+    local frame = Instance.new("Frame")
+    frame.Name = "Actions"
+    frame.AnchorPoint = Vector2.new(0.5, 1)
+    frame.Position = theme.actionsPosition or DEFAULT_THEME.actionsPosition
+    frame.Size = theme.actionsSize or DEFAULT_THEME.actionsSize
+    frame.BackgroundTransparency = 1
+    frame.Visible = false
+    frame.Parent = parent
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Horizontal
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    layout.VerticalAlignment = Enum.VerticalAlignment.Center
+    layout.Padding = theme.actionsPadding or DEFAULT_THEME.actionsPadding
+    layout.Parent = frame
+
+    return frame, layout
+end
+
 local function preloadAssets(instances)
     task.spawn(function()
         local ok, err = pcall(function()
@@ -216,6 +248,7 @@ function LoadingOverlay.new(options)
     local progressBar, progressFill = createProgressBar(container, theme)
     local statusLabel = createStatusLabel(container, theme)
     local tipLabel = createTipLabel(container, theme)
+    local actionsRow, actionsLayout = createActionsRow(container, theme)
 
     preloadAssets({ spinner, progressBar, FONT_ASSET, SPINNER_ASSET })
 
@@ -228,6 +261,8 @@ function LoadingOverlay.new(options)
         _progressFill = progressFill,
         _statusLabel = statusLabel,
         _tipLabel = tipLabel,
+        _actionsRow = actionsRow,
+        _actionsLayout = actionsLayout,
         _progress = 0,
         _completed = false,
         _destroyed = false,
@@ -236,6 +271,9 @@ function LoadingOverlay.new(options)
         _tipIndex = 0,
         _connections = {},
         _completedSignal = Util.Signal.new(),
+        _actionButtons = {},
+        _actionConnections = {},
+        _actions = nil,
     }, LoadingOverlay)
 
     local spinnerTween = TweenService:Create(spinner, TweenInfo.new(1.2, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
@@ -271,6 +309,107 @@ function LoadingOverlay:setTips(tips)
         self._tips = nil
         self._tipIndex = 0
         self:showTip(nil)
+    end
+end
+
+local function styleActionButton(button, theme, action)
+    local isSecondary = action.variant == "secondary" or action.kind == "cancel"
+    button.AutoButtonColor = true
+    button.BorderSizePixel = 0
+    button.BackgroundColor3 = action.backgroundColor
+        or (isSecondary and (theme.actionSecondaryColor or DEFAULT_THEME.actionSecondaryColor)
+            or (theme.actionPrimaryColor or DEFAULT_THEME.actionPrimaryColor))
+    button.TextColor3 = action.textColor
+        or (isSecondary and (theme.actionSecondaryTextColor or DEFAULT_THEME.actionSecondaryTextColor)
+            or (theme.actionPrimaryTextColor or DEFAULT_THEME.actionPrimaryTextColor))
+    button.Font = action.font or theme.actionButtonFont or DEFAULT_THEME.actionButtonFont
+    button.TextSize = action.textSize or theme.actionButtonTextSize or DEFAULT_THEME.actionButtonTextSize
+end
+
+local function destroyButtons(buttons)
+    if not buttons then
+        return
+    end
+    for _, button in ipairs(buttons) do
+        if button and button.Destroy then
+            button:Destroy()
+        end
+    end
+end
+
+local function disconnectConnections(connections)
+    if not connections then
+        return
+    end
+    for _, connection in ipairs(connections) do
+        if connection then
+            if connection.Disconnect then
+                connection:Disconnect()
+            elseif connection.disconnect then
+                connection:disconnect()
+            end
+        end
+    end
+end
+
+function LoadingOverlay:setActions(actions)
+    if self._destroyed then
+        return
+    end
+
+    self._actions = actions
+
+    if not self._actionsRow then
+        local row, layout = createActionsRow(self._container, self._theme)
+        self._actionsRow = row
+        self._actionsLayout = layout
+    end
+
+    disconnectConnections(self._actionConnections)
+    destroyButtons(self._actionButtons)
+
+    self._actionConnections = {}
+    self._actionButtons = {}
+
+    if typeof(actions) ~= "table" or #actions == 0 then
+        if self._actionsRow then
+            self._actionsRow.Visible = false
+        end
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    self._actionsRow.Visible = true
+    self._actionsRow.Position = theme.actionsPosition or DEFAULT_THEME.actionsPosition
+    self._actionsRow.Size = theme.actionsSize or DEFAULT_THEME.actionsSize
+    if self._actionsLayout then
+        self._actionsLayout.Padding = theme.actionsPadding or DEFAULT_THEME.actionsPadding
+    end
+
+    for index, action in ipairs(actions) do
+        local button = Instance.new("TextButton")
+        button.Name = action.name or action.id or string.format("Action%d", index)
+        button.Size = UDim2.new(0, action.width or theme.actionButtonMinWidth or DEFAULT_THEME.actionButtonMinWidth, 0, action.height or theme.actionButtonHeight or DEFAULT_THEME.actionButtonHeight)
+        button.Text = action.text or action.label or "Action"
+        styleActionButton(button, theme, action)
+        button.Parent = self._actionsRow
+
+        local corner = Instance.new("UICorner")
+        corner.CornerRadius = theme.actionButtonCorner or DEFAULT_THEME.actionButtonCorner
+        corner.Parent = button
+
+        local connection
+        if typeof(action.callback) == "function" then
+            connection = button.MouseButton1Click:Connect(function()
+                if self._destroyed then
+                    return
+                end
+                action.callback(self, action)
+            end)
+        end
+
+        table.insert(self._actionButtons, button)
+        table.insert(self._actionConnections, connection)
     end
 end
 
@@ -394,6 +533,16 @@ function LoadingOverlay:applyTheme(themeOverrides)
     if self._tipLabel then
         self._tipLabel.TextColor3 = theme.tipTextColor or DEFAULT_THEME.tipTextColor
     end
+    if self._actionsRow then
+        self._actionsRow.Position = theme.actionsPosition or DEFAULT_THEME.actionsPosition
+        self._actionsRow.Size = theme.actionsSize or DEFAULT_THEME.actionsSize
+    end
+    if self._actionsLayout then
+        self._actionsLayout.Padding = theme.actionsPadding or DEFAULT_THEME.actionsPadding
+    end
+    if self._actions then
+        self:setActions(self._actions)
+    end
 end
 
 function LoadingOverlay:isComplete()
@@ -445,6 +594,19 @@ function LoadingOverlay:complete(options)
             TextTransparency = 1,
         })
     end
+    local actionsFade
+    if self._actionsRow and #self._actionButtons > 0 then
+        actionsFade = TweenService:Create(self._actionsRow, TweenInfo.new(options.fadeDuration or 0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            BackgroundTransparency = 1,
+        })
+        for _, button in ipairs(self._actionButtons) do
+            local buttonFade = TweenService:Create(button, TweenInfo.new(options.fadeDuration or 0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+                BackgroundTransparency = 1,
+                TextTransparency = 1,
+            })
+            buttonFade:Play()
+        end
+    end
     local spinnerFade
     if self._spinner then
         spinnerFade = TweenService:Create(self._spinner, TweenInfo.new(options.fadeDuration or 0.4, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
@@ -466,6 +628,9 @@ function LoadingOverlay:complete(options)
     end
     if tipFade then
         tipFade:Play()
+    end
+    if actionsFade then
+        actionsFade:Play()
     end
     if spinnerFade then
         spinnerFade:Play()
@@ -499,6 +664,11 @@ function LoadingOverlay:destroy()
         self._completedSignal:destroy()
         self._completedSignal = nil
     end
+
+    disconnectConnections(self._actionConnections)
+    self._actionConnections = nil
+    destroyButtons(self._actionButtons)
+    self._actionButtons = nil
 
     if self._gui then
         self._gui:Destroy()
