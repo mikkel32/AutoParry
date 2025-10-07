@@ -153,16 +153,29 @@ return function(t)
             services = services,
         })
 
+        local originalClock = os.clock
+        os.clock = function()
+            return scheduler:clock()
+        end
+
+        local config = autoparry.getConfig()
+
         local parriedByFrame = {}
-        autoparry.onParry(function(ball)
-            table.insert(parriedByFrame, {
+        autoparry.onParry(function(ball, timestamp)
+            local event = {
                 frame = currentFrame,
                 ball = ball,
-            })
+                timestamp = timestamp,
+            }
+            table.insert(parriedByFrame, event)
+            local lastEntry = parryLog[#parryLog]
+            if lastEntry then
+                lastEntry.event = event
+            end
         end)
 
-        local safeBall = ballsFolder:Add(createBall({
-            name = "SafeBall",
+        local cooldownBall = ballsFolder:Add(createBall({
+            name = "CooldownBall",
             position = Vector3.new(0, 0, 8),
             velocity = Vector3.new(0, 0, -120),
         }))
@@ -176,9 +189,10 @@ return function(t)
         local soonBall
 
         local function advanceFrame(deltaTime)
-            scheduler:wait(deltaTime or 0)
+            local dt = deltaTime or 0
+            scheduler:wait(dt)
             currentFrame += 1
-            runService:step(deltaTime)
+            runService:step(dt)
         end
 
         local function cleanup()
@@ -186,6 +200,7 @@ return function(t)
                 autoparry.destroy()
             end
             rawset(_G, "workspace", originalWorkspace)
+            os.clock = originalClock
         end
 
         local ok, err = pcall(function()
@@ -195,9 +210,25 @@ return function(t)
 
             expect(#parryLog):toEqual(1)
             expect(parryLog[1].frame):toEqual(1)
-            expect(parriedByFrame[1].ball):toEqual(safeBall)
+            expect(type(parryLog[1].time) == "number"):toBeTruthy()
+            expect(parriedByFrame[1].ball):toEqual(cooldownBall)
+            expect(parriedByFrame[1].timestamp):toEqual(parryLog[1].time)
+            expect(autoparry.getLastParryTime()):toEqual(parryLog[1].time)
 
-            ballsFolder:Remove(safeBall)
+            advanceFrame(config.cooldown * 0.5)
+
+            expect(#parryLog):toEqual(1)
+            expect(autoparry.getLastParryTime()):toEqual(parryLog[1].time)
+
+            advanceFrame(config.cooldown * 0.6)
+
+            expect(#parryLog):toEqual(2)
+            expect(parryLog[2].frame):toEqual(3)
+            expect(parriedByFrame[2].ball):toEqual(cooldownBall)
+            expect(parriedByFrame[2].timestamp):toEqual(parryLog[2].time)
+            expect(parryLog[2].time - parryLog[1].time):toBeGreaterThanOrEqual(config.cooldown)
+
+            ballsFolder:Remove(cooldownBall)
 
             soonBall = ballsFolder:Add(createBall({
                 name = "SoonBall",
@@ -207,26 +238,57 @@ return function(t)
 
             advanceFrame(0.2)
 
-            expect(#parryLog):toEqual(2)
-            expect(parryLog[2].frame):toEqual(2)
-            expect(parriedByFrame[2].ball):toEqual(soonBall)
+            expect(#parryLog):toEqual(3)
+            expect(parryLog[3].frame):toEqual(4)
+            expect(parriedByFrame[3].ball):toEqual(soonBall)
+            expect(parriedByFrame[3].timestamp):toEqual(parryLog[3].time)
+            expect(parryLog[3].time - parryLog[2].time):toBeGreaterThanOrEqual(config.cooldown)
 
             ballsFolder:Remove(soonBall)
 
             advanceFrame(0.2)
 
-            expect(#parryLog):toEqual(3)
-            expect(parryLog[3].frame):toEqual(3)
-            expect(parriedByFrame[3].ball):toEqual(laterBall)
+            expect(#parryLog):toEqual(4)
+            expect(parryLog[4].frame):toEqual(5)
+            expect(parriedByFrame[4].ball):toEqual(laterBall)
+            expect(parriedByFrame[4].timestamp):toEqual(parryLog[4].time)
+            expect(parryLog[4].time - parryLog[3].time):toBeGreaterThanOrEqual(config.cooldown)
 
-            for frame = 1, 3 do
-                local attempts = 0
-                for _, entry in ipairs(parryLog) do
-                    if entry.frame == frame then
-                        attempts += 1
-                    end
-                end
+            local attemptsByFrame = {}
+            for _, entry in ipairs(parryLog) do
+                attemptsByFrame[entry.frame] = (attemptsByFrame[entry.frame] or 0) + 1
+            end
+
+            for frame, attempts in pairs(attemptsByFrame) do
                 expect(attempts):toEqual(1)
+            end
+
+            expect(#parryLog):toEqual(#parriedByFrame)
+            for index, event in ipairs(parriedByFrame) do
+                expect(event.timestamp):toEqual(parryLog[index].time)
+            end
+
+            if t.artifact then
+                local cooldownMetrics = {}
+                local previousTime
+
+                for index, entry in ipairs(parryLog) do
+                    local delta = previousTime and (entry.time - previousTime) or nil
+                    table.insert(cooldownMetrics, {
+                        index = index,
+                        frame = entry.frame,
+                        timestamp = entry.time,
+                        deltaFromPrevious = delta,
+                        ball = entry.event and entry.event.ball and entry.event.ball.Name or nil,
+                    })
+                    previousTime = entry.time
+                end
+
+                t.artifact("heartbeat-parry-metrics", {
+                    cooldown = config.cooldown,
+                    framesSimulated = currentFrame,
+                    parries = cooldownMetrics,
+                })
             end
         end)
 
