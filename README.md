@@ -11,10 +11,10 @@ into a larger hub.
 loadstring(game:HttpGet("https://raw.githubusercontent.com/mikkel32/AutoParry/main/loader.lua", true))()
 ```
 
-Calling the loader will mount the built-in draggable toggle UI and keep the
-parry loop idle until you flip it on. Everything required (loader, UI, core)
-is fetched automatically, so the UI is visible and ready the moment the
-loadstring returns.
+Calling the loader will spin up a full-screen loading overlay, stream the
+required modules, and fade in the draggable toggle UI once the parry engine is
+ready. Everything required (loader, UI, core) is fetched automatically and the
+overlay keeps users informed while AutoParry warms up.
 
 ## Customising the bootstrap
 
@@ -35,6 +35,10 @@ local autoparry = loadstring(game:HttpGet(
     },
 })
 ```
+
+The `loadingOverlay` option accepts `false` to opt out entirely, or a
+configuration table (documented below) to customise the status text, styling,
+and retry behaviour of the bootstrap overlay.
 
 ### Loader-level options
 
@@ -87,6 +91,35 @@ end)
 
 Signals fire for every loader request, including cache hits, and `onAllComplete`
 emits whenever `progress.started == progress.finished + progress.failed`.
+
+### Loading overlay options
+
+The bootstrap overlay subscribes to both `AutoParryLoader.context.signals` and
+`AutoParry.onInitStatus`, so it can surface download progress, retry failures,
+and the moment the parry engine reports `"ready"`. Supplying a table to
+`options.loadingOverlay` lets you tailor that experience:
+
+| key | type | default | description |
+| --- | ---- | ------- | ----------- |
+| `enabled` | `boolean` | `true` | Toggle the overlay without removing other configuration |
+| `parent` / `name` / `tips` / `theme` | passthrough | `nil` | Forwarded to `LoadingOverlay.create` for layout/theming tweaks |
+| `statusFormatter(state)` | `function` | built-in formatter | Return the status string given loader/parry state |
+| `progressFormatter(state)` | `function` | built-in formatter | Return a `0-1` progress value for the overlay bar |
+| `actions` | `table` or `function` | `nil` | Custom action buttons or a factory called when the state changes |
+| `retryLabel` / `cancelLabel` | `string` | `"Retry"` / `"Cancel"` | Override the default button text |
+| `onRetry(ctx)` | `function` | re-runs loader with `refresh = true` | Called when the retry action is pressed |
+| `onCancel(ctx)` | `function` | `nil` | Invoked when the cancel action is pressed |
+| `onOverlayCreated(overlay)` | `function` | `nil` | Inspect or mutate the overlay instance after creation (`customizeOverlay` is an alias) |
+| `fadeDuration` / `progressDuration` | `number?` | `nil` | Override the tween timings passed to `overlay:complete` |
+
+The formatter `state` includes `state.loader` (with `started`, `finished`,
+`failed`, `completed`, and the last loader payload), `state.parry` (a copy of
+`AutoParry.getInitProgress()`), and `state.error` when a loader or init timeout
+occurs. When `actions` is a function it receives the same `(state,
+overlayOptions, options)` tuple as the formatters and should return the button
+spec array expected by `LoadingOverlay:setActions`. The default retry behaviour
+clears caches and re-invokes the loader with `refresh = true`, but you can
+supply your own handler to integrate with a custom boot flow.
 
 ## Runtime API
 
