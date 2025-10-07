@@ -8,10 +8,22 @@ local Scheduler = Harness.Scheduler
 local function createBall(options)
     options = options or {}
 
+    local position = options.position or Vector3.new()
+    local velocity = options.velocity or Vector3.new(0, 0, -140)
+
+    local function computeCFrame(pos, vel)
+        if vel and vel.Magnitude > 1e-3 then
+            return CFrame.new(pos, pos + vel.Unit)
+        end
+
+        return CFrame.new(pos)
+    end
+
     local ball = {
         Name = options.name or "TestBall",
-        Position = options.position or Vector3.new(),
-        AssemblyLinearVelocity = options.velocity or Vector3.new(0, 0, -140),
+        Position = position,
+        AssemblyLinearVelocity = velocity,
+        CFrame = options.cframe or computeCFrame(position, velocity),
         Parent = nil,
         _isReal = options.realBall ~= false,
         _attributes = {},
@@ -37,12 +49,14 @@ local function createBall(options)
         return self._attributes[name]
     end
 
-    function ball:SetPosition(position)
-        self.Position = position
+    function ball:SetPosition(newPosition)
+        self.Position = newPosition
+        self.CFrame = computeCFrame(newPosition, self.AssemblyLinearVelocity)
     end
 
-    function ball:SetVelocity(velocity)
-        self.AssemblyLinearVelocity = velocity
+    function ball:SetVelocity(newVelocity)
+        self.AssemblyLinearVelocity = newVelocity
+        self.CFrame = computeCFrame(self.Position, newVelocity)
     end
 
     function ball:SetRealBall(value)
@@ -121,14 +135,32 @@ local function createRunServiceStub()
     return stub
 end
 
-local function createContext()
+local luauTypeof = rawget(_G, "typeof")
+
+local function isCallable(value)
+    if luauTypeof then
+        local ok, kind = pcall(luauTypeof, value)
+        if ok and kind == "function" then
+            return true
+        end
+    end
+
+    return type(value) == "function"
+end
+
+local function createContext(options)
+    options = options or {}
     local scheduler = Scheduler.new(1 / 120)
     local runService = createRunServiceStub()
 
     local highlightEnabled = true
     local highlight = { Name = "Highlight" }
 
-    local rootPart = { Position = Vector3.new() }
+    local rootPart = {
+        Position = Vector3.new(),
+        AssemblyLinearVelocity = Vector3.new(),
+        CFrame = CFrame.new(),
+    }
     local character
 
     character = {
@@ -158,7 +190,7 @@ local function createContext()
         stats = stats,
     })
 
-    local remote = Harness.createRemote()
+    local remote = Harness.createRemote(options.remote)
     remotes:Add(remote)
 
     local ballsFolder = BallsFolder.new("Balls")
@@ -188,14 +220,17 @@ local function createContext()
     end
 
     local remoteLog = {}
-    local originalFireServer = remote.FireServer
+    local parryMethodName = remote._parryMethod or "FireServer"
+    local originalParryMethod = remote[parryMethodName]
 
-    function remote:FireServer(...)
+    assert(isCallable(originalParryMethod), "Harness remote missing parry method")
+
+    remote[parryMethodName] = function(self, ...)
         table.insert(remoteLog, {
             timestamp = scheduler:clock(),
             payload = { ... },
         })
-        return originalFireServer(self, ...)
+        return originalParryMethod(self, ...)
     end
 
     local parryLog = {}
@@ -211,6 +246,7 @@ local function createContext()
         runService = runService,
         autoparry = autoparry,
         remote = remote,
+        remoteMethod = parryMethodName,
         remoteLog = remoteLog,
         parryLog = parryLog,
         ballsFolder = ballsFolder,
@@ -253,7 +289,7 @@ local function createContext()
         autoparry.destroy()
         -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
-        remote.FireServer = originalFireServer
+        remote[parryMethodName] = originalParryMethod
         if originalWorkspace == nil then
             rawset(_G, "workspace", nil)
         else
@@ -362,6 +398,87 @@ return function(t)
 
         expect(#context.parryLog).toEqual(1)
         expect(context.parryLog[1].ball).toEqual(ball)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop fires bindable parry remotes", function(expect)
+        local context = createContext({
+            remote = {
+                kind = "BindableEvent",
+            },
+        })
+
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "BindableThreat",
+            position = Vector3.new(0, 0, 36),
+            velocity = Vector3.new(0, 0, -180),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+        expect(context.parryLog[1].ball).toEqual(ball)
+        expect(context.remoteMethod).toEqual("Fire")
+        expect(#context.remoteLog).toEqual(1)
+        expect(context.remote.lastPayload).toEqual({})
+
+        context:destroy()
+    end)
+
+    t.test("parry loop builds a legacy parry attempt payload", function(expect)
+        local context = createContext({
+            remote = {
+                name = "ParryAttempt",
+                kind = "RemoteEvent",
+            },
+        })
+
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "LegacyThreat",
+            position = Vector3.new(0, 0, 36),
+            velocity = Vector3.new(0, 0, -180),
+        })
+
+        autoparry.setEnabled(true)
+        context:step(1 / 60)
+
+        expect(#context.parryLog).toEqual(1)
+        expect(context.parryLog[1].ball).toEqual(ball)
+        expect(context.remoteMethod).toEqual("FireServer")
+
+        local payload = context.remote.lastPayload
+        expect(#payload).toEqual(5)
+        expect(type(payload[1])).toEqual("number")
+        expect(payload[2]).toEqual(ball.CFrame)
+        expect(type(payload[4])).toEqual("number")
+        expect(type(payload[5])).toEqual("number")
+
+        local snapshot = payload[3]
+        expect(type(snapshot)).toEqual("table")
+        local localEntry = snapshot["LocalPlayer"]
+        expect(type(localEntry)).toEqual("table")
+        expect(localEntry.position).toEqual(context.rootPart.Position)
+        expect(localEntry.velocity).toEqual(context.rootPart.AssemblyLinearVelocity)
 
         context:destroy()
     end)
