@@ -691,6 +691,33 @@ local function formatHotkeyDisplay(hotkey)
     return nil
 end
 
+local lowerKeyCodeLookup
+
+local function resolveKeyCodeFromString(name)
+    if typeof(name) ~= "string" then
+        return nil
+    end
+
+    local trimmed = name:match("^%s*(.-)%s*$")
+    if trimmed == "" then
+        return nil
+    end
+
+    local enumValue = Enum.KeyCode[trimmed]
+    if enumValue then
+        return enumValue
+    end
+
+    if not lowerKeyCodeLookup then
+        lowerKeyCodeLookup = {}
+        for _, item in ipairs(Enum.KeyCode:GetEnumItems()) do
+            lowerKeyCodeLookup[item.Name:lower()] = item
+        end
+    end
+
+    return lowerKeyCodeLookup[trimmed:lower()]
+end
+
 local function parseHotkey(hotkey)
     if not hotkey then
         return nil
@@ -702,19 +729,38 @@ local function parseHotkey(hotkey)
 
     if typeof(hotkey) == "table" then
         local key = hotkey.key or hotkey.Key
+        if typeof(key) ~= "EnumItem" then
+            key = resolveKeyCodeFromString(key)
+        end
+
         if typeof(key) == "EnumItem" then
+            local parsedModifiers = {}
             local modifiers = hotkey.modifiers or hotkey.Modifiers or {}
+
+            if typeof(modifiers) == "table" then
+                for _, modifier in ipairs(modifiers) do
+                    if typeof(modifier) == "EnumItem" then
+                        table.insert(parsedModifiers, modifier)
+                    else
+                        local resolvedModifier = resolveKeyCodeFromString(modifier)
+                        if typeof(resolvedModifier) == "EnumItem" then
+                            table.insert(parsedModifiers, resolvedModifier)
+                        end
+                    end
+                end
+            end
+
             return {
                 key = key,
-                modifiers = modifiers,
+                modifiers = parsedModifiers,
                 allowGameProcessed = hotkey.allowGameProcessed == true,
             }
         end
     end
 
     if typeof(hotkey) == "string" then
-        local upper = hotkey:upper()
-        local enumValue = Enum.KeyCode[upper]
+        local enumValue = resolveKeyCodeFromString(hotkey)
+
         if enumValue then
             return { key = enumValue, modifiers = {} }
         end

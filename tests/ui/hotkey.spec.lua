@@ -171,6 +171,49 @@ return function(t)
         end)
     end)
 
+    t.test("multi-word string hotkey resolves without forced casing", function(expect)
+        withController({ hotkey = "LeftShift" }, function(controller, inputService, frame, toggles)
+            local label = frame:FindFirstChild("HotkeyLabel")
+            expect(label ~= nil):toBeTruthy()
+            expect(label.Text):toEqual("Hotkey: LeftShift")
+
+            expect(controller:isEnabled()):toEqual(false)
+
+            inputService:FireInput(Enum.KeyCode.RightShift, false)
+            expect(controller:isEnabled()):toEqual(false)
+
+            inputService:FireInput(Enum.KeyCode.LeftShift, false)
+            expect(controller:isEnabled()):toEqual(true)
+            expect(toggles[#toggles]):toEqual(true)
+        end)
+    end)
+
+    t.test("table hotkey resolves string keys, modifiers, and respects allowGameProcessed", function(expect)
+        withController({
+            hotkey = {
+                key = "leftshift",
+                modifiers = { "LeftControl" },
+                allowGameProcessed = true,
+            },
+        }, function(controller, inputService, frame, toggles)
+            local label = frame:FindFirstChild("HotkeyLabel")
+            expect(label ~= nil):toBeTruthy()
+            expect(label.Text):toEqual("Hotkey: LeftControl + LeftShift")
+
+            expect(controller:isEnabled()):toEqual(false)
+
+            inputService:FireInput(Enum.KeyCode.LeftShift, false)
+            expect(controller:isEnabled()):toEqual(false)
+
+            inputService:SetKeyDown(Enum.KeyCode.LeftControl, true)
+            inputService:FireInput(Enum.KeyCode.LeftShift, true)
+            expect(controller:isEnabled()):toEqual(true)
+            expect(toggles[#toggles]):toEqual(true)
+
+            inputService:SetKeyDown(Enum.KeyCode.LeftControl, false)
+        end)
+    end)
+
     t.test("enum hotkey toggles state on repeated presses", function(expect)
         withController({ hotkey = Enum.KeyCode.J }, function(controller, inputService, frame, toggles)
             local label = frame:FindFirstChild("HotkeyLabel")
