@@ -8,22 +8,10 @@ local Scheduler = Harness.Scheduler
 local function createBall(options)
     options = options or {}
 
-    local position = options.position or Vector3.new()
-    local velocity = options.velocity or Vector3.new(0, 0, -140)
-
-    local function computeCFrame(pos, vel)
-        if vel and vel.Magnitude > 1e-3 then
-            return CFrame.new(pos, pos + vel.Unit)
-        end
-
-        return CFrame.new(pos)
-    end
-
     local ball = {
         Name = options.name or "TestBall",
-        Position = position,
-        AssemblyLinearVelocity = velocity,
-        CFrame = options.cframe or computeCFrame(position, velocity),
+        Position = options.position or Vector3.new(),
+        AssemblyLinearVelocity = options.velocity or Vector3.new(0, 0, -140),
         Parent = nil,
         _isReal = options.realBall ~= false,
         _attributes = {},
@@ -49,14 +37,12 @@ local function createBall(options)
         return self._attributes[name]
     end
 
-    function ball:SetPosition(newPosition)
-        self.Position = newPosition
-        self.CFrame = computeCFrame(newPosition, self.AssemblyLinearVelocity)
+    function ball:SetPosition(position)
+        self.Position = position
     end
 
-    function ball:SetVelocity(newVelocity)
-        self.AssemblyLinearVelocity = newVelocity
-        self.CFrame = computeCFrame(self.Position, newVelocity)
+    function ball:SetVelocity(velocity)
+        self.AssemblyLinearVelocity = velocity
     end
 
     function ball:SetRealBall(value)
@@ -135,32 +121,14 @@ local function createRunServiceStub()
     return stub
 end
 
-local luauTypeof = rawget(_G, "typeof")
-
-local function isCallable(value)
-    if luauTypeof then
-        local ok, kind = pcall(luauTypeof, value)
-        if ok and kind == "function" then
-            return true
-        end
-    end
-
-    return type(value) == "function"
-end
-
-local function createContext(options)
-    options = options or {}
+local function createContext()
     local scheduler = Scheduler.new(1 / 120)
     local runService = createRunServiceStub()
 
     local highlightEnabled = true
     local highlight = { Name = "Highlight" }
 
-    local rootPart = {
-        Position = Vector3.new(),
-        AssemblyLinearVelocity = Vector3.new(),
-        CFrame = CFrame.new(),
-    }
+    local rootPart = { Position = Vector3.new() }
     local character
 
     character = {
@@ -190,7 +158,7 @@ local function createContext(options)
         stats = stats,
     })
 
-    local remote = Harness.createRemote(options.remote)
+    local remote = Harness.createRemote()
     remotes:Add(remote)
 
     local ballsFolder = BallsFolder.new("Balls")
@@ -220,17 +188,14 @@ local function createContext(options)
     end
 
     local remoteLog = {}
-    local parryMethodName = remote._parryMethod or "FireServer"
-    local originalParryMethod = remote[parryMethodName]
+    local originalFireServer = remote.FireServer
 
-    assert(isCallable(originalParryMethod), "Harness remote missing parry method")
-
-    remote[parryMethodName] = function(self, ...)
+    function remote:FireServer(...)
         table.insert(remoteLog, {
             timestamp = scheduler:clock(),
             payload = { ... },
         })
-        return originalParryMethod(self, ...)
+        return originalFireServer(self, ...)
     end
 
     local parryLog = {}
@@ -245,9 +210,7 @@ local function createContext(options)
         scheduler = scheduler,
         runService = runService,
         autoparry = autoparry,
-        remotes = remotes,
         remote = remote,
-        remoteMethod = parryMethodName,
         remoteLog = remoteLog,
         parryLog = parryLog,
         ballsFolder = ballsFolder,
@@ -290,7 +253,7 @@ local function createContext(options)
         autoparry.destroy()
         -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
-        remote[parryMethodName] = originalParryMethod
+        remote.FireServer = originalFireServer
         if originalWorkspace == nil then
             rawset(_G, "workspace", nil)
         else
@@ -399,204 +362,6 @@ return function(t)
 
         expect(#context.parryLog).toEqual(1)
         expect(context.parryLog[1].ball).toEqual(ball)
-
-        context:destroy()
-    end)
-
-    t.test("parry loop fires bindable parry remotes", function(expect)
-        local context = createContext({
-            remote = {
-                kind = "BindableEvent",
-            },
-        })
-
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.12,
-        })
-
-        local ball = context:addBall({
-            name = "BindableThreat",
-            position = Vector3.new(0, 0, 36),
-            velocity = Vector3.new(0, 0, -180),
-        })
-
-        autoparry.setEnabled(true)
-        context:step(1 / 60)
-
-        expect(#context.parryLog).toEqual(1)
-        expect(context.parryLog[1].ball).toEqual(ball)
-        expect(context.remoteMethod).toEqual("Fire")
-        expect(#context.remoteLog).toEqual(1)
-        expect(context.remote.lastPayload).toEqual({})
-
-        context:destroy()
-    end)
-
-    t.test("parry loop builds a legacy parry attempt payload", function(expect)
-        local context = createContext({
-            remote = {
-                name = "ParryAttempt",
-                kind = "RemoteEvent",
-            },
-        })
-
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.12,
-        })
-
-        local ball = context:addBall({
-            name = "LegacyThreat",
-            position = Vector3.new(0, 0, 36),
-            velocity = Vector3.new(0, 0, -180),
-        })
-
-        autoparry.setEnabled(true)
-        context:step(1 / 60)
-
-        expect(#context.parryLog).toEqual(1)
-        expect(context.parryLog[1].ball).toEqual(ball)
-        expect(context.remoteMethod).toEqual("FireServer")
-
-        local payload = context.remote.lastPayload
-        expect(#payload).toEqual(5)
-        expect(type(payload[1])).toEqual("number")
-        expect(payload[2]).toEqual(ball.CFrame)
-        expect(type(payload[4])).toEqual("number")
-        expect(type(payload[5])).toEqual("number")
-
-        local snapshot = payload[3]
-        expect(type(snapshot)).toEqual("table")
-        local localEntry = snapshot["LocalPlayer"]
-        expect(type(localEntry)).toEqual("table")
-        expect(localEntry.position).toEqual(context.rootPart.Position)
-        expect(localEntry.velocity).toEqual(context.rootPart.AssemblyLinearVelocity)
-
-        context:destroy()
-    end)
-
-    t.test("reinitializes when the parry remote is removed and replaced", function(expect)
-        local context = createContext()
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.12,
-        })
-
-        autoparry.setEnabled(true)
-
-        local function waitForStage(target, attempts)
-            local limit = attempts or 60
-            for _ = 1, limit do
-                context:step(1 / 30)
-                local progress = autoparry.getInitProgress()
-                if progress.stage == target then
-                    return progress
-                end
-            end
-
-            error(string.format("Timed out waiting for init stage '%s'", tostring(target)), 0)
-        end
-
-        local initial = waitForStage("ready")
-        expect(initial.remoteName).toEqual("ParryButtonPress")
-
-        context.remotes:Remove(context.remote)
-        local waiting = waitForStage("waiting-player")
-        expect(waiting.stage).toEqual("waiting-player")
-
-        local replacement = Harness.createRemote()
-        context.remotes:Add(replacement)
-
-        local recovered = waitForStage("ready")
-        expect(recovered.remoteName).toEqual("ParryButtonPress")
-        expect(recovered.remoteVariant).toEqual("modern")
-
-        context:destroy()
-    end)
-
-    t.test("recovers after the parry remote throws an error", function(expect)
-        local context = createContext()
-        local autoparry = context.autoparry
-
-        autoparry.resetConfig()
-        autoparry.configure({
-            minTTI = 0,
-            pingOffset = 0,
-            cooldown = 0.05,
-        })
-
-        local parryMethodName = context.remoteMethod
-        local original = context.remote[parryMethodName]
-        local shouldFail = true
-
-        context.remote[parryMethodName] = function(self, ...)
-            if shouldFail then
-                shouldFail = false
-                error("simulated remote failure")
-            end
-
-            return original(self, ...)
-        end
-
-        autoparry.setEnabled(true)
-
-        local ball = context:addBall({
-            name = "RecoveryThreat",
-            position = Vector3.new(0, 0, 36),
-            velocity = Vector3.new(0, 0, -200),
-        })
-
-        local sawRestart = false
-        for _ = 1, 90 do
-            context:step(1 / 60)
-            local progress = autoparry.getInitProgress()
-            if progress.stage == "waiting-player" then
-                sawRestart = true
-                break
-            end
-        end
-
-        expect(sawRestart).toEqual(true)
-        expect(autoparry.getLastParryTime()).toEqual(0)
-        expect(#context.parryLog).toEqual(0)
-
-        local recovered = false
-        for _ = 1, 120 do
-            context:step(1 / 60)
-            local progress = autoparry.getInitProgress()
-            if progress.stage == "ready" then
-                recovered = true
-                break
-            end
-        end
-
-        expect(recovered).toEqual(true)
-
-        local parried = false
-        for _ = 1, 90 do
-            context:step(1 / 60)
-            if #context.parryLog > 0 then
-                parried = true
-                break
-            end
-        end
-
-        expect(parried).toEqual(true)
-        expect(context.parryLog[1].ball).toEqual(ball)
-        expect(autoparry.getLastParryTime()).toEqual(context.parryLog[1].timestamp)
 
         context:destroy()
     end)

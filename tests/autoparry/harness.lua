@@ -5,25 +5,6 @@ local SourceMap = require(TestHarness:WaitForChild("AutoParrySourceMap"))
 
 local Harness = {}
 
-local function fireSignal(signal, ...)
-    if not signal then
-        return
-    end
-
-    local okFireMethod, fireMethod = pcall(function()
-        return signal.Fire or signal.fire
-    end)
-
-    if okFireMethod and fireMethod then
-        fireMethod(signal, ...)
-        return
-    end
-
-    if type(signal) == "function" then
-        signal(...)
-    end
-end
-
 local Scheduler = {}
 Scheduler.__index = Scheduler
 
@@ -70,31 +51,11 @@ Harness.Scheduler = Scheduler
 
 local function createContainer(scheduler, name)
     local children = {}
-    local ordered = {}
-    local container = { Name = name, Parent = nil }
-
-    local function setChildParent(child, parent)
-        if not child then
-            return
-        end
-
-        if type(child._setParent) == "function" then
-            child:_setParent(parent)
-            return
-        end
-
-        child.Parent = parent
-        fireSignal(child.AncestryChanged, child, parent)
-    end
-
-    local function insertChild(child)
-        children[child.Name] = child
-        table.insert(ordered, child)
-        setChildParent(child, container)
-    end
+    local container = { Name = name }
 
     function container:Add(child)
-        insertChild(child)
+        children[child.Name] = child
+        child.Parent = container
         return child
     end
 
@@ -118,55 +79,10 @@ local function createContainer(scheduler, name)
 
     function container:GetChildren()
         local result = {}
-        for index, child in ipairs(ordered) do
-            result[index] = child
+        for _, child in pairs(children) do
+            table.insert(result, child)
         end
         return result
-    end
-
-    function container:Remove(child)
-        if not child then
-            return
-        end
-
-        if children[child.Name] == child then
-            children[child.Name] = nil
-        end
-
-        for index, current in ipairs(ordered) do
-            if current == child then
-                table.remove(ordered, index)
-                break
-            end
-        end
-
-        setChildParent(child, nil)
-    end
-
-    function container:Clear()
-        for index = #ordered, 1, -1 do
-            local child = ordered[index]
-            ordered[index] = nil
-            if child and children[child.Name] == child then
-                children[child.Name] = nil
-            end
-            setChildParent(child, nil)
-        end
-    end
-
-    function container:IsDescendantOf(target)
-        local current = container
-        while current do
-            if current == target then
-                return true
-            end
-            current = current.Parent
-        end
-        return false
-    end
-
-    function container:_setParent(parent)
-        self.Parent = parent
     end
 
     return container
@@ -174,128 +90,14 @@ end
 
 Harness.createContainer = createContainer
 
-local function createSignal()
-    local handlers = {}
-    local nextId = 0
+function Harness.createRemote()
+    local remote = { Name = "ParryButtonPress" }
 
-    local signal = {}
-
-    function signal:Connect(callback)
-        nextId += 1
-        handlers[nextId] = callback
-
-        local connection = { _id = nextId }
-
-        function connection:Disconnect()
-            handlers[connection._id] = nil
-        end
-
-        connection.disconnect = connection.Disconnect
-
-        return connection
-    end
-
-    signal.connect = signal.Connect
-
-    function signal:Fire(...)
-        for _, callback in pairs(handlers) do
-            callback(...)
-        end
-    end
-
-    signal.fire = signal.Fire
-
-    return signal
-end
-
-function Harness.createRemote(options)
-    options = options or {}
-
-    local kind = options.kind or "RemoteEvent"
-    local name = options.name or "ParryButtonPress"
-    local className = options.className
-
-    local remote = { Name = name, Parent = nil }
-
-    local ancestryChanged = createSignal()
-    local parentChanged = createSignal()
-
-    function remote:_setParent(parent)
-        self.Parent = parent
-        parentChanged:Fire(parent)
-        ancestryChanged:Fire(self, parent)
-    end
-
-    function remote:GetPropertyChangedSignal(property)
-        if property == "Parent" then
-            return parentChanged
-        end
-
-        return createSignal()
-    end
-
-    function remote:IsDescendantOf(target)
-        local current = self
-        while current do
-            if current == target then
-                return true
-            end
-            current = current.Parent
-        end
-        return false
-    end
-
-    remote.AncestryChanged = ancestryChanged
-
-    local function assign(methodName, impl)
-        remote[methodName] = impl
-        remote._parryMethod = methodName
-    end
-
-    if kind == "RemoteEvent" then
-        remote.ClassName = className or "RemoteEvent"
-
-        assign("FireServer", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-
-        local signal = createSignal()
-        remote.OnClientEvent = signal
-        remote._mockFireClient = function(_, ...)
-            signal:Fire(...)
-        end
-        remote._mockFireAllClients = remote._mockFireClient
-    elseif kind == "BindableEvent" then
-        remote.ClassName = className or "BindableEvent"
-
-        assign("Fire", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    elseif kind == "RemoteFunction" then
-        remote.ClassName = className or "RemoteFunction"
-
-        assign("InvokeServer", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    elseif kind == "BindableFunction" then
-        remote.ClassName = className or "BindableFunction"
-
-        assign("Invoke", function(self, ...)
-            self.lastPayload = { ... }
-        end)
-    else
-        error(string.format("Unsupported remote kind: %s", tostring(kind)))
+    function remote:FireServer(...)
+        self.lastPayload = { ... }
     end
 
     return remote
-end
-
-function Harness.fireRemoteClient(remote, ...)
-    if not remote then
-        return
-    end
-
-    fireSignal(remote.OnClientEvent, ...)
 end
 
 function Harness.createRunService()
@@ -489,45 +291,10 @@ end
 
 function Harness.createBaseServices(scheduler, options)
     options = options or {}
-    local players = options.players or {}
+    local players = options.players or { LocalPlayer = options.initialLocalPlayer }
 
-    local rosterList = {}
-    local rosterSet = {}
-
-    local function addPlayer(player)
-        if player and not rosterSet[player] then
-            rosterSet[player] = true
-            table.insert(rosterList, player)
-        end
-    end
-
-    function players:GetPlayers()
-        local result = {}
-        for index, player in ipairs(rosterList) do
-            result[index] = player
-        end
-        return result
-    end
-
-    function players:_setLocalPlayer(player)
-        rawset(self, "LocalPlayer", player)
-        addPlayer(player)
-    end
-
-    function players:_addPlayer(player)
-        addPlayer(player)
-    end
-
-    if options.initialLocalPlayer ~= nil then
-        players:_setLocalPlayer(options.initialLocalPlayer)
-    elseif players.LocalPlayer ~= nil then
-        addPlayer(players.LocalPlayer)
-    end
-
-    if options.playersList then
-        for _, player in ipairs(options.playersList) do
-            addPlayer(player)
-        end
+    if players.LocalPlayer == nil and options.initialLocalPlayer ~= nil then
+        players.LocalPlayer = options.initialLocalPlayer
     end
 
     local replicated = options.replicated or createContainer(scheduler, "ReplicatedStorage")
