@@ -69,6 +69,14 @@
                 "$path": "../autoparry/ping.spec.lua"
               }
             }
+          },
+          "UiHotkeySpec": {
+            "$className": "ModuleScript",
+            "$properties": {
+              "Source": {
+                "$path": "../ui/hotkey.spec.lua"
+              }
+            }
           }
         }
       }
