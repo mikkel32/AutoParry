@@ -1,0 +1,89 @@
+{
+  "screenGui": {
+    "name": "AutoParryUI",
+    "resetOnSpawn": false,
+    "zIndexBehavior": "Sibling",
+    "frame": {
+      "size": {
+        "x": { "scale": 0, "offset": 200 },
+        "y": { "scale": 0, "offset": 64 }
+      },
+      "position": {
+        "x": { "scale": 0, "offset": 32 },
+        "y": { "scale": 0, "offset": 180 }
+      },
+      "backgroundColor3": { "r": 24, "g": 24, "b": 24 },
+      "borderSizePixel": 0,
+      "active": true,
+      "draggable": true,
+      "title": {
+        "text": "Snapshot Title",
+        "font": "GothamBold",
+        "textSize": 18,
+        "textColor3": { "r": 235, "g": 235, "b": 235 },
+        "size": {
+          "x": { "scale": 1, "offset": -80 },
+          "y": { "scale": 1, "offset": -8 }
+        },
+        "position": {
+          "x": { "scale": 0, "offset": 12 },
+          "y": { "scale": 0, "offset": 4 }
+        },
+        "textXAlignment": "Left",
+        "textYAlignment": "Top",
+        "backgroundTransparency": 1
+      },
+      "button": {
+        "name": "ToggleButton",
+        "text": "OFF",
+        "font": "GothamBold",
+        "textSize": 16,
+        "textColor3": { "r": 255, "g": 255, "b": 255 },
+        "size": {
+          "x": { "scale": 0, "offset": 72 },
+          "y": { "scale": 0, "offset": 30 }
+        },
+        "position": {
+          "x": { "scale": 1, "offset": -88 },
+          "y": { "scale": 0.5, "offset": -15 }
+        },
+        "backgroundColor3": { "r": 60, "g": 60, "b": 60 },
+        "autoButtonColor": true
+      },
+      "hotkeyLabel": {
+        "text": "Hotkey: G",
+        "font": "Gotham",
+        "textSize": 12,
+        "textColor3": { "r": 200, "g": 200, "b": 200 },
+        "size": {
+          "x": { "scale": 1, "offset": -24 },
+          "y": { "scale": 0, "offset": 16 }
+        },
+        "position": {
+          "x": { "scale": 0, "offset": 12 },
+          "y": { "scale": 1, "offset": -20 }
+        },
+        "textXAlignment": "Left",
+        "textYAlignment": "Center",
+        "backgroundTransparency": 1
+      },
+      "tooltip": {
+        "text": "Tap to toggle",
+        "font": "Gotham",
+        "textSize": 12,
+        "textColor3": { "r": 160, "g": 160, "b": 160 },
+        "size": {
+          "x": { "scale": 1, "offset": -24 },
+          "y": { "scale": 0, "offset": 16 }
+        },
+        "position": {
+          "x": { "scale": 0, "offset": 12 },
+          "y": { "scale": 1, "offset": -4 }
+        },
+        "textXAlignment": "Left",
+        "textYAlignment": "Bottom",
+        "backgroundTransparency": 1
+      }
+    }
+  }
+}
