@@ -152,6 +152,8 @@ function Harness.createRemote(options)
     local name = options.name or "ParryButtonPress"
     local className = options.className
 
+    local parryMethod = options.parryMethod
+
     local remote = { Name = name, Parent = nil }
     local propertySignals = {}
 
@@ -202,9 +204,22 @@ function Harness.createRemote(options)
     if kind == "RemoteEvent" then
         remote.ClassName = className or "RemoteEvent"
 
-        assign("FireServer", function(self, ...)
-            self.lastPayload = { ... }
-        end)
+        local method = parryMethod or "Fire"
+        if method == "Fire" then
+            assign("Fire", function(self, ...)
+                self.lastPayload = { ... }
+            end)
+
+            remote.FireServer = function(self, ...)
+                return remote.Fire(self, ...)
+            end
+        elseif method == "FireServer" then
+            assign("FireServer", function(self, ...)
+                self.lastPayload = { ... }
+            end)
+        else
+            error(string.format("Unsupported parry method: %s", tostring(method)))
+        end
 
         local signal = createSignal()
         remote.OnClientEvent = signal

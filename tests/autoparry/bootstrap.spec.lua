@@ -281,7 +281,7 @@ return function(t)
             initialLocalPlayer = { Name = "LocalPlayer" },
         })
 
-        remotes:Add(Harness.createRemote({ name = "ParryAttempt" }))
+        remotes:Add(Harness.createRemote({ name = "ParryAttempt", parryMethod = "FireServer" }))
 
         local autoparry = Harness.loadAutoparry({
             scheduler = scheduler,

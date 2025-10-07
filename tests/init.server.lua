@@ -36,10 +36,16 @@ local heartbeatSignal = makeSignal()
 local parryRemote = ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("ParryButtonPress")
 local parryCalls = 0
 
-function parryRemote:FireServer(...)
+local function recordParryCall(self, ...)
     parryCalls = parryCalls + 1
     self.LastPayload = { ... }
 end
+
+function parryRemote:Fire(...)
+    recordParryCall(self, ...)
+end
+
+parryRemote.FireServer = parryRemote.Fire
 
 local statsStub = {
     Network = {
