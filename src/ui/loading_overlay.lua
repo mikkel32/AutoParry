@@ -1022,11 +1022,13 @@ function LoadingOverlay.new(options)
     dashboardLayout.Parent = dashboardMount
 
     local dashboardMountConstraint = Instance.new("UISizeConstraint")
-    dashboardMountConstraint.MaxSize = Vector2.new(
-        theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760,
-        math.huge
-    )
-    dashboardMountConstraint.MinSize = Vector2.new(360, 0)
+    local dashboardMinWidth = 360
+    local configuredDashboardMaxWidth = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760
+    -- Roblox errors when MaxSize < MinSize; clamp to keep constraints sane even
+    -- if a custom theme requests an unusually small dashboard width.
+    local dashboardMaxWidth = math.max(configuredDashboardMaxWidth, dashboardMinWidth)
+    dashboardMountConstraint.MaxSize = Vector2.new(dashboardMaxWidth, math.huge)
+    dashboardMountConstraint.MinSize = Vector2.new(dashboardMinWidth, 0)
     dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
