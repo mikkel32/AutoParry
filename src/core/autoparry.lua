@@ -28,6 +28,10 @@ local DEFAULT_CONFIG = {
     curvatureHoldBoost = 0.5,
     confidenceZ = 2.2,
     activationLatency = 0.12,
+    pressReactionBias = 0.02,
+    pressScheduleSlack = 0.015,
+    pressMaxLookahead = 0.75,
+    pressConfidencePadding = 0.08,
     targetHighlightName = "Highlight",
     ballsFolderName = "Balls",
     playerTimeout = 10,
@@ -102,7 +106,6 @@ local initProgress = { stage = "waiting-player" }
 local stateChanged = Signal.new()
 local parryEvent = Signal.new()
 local parrySuccessSignal = Signal.new()
-parrySuccessSignal:connect(handleParrySuccessLatency)
 local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 
@@ -143,9 +146,122 @@ local characterRemovingConnection: RBXScriptConnection?
 local trackedBall: BasePart?
 local parryHeld = false
 local parryHeldBallId: string?
+local pendingParryRelease = false
+local sendParryKeyEvent
+local scheduledPressState = {
+    ballId = nil :: string?,
+    pressAt = 0,
+    predictedImpact = math.huge,
+    lead = 0,
+    slack = 0,
+    reason = nil :: string?,
+    lastUpdate = 0,
+}
+local SMART_PRESS_TRIGGER_GRACE = 0.01
+local SMART_PRESS_STALE_SECONDS = 0.75
+local setStage
+local updateStatusLabel
 local virtualInputWarningIssued = false
+local virtualInputUnavailable = false
+local virtualInputRetryAt = 0
+
+local function noteVirtualInputFailure(delay)
+    virtualInputUnavailable = true
+    if typeof(delay) == "number" and delay > 0 then
+        virtualInputRetryAt = os.clock() + delay
+    else
+        virtualInputRetryAt = os.clock() + 1.5
+    end
+
+    if state.enabled then
+        setStage("waiting-input", { reason = "virtual-input" })
+        updateStatusLabel({ "Auto-Parry F", "Status: waiting for input permissions" })
+    end
+end
+
+local function noteVirtualInputSuccess()
+    if virtualInputUnavailable then
+        virtualInputUnavailable = false
+        virtualInputRetryAt = 0
+
+        if state.enabled and initProgress.stage == "waiting-input" then
+            publishReadyStatus()
+        end
+
+        if pendingParryRelease then
+            pendingParryRelease = false
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            end
+        end
+    end
+end
 
 local immortalController = ImmortalModule and ImmortalModule.new({}) or nil
+local immortalMissingMethodWarnings = {}
+
+local function resolveVirtualInputManager()
+    if VirtualInputManager then
+        return VirtualInputManager
+    end
+
+    local ok, manager = pcall(game.GetService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    ok, manager = pcall(game.FindService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    return nil
+end
+
+local function warnOnceImmortalMissing(methodName)
+    if immortalMissingMethodWarnings[methodName] then
+        return
+    end
+
+    immortalMissingMethodWarnings[methodName] = true
+    warn(("AutoParry: Immortal controller missing '%s' support; disabling Immortal features."):format(tostring(methodName)))
+end
+
+local function disableImmortalSupport()
+    if not state.immortalEnabled then
+        return false
+    end
+
+    state.immortalEnabled = false
+    updateImmortalButton()
+    syncGlobalSettings()
+    immortalStateChanged:fire(false)
+    return true
+end
+
+local function callImmortalController(methodName, ...)
+    if not immortalController then
+        return false
+    end
+
+    local method = immortalController[methodName]
+    if typeof(method) ~= "function" then
+        warnOnceImmortalMissing(methodName)
+        disableImmortalSupport()
+        return false
+    end
+
+    local ok, result = pcall(method, immortalController, ...)
+    if not ok then
+        warn(("AutoParry: Immortal controller '%s' call failed: %s"):format(tostring(methodName), tostring(result)))
+        disableImmortalSupport()
+        return false
+    end
+
+    return true, result
+end
 
 type RollingStat = {
     count: number,
@@ -551,6 +667,8 @@ local function handleParrySuccessLatency(...)
     end
 end
 
+parrySuccessSignal:connect(handleParrySuccessLatency)
+
 local function clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
         return value, 0
@@ -645,6 +763,12 @@ local setBallsFolderWatcher
 
 local function cloneTable(tbl)
     return Util.deepCopy(tbl)
+end
+
+local function safeCall(fn, ...)
+    if typeof(fn) == "function" then
+        return fn(...)
+    end
 end
 
 local function safeDisconnect(connection)
@@ -1206,7 +1330,7 @@ local function applyInitStatus(update)
     initStatus:fire(cloneTable(initProgress))
 end
 
-local function setStage(stage, extra)
+setStage = function(stage, extra)
     local payload = { stage = stage }
     if typeof(extra) == "table" then
         for key, value in pairs(extra) do
@@ -1256,6 +1380,12 @@ local function syncGlobalSettings()
     settings.RemoteLatencyActive = state.remoteEstimatorActive
     settings.PerfectParry = perfectParrySnapshot
     settings.Immortal = state.immortalEnabled
+    settings.SmartPress = {
+        reactionBias = config.pressReactionBias,
+        scheduleSlack = config.pressScheduleSlack,
+        maxLookahead = config.pressMaxLookahead,
+        confidencePadding = config.pressConfidencePadding,
+    }
 end
 
 local function updateToggleButton()
@@ -1276,7 +1406,7 @@ local function updateImmortalButton()
     ImmortalButton.BackgroundColor3 = formatImmortalColor(state.immortalEnabled)
 end
 
-local function updateStatusLabel(lines)
+updateStatusLabel = function(lines)
     if not StatusLabel then
         return
     end
@@ -1293,7 +1423,7 @@ local function syncImmortalContextImpl()
         return
     end
 
-    immortalController:setContext({
+    local okContext = callImmortalController("setContext", {
         player = LocalPlayer,
         character = Character,
         humanoid = Humanoid,
@@ -1301,8 +1431,15 @@ local function syncImmortalContextImpl()
         ballsFolder = BallsFolder,
     })
 
-    immortalController:setBallsFolder(BallsFolder)
-    immortalController:setEnabled(state.immortalEnabled)
+    if not okContext then
+        return
+    end
+
+    if not callImmortalController("setBallsFolder", BallsFolder) then
+        return
+    end
+
+    callImmortalController("setEnabled", state.immortalEnabled)
 end
 
 syncImmortalContext = syncImmortalContextImpl
@@ -1348,13 +1485,14 @@ local function safeClearBallVisuals()
     trackedBall = nil
 end
 
-local function sendParryKeyEvent(isPressed)
-    local manager = VirtualInputManager
+sendParryKeyEvent = function(isPressed)
+    local manager = resolveVirtualInputManager()
     if not manager then
         if not virtualInputWarningIssued then
             virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager unavailable; cannot issue parry input.")
         end
+        noteVirtualInputFailure(3)
         return false
     end
 
@@ -1367,6 +1505,7 @@ local function sendParryKeyEvent(isPressed)
             virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager.SendKeyEvent missing; cannot issue parry input.")
         end
+        noteVirtualInputFailure(3)
         return false
     end
 
@@ -1376,12 +1515,15 @@ local function sendParryKeyEvent(isPressed)
             virtualInputWarningIssued = true
             warn("AutoParry: failed to send parry input via VirtualInputManager:", result)
         end
+        noteVirtualInputFailure(2)
         return false
     end
 
     if virtualInputWarningIssued then
         virtualInputWarningIssued = false
     end
+
+    noteVirtualInputSuccess()
 
     return true
 end
@@ -1813,8 +1955,52 @@ local function getBallIdentifier(ball)
 end
 
 
+local function clearScheduledPress(targetBallId: string?)
+    if targetBallId and scheduledPressState.ballId ~= targetBallId then
+        return
+    end
+
+    scheduledPressState.ballId = nil
+    scheduledPressState.pressAt = 0
+    scheduledPressState.predictedImpact = math.huge
+    scheduledPressState.lead = 0
+    scheduledPressState.slack = 0
+    scheduledPressState.reason = nil
+    scheduledPressState.lastUpdate = 0
+end
+
+local function updateScheduledPress(
+    ballId: string,
+    predictedImpact: number,
+    lead: number,
+    slack: number,
+    reason: string?,
+    now: number
+)
+    local pressDelay = math.max(predictedImpact - lead, 0)
+    local pressAt = now + pressDelay
+
+    if scheduledPressState.ballId ~= ballId then
+        scheduledPressState.ballId = ballId
+    elseif math.abs(scheduledPressState.pressAt - pressAt) > SMART_PRESS_TRIGGER_GRACE then
+        scheduledPressState.ballId = ballId
+    end
+
+    scheduledPressState.pressAt = pressAt
+    scheduledPressState.predictedImpact = predictedImpact
+    scheduledPressState.lead = lead
+    scheduledPressState.slack = slack
+    scheduledPressState.reason = reason
+    scheduledPressState.lastUpdate = now
+end
+
+
 local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     local forcing = force == true
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() and not forcing then
+        return false
+    end
+
     if parryHeld then
         local sameBall = parryHeldBallId == ballId
         if sameBall and not forcing then
@@ -1822,7 +2008,15 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         end
 
         -- release the existing hold before pressing again or for a new ball
-        sendParryKeyEvent(false)
+        if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+            pendingParryRelease = true
+        else
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            else
+                pendingParryRelease = false
+            end
+        end
         parryHeld = false
         parryHeldBallId = nil
     end
@@ -1831,6 +2025,8 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         return false
     end
 
+    pendingParryRelease = false
+
     parryHeld = true
     parryHeldBallId = ballId
 
@@ -1838,6 +2034,12 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     state.lastParry = now
     prunePendingLatencyPresses(now)
     pendingLatencyPresses[#pendingLatencyPresses + 1] = { time = now, ballId = ballId }
+
+    if ballId then
+        clearScheduledPress(ballId)
+    else
+        clearScheduledPress(nil)
+    end
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1859,7 +2061,17 @@ local function releaseParry()
     local ballId = parryHeldBallId
     parryHeld = false
     parryHeldBallId = nil
-    sendParryKeyEvent(false)
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+        pendingParryRelease = true
+    else
+        if not sendParryKeyEvent(false) then
+            pendingParryRelease = true
+        else
+            pendingParryRelease = false
+        end
+    end
+
+    clearScheduledPress(ballId)
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1871,13 +2083,12 @@ local function releaseParry()
 end
 
 local function handleHumanoidDied()
-    releaseParry()
-    safeClearBallVisuals()
-    enterRespawnWaitState()
-    updateCharacter(nil)
-    if immortalController then
-        immortalController:handleHumanoidDied()
-    end
+    clearScheduledPress(nil)
+    safeCall(releaseParry)
+    safeCall(safeClearBallVisuals)
+    safeCall(enterRespawnWaitState)
+    safeCall(updateCharacter, nil)
+    callImmortalController("handleHumanoidDied")
 end
 
 local function updateCharacter(character)
@@ -1933,10 +2144,11 @@ local function handleCharacterAdded(character)
 end
 
 local function handleCharacterRemoving()
-    releaseParry()
-    safeClearBallVisuals()
-    enterRespawnWaitState()
-    updateCharacter(nil)
+    clearScheduledPress(nil)
+    safeCall(releaseParry)
+    safeCall(safeClearBallVisuals)
+    safeCall(enterRespawnWaitState)
+    safeCall(updateCharacter, nil)
 end
 
 local function beginInitialization()
@@ -2126,16 +2338,19 @@ end
 
 local function renderLoop()
     if initialization.destroyed then
+        clearScheduledPress(nil)
         return
     end
 
     if not LocalPlayer then
+        clearScheduledPress(nil)
         return
     end
 
     if not Character or not RootPart then
         updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
         safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
@@ -2145,11 +2360,13 @@ local function renderLoop()
     if not folder then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
         safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
 
     if not state.enabled then
+        clearScheduledPress(nil)
         releaseParry()
         updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
         safeClearBallVisuals()
@@ -2165,6 +2382,7 @@ local function renderLoop()
     if not ball or not ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
         safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
@@ -2173,8 +2391,15 @@ local function renderLoop()
     if not ballId then
         updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
         safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
+    end
+
+    if scheduledPressState.ballId and scheduledPressState.ballId ~= ballId then
+        clearScheduledPress(nil)
+    elseif scheduledPressState.ballId == ballId and now - scheduledPressState.lastUpdate > SMART_PRESS_STALE_SECONDS then
+        clearScheduledPress(ballId)
     end
 
     local telemetry = ensureTelemetry(ballId, now)
@@ -2536,6 +2761,69 @@ local function renderLoop()
     end
     holdWindow = math.max(holdWindow, PROXIMITY_HOLD_GRACE)
 
+    local predictedImpact = math.huge
+    if approaching then
+        predictedImpact = math.min(timeToImpact, timeToPressRadius, timeToImpactFallback)
+        if timeToImpactPolynomial then
+            predictedImpact = math.min(predictedImpact, timeToImpactPolynomial)
+        end
+        if timeToPressRadiusPolynomial then
+            predictedImpact = math.min(predictedImpact, timeToPressRadiusPolynomial)
+        end
+    end
+    if not isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+        predictedImpact = math.huge
+    end
+
+    local reactionBias = config.pressReactionBias
+    if reactionBias == nil then
+        reactionBias = DEFAULT_CONFIG.pressReactionBias
+    end
+    if not isFiniteNumber(reactionBias) or reactionBias < 0 then
+        reactionBias = 0
+    end
+
+    local scheduleSlack = config.pressScheduleSlack
+    if scheduleSlack == nil then
+        scheduleSlack = DEFAULT_CONFIG.pressScheduleSlack
+    end
+    if not isFiniteNumber(scheduleSlack) or scheduleSlack < 0 then
+        scheduleSlack = 0
+    end
+
+    local maxLookahead = config.pressMaxLookahead
+    if maxLookahead == nil then
+        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+    end
+    if not isFiniteNumber(maxLookahead) or maxLookahead <= 0 then
+        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+    end
+    if maxLookahead < PROXIMITY_PRESS_GRACE then
+        maxLookahead = PROXIMITY_PRESS_GRACE
+    end
+
+    local confidencePadding = config.pressConfidencePadding
+    if confidencePadding == nil then
+        confidencePadding = DEFAULT_CONFIG.pressConfidencePadding
+    end
+    if not isFiniteNumber(confidencePadding) or confidencePadding < 0 then
+        confidencePadding = 0
+    end
+
+    local scheduleLead = math.max(delta + reactionBias, PROXIMITY_PRESS_GRACE)
+
+    local inequalityPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    local confidencePress = targetingMe and muValid and sigmaValid and muPlus <= -confidencePadding
+
+    local timeUntilPress = predictedImpact - scheduleLead
+    if not isFiniteNumber(timeUntilPress) then
+        timeUntilPress = math.huge
+    end
+    local canPredict = approaching and targetingMe and predictedImpact < math.huge
+    local shouldDelay = canPredict and not confidencePress and predictedImpact > scheduleLead
+    local withinLookahead = maxLookahead <= 0 or timeUntilPress <= maxLookahead
+    local shouldSchedule = shouldDelay and withinLookahead
+
     local proximityPress =
         targetingMe
         and approaching
@@ -2546,10 +2834,7 @@ local function renderLoop()
         and approaching
         and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
 
-    local shouldPress = proximityPress
-    if not shouldPress then
-        shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
-    end
+    local shouldPress = proximityPress or inequalityPress
 
     local shouldHold = proximityHold
     if targetingMe and muValid and sigmaValid and muMinus < 0 then
@@ -2578,9 +2863,52 @@ local function renderLoop()
         fired = true
     end
 
+    local existingSchedule = nil
+    if scheduledPressState.ballId == ballId then
+        existingSchedule = scheduledPressState
+        scheduledPressState.lead = scheduleLead
+        scheduledPressState.slack = scheduleSlack
+    end
+
+    local smartReason = nil
+
     if shouldPress then
-        local pressed = pressParry(ball, ballId)
-        fired = pressed or fired
+        if shouldSchedule then
+            smartReason = string.format("impact %.3f > lead %.3f (press in %.3f)", predictedImpact, scheduleLead, math.max(timeUntilPress, 0))
+            updateScheduledPress(ballId, predictedImpact, scheduleLead, scheduleSlack, smartReason, now)
+            existingSchedule = scheduledPressState
+        elseif existingSchedule and not shouldDelay then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        elseif existingSchedule and shouldDelay and not withinLookahead then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        end
+
+        local activeSlack = (existingSchedule and existingSchedule.slack) or scheduleSlack
+        local readyToPress = confidencePress or not shouldDelay
+        if not readyToPress and predictedImpact <= scheduleLead + activeSlack then
+            readyToPress = true
+        end
+
+        if not readyToPress and existingSchedule then
+            if now >= existingSchedule.pressAt - activeSlack then
+                readyToPress = true
+            end
+        end
+
+        if readyToPress then
+            local pressed = pressParry(ball, ballId)
+            fired = pressed or fired
+            if pressed then
+                existingSchedule = nil
+            end
+        end
+    else
+        if existingSchedule then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        end
     end
 
     if parryHeld and parryHeldBallId == ballId then
@@ -2661,6 +2989,31 @@ local function renderLoop()
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
 
+    if scheduledPressState.ballId == ballId then
+        local eta = math.max((scheduledPressState.pressAt or now) - now, 0)
+        table.insert(
+            debugLines,
+            string.format(
+                "Smart press: eta %.3f | lead %.3f | slack %.3f | reason %s",
+                eta,
+                scheduledPressState.lead or 0,
+                scheduledPressState.slack or 0,
+                scheduledPressState.reason or "?"
+            )
+        )
+    elseif shouldPress and shouldDelay then
+        table.insert(
+            debugLines,
+            string.format(
+                "Smart press: delaying %.3f | lookahead %.3f",
+                math.max(timeUntilPress, 0),
+                maxLookahead
+            )
+        )
+    else
+        table.insert(debugLines, "Smart press: idle")
+    end
+
     if sigmaArOverflow > 0 or sigmaJrOverflow > 0 then
         table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
     end
@@ -2716,6 +3069,18 @@ local validators = {
         return typeof(value) == "number" and value >= 0
     end,
     activationLatency = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressReactionBias = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressScheduleSlack = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressMaxLookahead = function(value)
+        return typeof(value) == "number" and value > 0
+    end,
+    pressConfidencePadding = function(value)
         return typeof(value) == "number" and value >= 0
     end,
     targetHighlightName = function(value)
@@ -2782,6 +3147,7 @@ function AutoParry.disable()
     end
 
     state.enabled = false
+    clearScheduledPress(nil)
     releaseParry()
     telemetryStates = {}
     trackedBall = nil
@@ -2809,19 +3175,20 @@ end
 
 function AutoParry.setImmortalEnabled(enabled)
     local desired = not not enabled
+    local before = state.immortalEnabled
 
-    local changed = state.immortalEnabled ~= desired
     state.immortalEnabled = desired
-
     syncImmortalContext()
+
+    local after = state.immortalEnabled
     updateImmortalButton()
     syncGlobalSettings()
 
-    if changed then
-        immortalStateChanged:fire(state.immortalEnabled)
+    if before ~= after then
+        immortalStateChanged:fire(after)
     end
 
-    return state.immortalEnabled
+    return after
 end
 
 function AutoParry.toggleImmortal()
@@ -2942,9 +3309,7 @@ end
 function AutoParry.destroy()
     AutoParry.disable()
     AutoParry.setImmortalEnabled(false)
-    if immortalController then
-        immortalController:destroy()
-    end
+    callImmortalController("destroy")
 
     if loopConnection then
         loopConnection:Disconnect()
@@ -2981,6 +3346,7 @@ function AutoParry.destroy()
     state.lastParry = 0
     state.lastSuccess = 0
     state.lastBroadcast = 0
+    clearScheduledPress(nil)
     releaseParry()
     telemetryStates = {}
     trackedBall = nil

@@ -1028,8 +1028,11 @@ function LoadingOverlay.new(options)
     -- Roblox errors when MaxSize < MinSize; clamp to keep constraints sane even
     -- if a custom theme requests an unusually small dashboard width.
     local dashboardMaxWidth = math.max(configuredDashboardMaxWidth, dashboardMinWidth)
-    dashboardMountConstraint.MaxSize = Vector2.new(dashboardMaxWidth, math.huge)
-    dashboardMountConstraint.MinSize = Vector2.new(dashboardMinWidth, 0)
+    Util.setConstraintSize(
+        dashboardMountConstraint,
+        Vector2.new(dashboardMinWidth, 0),
+        Vector2.new(dashboardMaxWidth, math.huge)
+    )
     dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
@@ -2566,8 +2569,9 @@ function LoadingOverlay:applyTheme(themeOverrides)
         local minWidth = math.max(theme.dashboardMinWidth or DEFAULT_THEME.dashboardMinWidth or 360, 0)
         local configuredMax = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or minWidth
         local maxWidth = math.max(configuredMax, minWidth)
-        self._dashboardMountConstraint.MinSize = Vector2.new(minWidth, 0)
-        self._dashboardMountConstraint.MaxSize = Vector2.new(maxWidth, math.huge)
+        local minVector = Vector2.new(minWidth, 0)
+        local maxVector = Vector2.new(maxWidth, math.huge)
+        Util.setConstraintSize(self._dashboardMountConstraint, minVector, maxVector)
     end
     if self._actions then
         self:setActions(self._actions)
