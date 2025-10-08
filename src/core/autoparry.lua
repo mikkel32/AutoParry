@@ -176,6 +176,8 @@ local perfectParrySnapshot = {
 
 local pingSample = { value = 0, time = 0 }
 local PING_REFRESH_INTERVAL = 0.1
+local PROXIMITY_PRESS_GRACE = 0.05
+local PROXIMITY_HOLD_GRACE = 0.1
 
 local function newRollingStat(): RollingStat
     return { count = 0, mean = 0, m2 = 0 }
@@ -1514,15 +1516,34 @@ local function ensureInitialization()
     beginInitialization()
 end
 
-local function computeBallDebug(speed, distance, mu, sigma, inequality, delta)
+local function computeBallDebug(
+    speed,
+    distance,
+    safeRadius,
+    mu,
+    sigma,
+    inequality,
+    delta,
+    tti,
+    ttp,
+    tth,
+    pressRadius,
+    holdRadius
+)
     return string.format(
-        "💨 Speed: %.1f\n📏 Dist: %.2f\nμ: %.3f\nσ: %.3f\nμ+zσ: %.3f\nΔ: %.3f",
+        "💨 Speed: %.1f\n📏 Dist: %.2f (safe: %.1f | press: %.1f | hold: %.1f)\nμ: %.3f\nσ: %.3f\nμ+zσ: %.3f\nΔ: %.3f\nTTI: %.3f\nTTP: %.3f\nTTH: %.3f",
         speed,
         distance,
+        safeRadius,
+        pressRadius,
+        holdRadius,
         mu,
         sigma,
         inequality,
-        delta
+        delta,
+        tti,
+        ttp,
+        tth
     )
 end
 
@@ -1755,7 +1776,64 @@ local function renderLoop()
     local fired = false
     local released = false
 
-    local shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    local approachSpeed = math.max(filteredVr, rawVr, 0)
+    local approaching = approachSpeed > EPSILON
+    local timeToImpact = math.huge
+    if approaching then
+        local speed = math.max(approachSpeed, EPSILON)
+        timeToImpact = distance / speed
+    end
+
+    local responseWindow = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
+
+    local dynamicLead = 0
+    if approaching then
+        dynamicLead = math.max(approachSpeed * responseWindow, 0)
+    end
+    dynamicLead = math.min(dynamicLead, safeRadius * 0.5)
+
+    local pressRadius = safeRadius + dynamicLead
+    local holdLead = 0
+    if approaching then
+        holdLead = math.max(approachSpeed * PROXIMITY_HOLD_GRACE, safeRadius * 0.1)
+    else
+        holdLead = safeRadius * 0.1
+    end
+    holdLead = math.min(holdLead, safeRadius * 0.5)
+    local holdRadius = pressRadius + holdLead
+
+    local timeToPressRadius = math.huge
+    local timeToHoldRadius = math.huge
+    if approaching then
+        local speed = math.max(approachSpeed, EPSILON)
+        timeToPressRadius = math.max(distance - pressRadius, 0) / speed
+        timeToHoldRadius = math.max(distance - holdRadius, 0) / speed
+    end
+
+    local proximityPress =
+        targetingMe
+        and approaching
+        and (distance <= pressRadius or timeToPressRadius <= responseWindow or timeToImpact <= responseWindow)
+
+    local proximityHold =
+        targetingMe
+        and approaching
+        and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
+
+    local shouldPress = proximityPress
+    if not shouldPress then
+        shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    end
+
+    local shouldHold = proximityHold
+    if targetingMe and muValid and sigmaValid and muMinus < 0 then
+        shouldHold = true
+    end
+    if shouldPress then
+        shouldHold = true
+    end
+
     if shouldPress then
         fired = pressParry(ball, ballId)
     end
@@ -1778,7 +1856,7 @@ local function renderLoop()
     end
 
     if parryHeld then
-        if (not targetingMe) or not (muValid and sigmaValid) or muMinus >= 0 or (parryHeldBallId and parryHeldBallId ~= ballId) then
+        if (not shouldHold) or (parryHeldBallId and parryHeldBallId ~= ballId) then
             releaseParry()
             released = true
         end
@@ -1792,6 +1870,9 @@ local function renderLoop()
         string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
+        string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
+        string.format("Rad: safe %.2f | press %.2f | hold %.2f", safeRadius, pressRadius, holdRadius),
+        string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
         string.format("Targeting: %s", tostring(targetingMe)),
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
@@ -1802,15 +1883,31 @@ local function renderLoop()
     end
 
     if fired then
-        table.insert(debugLines, "🔥 Press F: inequality satisfied")
+        table.insert(debugLines, "🔥 Press F: proximity/inequality met")
     elseif parryHeld and not released then
-        table.insert(debugLines, "Hold: μ−zσ < 0")
+        table.insert(debugLines, "Hold: maintaining expanded proximity window")
     else
-        table.insert(debugLines, "Hold: inequality not met")
+        table.insert(debugLines, "Hold: conditions not met")
     end
 
     updateStatusLabel(debugLines)
-    setBallVisuals(ball, computeBallDebug(velocity.Magnitude, distance, mu, sigma, muPlus, delta))
+    setBallVisuals(
+        ball,
+        computeBallDebug(
+            velocity.Magnitude,
+            distance,
+            safeRadius,
+            mu,
+            sigma,
+            muPlus,
+            delta,
+            timeToImpact,
+            timeToPressRadius,
+            timeToHoldRadius,
+            pressRadius,
+            holdRadius
+        )
+    )
 end
 
 
