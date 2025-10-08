@@ -3929,14 +3929,67 @@ local function mergeTheme(overrides)
     return theme
 end
 
+local VALID_SCREEN_GUI_PARENT_CLASSES = {
+    LayerCollector = true,
+    BasePlayerGui = true,
+    CoreGui = true,
+    StarterGui = true,
+    GuiService = true,
+    PluginGui = true,
+    PluginGuiBase = true,
+}
+
+local function isValidScreenGuiParent(instance)
+    if typeof(instance) ~= "Instance" then
+        return false
+    end
+
+    for className in pairs(VALID_SCREEN_GUI_PARENT_CLASSES) do
+        if instance:IsA(className) then
+            return true
+        end
+    end
+
+    return false
+end
+
+local RESOLUTION_PRIORITY = {
+    "LayerCollector",
+    "BasePlayerGui",
+    "PluginGuiBase",
+    "PluginGui",
+    "StarterGui",
+    "GuiService",
+    "CoreGui",
+}
+
+local function resolveScreenGuiParent(requestedParent)
+    if isValidScreenGuiParent(requestedParent) then
+        return requestedParent
+    end
+
+    if typeof(requestedParent) == "Instance" then
+        for _, className in ipairs(RESOLUTION_PRIORITY) do
+            local ancestor = requestedParent:FindFirstAncestorWhichIsA(className)
+            if ancestor and isValidScreenGuiParent(ancestor) then
+                return ancestor
+            end
+        end
+    end
+
+    return CoreGui
+end
+
 local function createScreenGui(options)
+    local parent = resolveScreenGuiParent(options.parent)
+
     local gui = Instance.new("ScreenGui")
     gui.Name = options.name or "AutoParryLoadingOverlay"
     gui.DisplayOrder = 10_000
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.IgnoreGuiInset = true
-    gui.Parent = options.parent or CoreGui
+    gui.Parent = parent
     return gui
 end
 
