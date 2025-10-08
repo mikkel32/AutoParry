@@ -23,10 +23,12 @@ local Signal = Util.Signal
 local Verification = Require and Require("src/core/verification.lua") or require(script.Parent.verification)
 local ImmortalModule = Require and Require("src/core/immortal.lua") or require(script.Parent.immortal)
 
-local DEFAULT_CONFIG = {
-    -- public API configuration that remains relevant for the PERFECT-PARRY rule
-    safeRadius = 10,
-    confidenceZ = 2.2,
+    local DEFAULT_CONFIG = {
+        -- public API configuration that remains relevant for the PERFECT-PARRY rule
+        safeRadius = 10,
+        curvatureLeadScale = 0.12,
+        curvatureHoldBoost = 0.5,
+        confidenceZ = 2.2,
     activationLatency = 0.12,
     targetHighlightName = "Highlight",
     ballsFolderName = "Balls",
@@ -1861,23 +1863,101 @@ local function renderLoop()
         timeToImpact = distance / speed
     end
 
-    local responseWindow = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    local responseWindowBase = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    local responseWindow = responseWindowBase
+
+    local curveLeadTime = 0
+    local curveLeadDistance = 0
+    local curveHoldDistance = 0
+    local curveSeverity = 0
+    local curveJerkSeverity = 0
+
+    if approaching then
+        local curvatureLeadScale = config.curvatureLeadScale
+        if curvatureLeadScale == nil then
+            curvatureLeadScale = DEFAULT_CONFIG.curvatureLeadScale
+        end
+
+        local curvatureHoldBoost = config.curvatureHoldBoost
+        if curvatureHoldBoost == nil then
+            curvatureHoldBoost = DEFAULT_CONFIG.curvatureHoldBoost
+        end
+
+        if curvatureLeadScale and curvatureLeadScale > 0 then
+            local kappaLimit = PHYSICS_LIMITS.curvature or 0
+            local dkappaLimit = PHYSICS_LIMITS.curvatureRate or 0
+            local arLimit = PHYSICS_LIMITS.radialAcceleration or 0
+            local jrLimit = PHYSICS_LIMITS.radialJerk or 0
+
+            local normalizedKappa = 0
+            if kappaLimit > 0 then
+                normalizedKappa = math.clamp(math.abs(filteredKappa) / kappaLimit, 0, 1)
+            end
+
+            local normalizedDkappa = 0
+            if dkappaLimit > 0 then
+                normalizedDkappa = math.clamp(math.abs(filteredDkappa) / dkappaLimit, 0, 1)
+            end
+
+            local normalizedAr = 0
+            if arLimit > 0 then
+                normalizedAr = math.clamp(math.max(filteredAr, 0) / arLimit, 0, 1)
+            end
+
+            local normalizedJerkOverflow = 0
+            if jrLimit > 0 then
+                local overflow = math.max(jrOverflow or 0, sigmaJrOverflow or 0)
+                if overflow > 0 then
+                    normalizedJerkOverflow = math.clamp(overflow / jrLimit, 0, 1)
+                end
+            end
+
+            curveSeverity = math.max(normalizedKappa, normalizedDkappa, normalizedAr)
+            if normalizedJerkOverflow > 0 then
+                curveJerkSeverity = normalizedJerkOverflow
+                curveSeverity = math.clamp(curveSeverity + normalizedJerkOverflow, 0, 1)
+            end
+
+            if curveSeverity > 0 then
+                curveLeadTime = curvatureLeadScale * curveSeverity
+                if curveLeadTime > 0 then
+                    responseWindow += curveLeadTime
+                    curveLeadDistance = approachSpeed * curveLeadTime
+                    if curvatureHoldBoost and curvatureHoldBoost > 0 then
+                        curveHoldDistance = curveLeadDistance * curvatureHoldBoost
+                    end
+                end
+            end
+        end
+    end
+
     local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
+
+    local dynamicLeadBase = 0
+    if approaching then
+        dynamicLeadBase = math.max(approachSpeed * responseWindowBase, 0)
+    end
+    dynamicLeadBase = math.min(dynamicLeadBase, safeRadius * 0.5)
 
     local dynamicLead = 0
     if approaching then
         dynamicLead = math.max(approachSpeed * responseWindow, 0)
     end
     dynamicLead = math.min(dynamicLead, safeRadius * 0.5)
+    local curveLeadApplied = math.max(dynamicLead - dynamicLeadBase, 0)
 
     local pressRadius = safeRadius + dynamicLead
-    local holdLead = 0
+
+    local holdLeadBase = 0
     if approaching then
-        holdLead = math.max(approachSpeed * PROXIMITY_HOLD_GRACE, safeRadius * 0.1)
+        holdLeadBase = math.max(approachSpeed * PROXIMITY_HOLD_GRACE, safeRadius * 0.1)
     else
-        holdLead = safeRadius * 0.1
+        holdLeadBase = safeRadius * 0.1
     end
-    holdLead = math.min(holdLead, safeRadius * 0.5)
+    holdLeadBase = math.min(holdLeadBase, safeRadius * 0.5)
+
+    local holdLead = math.min(holdLeadBase + curveHoldDistance, safeRadius * 0.5)
+    local curveHoldApplied = math.max(holdLead - holdLeadBase, 0)
     local holdRadius = pressRadius + holdLead
 
     local timeToPressRadius = math.huge
@@ -1968,6 +2048,15 @@ local function renderLoop()
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
         string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
+        string.format(
+            "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
+            curveSeverity,
+            curveJerkSeverity,
+            curveLeadTime,
+            curveLeadDistance,
+            curveLeadApplied,
+            curveHoldApplied
+        ),
         string.format("Rad: safe %.2f | press %.2f | hold %.2f", safeRadius, pressRadius, holdRadius),
         string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
         string.format(
@@ -2026,6 +2115,12 @@ end
 
 local validators = {
     safeRadius = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curvatureLeadScale = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    curvatureHoldBoost = function(value)
         return typeof(value) == "number" and value >= 0
     end,
     confidenceZ = function(value)

@@ -238,6 +238,8 @@ print(api.getVersion())
 | `minTTI` | `number` | `0.12` | Minimum time-to-impact accepted |
 | `maxTTI` | `number` | `0.55` | Maximum time-to-impact window |
 | `safeRadius` | `number` | `10` | Instant parry radius around the player |
+| `curvatureLeadScale` | `number` | `0.12` | Extra seconds injected into the response window when curvature/jerk spike (scaled by severity) |
+| `curvatureHoldBoost` | `number` | `0.5` | Portion of the curve-derived lead distance preserved for the hold radius |
 | `targetHighlightName` | `string?` | `"Highlight"` | Character child required to parry (set to `nil` to skip the check) |
 | `ballsFolderName` | `string` | `"Balls"` | Workspace folder that holds the Blade Ball projectiles |
 | `playerTimeout` | `number` | `10` | Upper bound for LocalPlayer discovery |
@@ -245,6 +247,8 @@ print(api.getVersion())
 | `parryRemoteTimeout` | `number` | `10` | Upper bound for finding the parry remote |
 | `ballsFolderTimeout` | `number` | `5` | Upper bound for finding the balls folder |
 | `verificationRetryInterval` | `number` | `0` | Delay between verification polls |
+
+**Anti-curve tuning.** AutoParry watches the filtered curvature (`κ`), curvature rate, radial acceleration, and jerk overflow reported by Blade Ball projectiles. When those values approach the configured physics limits AutoParry injects more lead time and expands the hold radius. Tweak `curvatureLeadScale` to control the maximum extra response time (set it to `0` to disable the behaviour) and adjust `curvatureHoldBoost` to decide how much of that extra distance should remain available while holding the parry key.
 
 Call `resetConfig()` to restore defaults at runtime.
 
