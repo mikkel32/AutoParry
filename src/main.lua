@@ -254,6 +254,546 @@ return function(options, loaderContext)
 
     local dashboardProgressAlpha = 0
 
+    local DIAGNOSTIC_STAGE_ORDER = { "player", "remotes", "success", "balls" }
+    local MAX_DIAGNOSTIC_EVENTS = 120
+    local DIAGNOSTIC_STAGE_INFO = {
+        player = {
+            id = "player",
+            title = "Player readiness",
+            description = "Ensure your avatar is loaded.",
+        },
+        remotes = {
+            id = "remotes",
+            title = "Game remotes",
+            description = "Connect to Blade Ball remotes.",
+        },
+        success = {
+            id = "success",
+            title = "Success feedback",
+            description = "Listen for parry success events.",
+        },
+        balls = {
+            id = "balls",
+            title = "Ball telemetry",
+            description = "Track balls for prediction.",
+        },
+    }
+
+    local diagnosticsState = {
+        stages = {},
+        events = {},
+        errors = {},
+        eventSequence = 0,
+        startClock = os.clock(),
+        lastParrySignature = nil,
+        panelSynced = false,
+    }
+
+    local controller = nil
+
+    local function diagnosticsDeepCopy(value)
+        if Util and Util.deepCopy then
+            return Util.deepCopy(value)
+        end
+        if typeof(value) ~= "table" then
+            return value
+        end
+        local copy = {}
+        for key, item in pairs(value) do
+            copy[key] = diagnosticsDeepCopy(item)
+        end
+        return copy
+    end
+
+    local function resetDiagnosticsState()
+        diagnosticsState.stages = {}
+        for _, id in ipairs(DIAGNOSTIC_STAGE_ORDER) do
+            local info = DIAGNOSTIC_STAGE_INFO[id]
+            diagnosticsState.stages[id] = {
+                id = id,
+                title = info.title,
+                description = info.description,
+                status = "pending",
+                message = info.description,
+                detail = nil,
+            }
+        end
+        diagnosticsState.events = {}
+        diagnosticsState.errors = {}
+        diagnosticsState.eventSequence = 0
+        diagnosticsState.startClock = os.clock()
+        diagnosticsState.lastParrySignature = nil
+        diagnosticsState.panelSynced = false
+    end
+
+    resetDiagnosticsState()
+
+    local function diagnosticsStagesToArray()
+        local list = {}
+        for _, id in ipairs(DIAGNOSTIC_STAGE_ORDER) do
+            local stage = diagnosticsState.stages[id]
+            if stage then
+                table.insert(list, {
+                    id = stage.id or id,
+                    title = stage.title or (DIAGNOSTIC_STAGE_INFO[id] and DIAGNOSTIC_STAGE_INFO[id].title) or id,
+                    description = stage.description or (DIAGNOSTIC_STAGE_INFO[id] and DIAGNOSTIC_STAGE_INFO[id].description) or "",
+                    status = stage.status or "pending",
+                    message = stage.message or stage.description or "",
+                    detail = stage.detail,
+                })
+            end
+        end
+        return list
+    end
+
+    local function broadcastDiagnosticsStages()
+        if controller and controller.setDiagnosticsStages then
+            controller:setDiagnosticsStages(diagnosticsStagesToArray())
+        end
+    end
+
+    local function updateDiagnosticsStage(id, props)
+        props = props or {}
+        local info = DIAGNOSTIC_STAGE_INFO[id]
+        local stage = diagnosticsState.stages[id]
+        if not stage then
+            stage = {
+                id = id,
+                title = info and info.title or id,
+                description = info and info.description or "",
+                status = "pending",
+                message = info and info.description or "",
+                detail = nil,
+            }
+            diagnosticsState.stages[id] = stage
+        end
+
+        local changed = false
+
+        if props.status and stage.status ~= props.status then
+            stage.status = props.status
+            changed = true
+        end
+
+        if props.message ~= nil then
+            local message = props.message
+            if message == false then
+                message = stage.description
+            end
+            if stage.message ~= message then
+                stage.message = message
+                changed = true
+            end
+        end
+
+        if props.detail ~= nil or props.clearDetail then
+            local detail = props.detail
+            if props.clearDetail or detail == false or detail == "" then
+                detail = nil
+            end
+            if stage.detail ~= detail then
+                stage.detail = detail
+                changed = true
+            end
+        end
+
+        return changed
+    end
+
+    local function formatInitElapsed(seconds)
+        if typeof(seconds) ~= "number" then
+            return nil
+        end
+        if seconds < 0 then
+            seconds = 0
+        end
+        if seconds >= 120 then
+            return string.format("%d s", math.floor(seconds + 0.5))
+        elseif seconds >= 10 then
+            return string.format("%.1f s", seconds)
+        end
+        return string.format("%.2f s", seconds)
+    end
+
+    local function applyParrySnapshotToDiagnostics(snapshot)
+        if typeof(snapshot) ~= "table" then
+            return
+        end
+
+        local stage = snapshot.stage
+        local status = snapshot.status
+        local target = snapshot.target or snapshot.step
+        local changed = false
+
+        local function mark(id, state, message, detail, clearDetail)
+            if not id then
+                return
+            end
+            local props = { status = state }
+            if message ~= nil then
+                props.message = message
+            end
+            if detail ~= nil then
+                props.detail = detail
+            end
+            if clearDetail then
+                props.clearDetail = true
+            end
+            if updateDiagnosticsStage(id, props) then
+                changed = true
+            end
+        end
+
+        if stage == "ready" then
+            mark("player", "ok", "Player locked", nil, true)
+            local remoteMessage = string.format("%s (%s)", snapshot.remoteName or "Parry remote", snapshot.remoteVariant or "detected")
+            mark("remotes", "ok", remoteMessage, nil, true)
+            if snapshot.successEvents then
+                mark("success", "ok", "Success listeners wired", nil, true)
+            else
+                mark("success", "ok", "Success listeners active", nil, true)
+            end
+            if snapshot.successEvents and snapshot.successEvents.Balls then
+                mark("balls", "ok", "Ball telemetry streaming", nil, true)
+            else
+                mark("balls", "ok", "Ready for match", nil, true)
+            end
+        elseif stage == "timeout" then
+            local reason = snapshot.reason or target
+            if reason == "local-player" or target == "local-player" then
+                mark("player", "failed", "Timed out waiting for player", nil, true)
+            elseif reason == "remotes-folder" or target == "folder" then
+                mark("remotes", "failed", "Remotes folder missing", nil, true)
+            elseif reason == "parry-remote" or target == "remote" then
+                mark("remotes", "failed", "Parry remote unavailable", nil, true)
+            elseif reason == "balls-folder" then
+                mark("balls", "warning", "Balls folder not found", "AutoParry will continue without ball telemetry if the folder is missing.")
+            else
+                mark("success", "warning", snapshot.message or "Verification timeout", snapshot.message)
+            end
+        elseif stage == "error" then
+            if target == "remote" then
+                mark("remotes", "failed", snapshot.message or "Unsupported parry remote", nil, true)
+            elseif target == "folder" then
+                mark("remotes", "failed", snapshot.message or "Remotes folder removed", nil, true)
+            else
+                mark("success", "warning", snapshot.message or "Verification error", snapshot.message)
+            end
+        elseif stage == "waiting-player" or stage == "waiting-character" then
+            if status == "ok" then
+                local elapsed = formatInitElapsed(snapshot.elapsed)
+                local message = elapsed and string.format("Player ready (%s)", elapsed) or "Player ready"
+                mark("player", "ok", message, nil, true)
+            elseif status == "waiting" or status == "pending" then
+                mark("player", "active", "Waiting for player…", nil, true)
+            end
+        elseif stage == "waiting-remotes" then
+            if target == "folder" then
+                if status == "ok" then
+                    mark("remotes", "active", "Remotes folder located", nil, true)
+                else
+                    mark("remotes", "active", "Searching for Remotes folder…", nil, true)
+                end
+            elseif target == "remote" then
+                if status == "ok" then
+                    local name = snapshot.remoteName or "Parry remote"
+                    local variant = snapshot.remoteVariant or "detected"
+                    mark("remotes", "ok", string.format("%s (%s)", name, variant), nil, true)
+                else
+                    mark("remotes", "active", "Scanning for parry remote…", nil, true)
+                end
+            end
+        elseif stage == "verifying-success-remotes" then
+            if snapshot.remotes or status == "ok" then
+                mark("success", "ok", "Success listeners bound", nil, true)
+            else
+                mark("success", "active", "Hooking success events…", nil, true)
+            end
+        elseif stage == "verifying-balls" then
+            if status == "ok" then
+                mark("balls", "ok", "Ball telemetry online", nil, true)
+            elseif status == "warning" then
+                mark("balls", "warning", "Ball folder timeout", "AutoParry will continue without ball telemetry if the folder is missing.")
+            elseif status == "waiting" or status == "pending" then
+                mark("balls", "active", "Searching for balls…", nil, true)
+            end
+        elseif stage == "restarting" then
+            local reason = snapshot.reason or target
+            local detail = reason and string.format("Reason: %s", reason) or nil
+            mark("remotes", "active", "Reinitialising verification…", detail, reason == nil)
+        end
+
+        if changed then
+            broadcastDiagnosticsStages()
+        end
+    end
+
+    local function describeParryProgress(progress)
+        local stage = progress.stage
+        local status = progress.status
+        local target = progress.target or progress.step
+        local reason = progress.reason
+        local message
+        local severity = "info"
+        local detail = progress.message
+
+        if stage == "ready" then
+            severity = "success"
+            message = "Verification complete"
+        elseif stage == "waiting-player" or stage == "waiting-character" then
+            if status == "ok" then
+                severity = "success"
+                local elapsed = formatInitElapsed(progress.elapsed)
+                message = elapsed and string.format("Player ready (%s)", elapsed) or "Player ready"
+            else
+                message = "Waiting for player"
+            end
+        elseif stage == "waiting-remotes" then
+            if target == "folder" then
+                if status == "ok" then
+                    severity = "success"
+                    message = "Remotes folder located"
+                else
+                    message = "Searching for remotes folder"
+                end
+            else
+                if status == "ok" then
+                    severity = "success"
+                    message = string.format("Parry remote detected (%s)", progress.remoteVariant or "detected")
+                else
+                    message = "Scanning for parry remote"
+                end
+            end
+        elseif stage == "verifying-success-remotes" then
+            if progress.remotes or status == "ok" then
+                severity = "success"
+                message = "Success listeners bound"
+            else
+                message = "Hooking success events"
+            end
+        elseif stage == "verifying-balls" then
+            if status == "ok" then
+                severity = "success"
+                message = "Ball telemetry verified"
+            elseif status == "warning" then
+                severity = "warning"
+                message = "Ball folder timeout"
+                detail = "AutoParry will continue without ball telemetry if the folder is missing."
+            else
+                message = "Searching for balls"
+            end
+        elseif stage == "timeout" then
+            severity = "error"
+            local reasonText = reason or target
+            if reasonText == "local-player" then
+                message = "Timed out waiting for player"
+            elseif reasonText == "remotes-folder" then
+                message = "Timed out waiting for remotes folder"
+            elseif reasonText == "parry-remote" or reasonText == "remote" then
+                message = "Timed out waiting for parry remote"
+            elseif reasonText == "balls-folder" then
+                message = "Ball folder timed out"
+            else
+                message = progress.message or "AutoParry initialization timed out"
+            end
+        elseif stage == "error" then
+            severity = "error"
+            message = progress.message or "Verification error"
+        elseif stage == "restarting" then
+            severity = "warning"
+            if reason then
+                message = string.format("Restarting verification (%s)", reason)
+            else
+                message = "Restarting verification"
+            end
+            detail = progress.message or detail
+        end
+
+        if not message then
+            message = stage or "Verification update"
+        end
+
+        return message, severity, detail
+    end
+
+    local function recordDiagnosticEvent(event)
+        if typeof(event) ~= "table" then
+            return
+        end
+
+        local copy = diagnosticsDeepCopy(event)
+        diagnosticsState.eventSequence += 1
+        copy.sequence = diagnosticsState.eventSequence
+        copy.timestamp = copy.timestamp or os.clock()
+
+        if #diagnosticsState.events >= MAX_DIAGNOSTIC_EVENTS then
+            table.remove(diagnosticsState.events, 1)
+        end
+        table.insert(diagnosticsState.events, copy)
+
+        if controller and controller.pushDiagnosticsEvent then
+            controller:pushDiagnosticsEvent(copy)
+        end
+    end
+
+    local function recordLoaderEvent(kind, payload)
+        local path = payload and payload.path
+        local message
+        local severity = "info"
+        local detail
+
+        if kind == "started" then
+            message = path and ("Downloading %s"):format(path) or "Downloading AutoParry modules"
+        elseif kind == "completed" then
+            severity = "success"
+            message = path and ("Downloaded %s"):format(path) or "Module downloaded"
+        elseif kind == "failed" then
+            severity = "error"
+            message = path and ("Failed to download %s"):format(path) or "Module download failed"
+            if payload and payload.error then
+                detail = tostring(payload.error)
+            end
+        elseif kind == "all-complete" then
+            severity = "success"
+            message = "AutoParry download complete"
+        else
+            message = kind
+        end
+
+        recordDiagnosticEvent({
+            kind = "loader",
+            action = kind,
+            severity = severity,
+            message = message,
+            detail = detail,
+            payload = payload and diagnosticsDeepCopy(payload) or nil,
+            timestamp = os.clock(),
+        })
+    end
+
+    local function recordParrySnapshot(progress)
+        if typeof(progress) ~= "table" then
+            return
+        end
+
+        local stage = progress.stage or "unknown"
+        local status = progress.status or ""
+        local target = progress.target or progress.step or ""
+        local reason = progress.reason or ""
+        local signature = string.format("%s|%s|%s|%s", stage, status, target, progress.message or reason or "")
+
+        if diagnosticsState.lastParrySignature == signature then
+            return
+        end
+
+        diagnosticsState.lastParrySignature = signature
+
+        local message, severity, detail = describeParryProgress(progress)
+
+        recordDiagnosticEvent({
+            kind = "parry",
+            stage = stage,
+            status = progress.status,
+            target = target,
+            severity = severity or "info",
+            message = message or stage,
+            detail = detail or progress.message,
+            payload = diagnosticsDeepCopy(progress),
+            timestamp = os.clock(),
+        })
+    end
+
+    local function upsertDiagnosticsError(entry)
+        if typeof(entry) ~= "table" then
+            return
+        end
+
+        local id = entry.id or entry.kind or "error"
+        local stored = diagnosticsState.errors[id]
+        if not stored then
+            stored = {
+                id = id,
+                kind = entry.kind,
+                severity = entry.severity or "error",
+                message = entry.message or "AutoParry error",
+                payload = entry.payload and diagnosticsDeepCopy(entry.payload) or nil,
+                active = entry.active ~= false,
+            }
+            diagnosticsState.errors[id] = stored
+        else
+            stored.kind = entry.kind or stored.kind
+            stored.severity = entry.severity or stored.severity or "error"
+            if entry.message ~= nil then
+                stored.message = entry.message
+            end
+            if entry.payload ~= nil then
+                stored.payload = entry.payload and diagnosticsDeepCopy(entry.payload) or nil
+            end
+            if entry.active ~= nil then
+                stored.active = entry.active ~= false
+            end
+        end
+
+        if controller and controller.showDiagnosticsError then
+            controller:showDiagnosticsError(diagnosticsDeepCopy(stored))
+        end
+    end
+
+    local function resolveDiagnosticsError(kind, message)
+        if not kind then
+            return
+        end
+
+        local stored = diagnosticsState.errors[kind]
+        if not stored then
+            return
+        end
+
+        if message then
+            stored.message = message
+        end
+
+        if stored.active then
+            stored.active = false
+        end
+
+        if controller and controller.showDiagnosticsError then
+            controller:showDiagnosticsError(diagnosticsDeepCopy(stored))
+        end
+    end
+
+    local function applyDiagnosticsError(errorState)
+        if not errorState then
+            return
+        end
+
+        local id = errorState.id or errorState.kind or "error"
+        upsertDiagnosticsError({
+            id = id,
+            kind = errorState.kind,
+            severity = errorState.severity or "error",
+            message = errorState.message or "AutoParry error",
+            payload = errorState.payload,
+            active = errorState.active ~= false,
+        })
+    end
+
+    local function syncDiagnosticsToController()
+        if not controller then
+            return
+        end
+
+        controller:resetDiagnostics()
+        controller:setDiagnosticsStages(diagnosticsStagesToArray())
+        for _, event in ipairs(diagnosticsState.events) do
+            controller:pushDiagnosticsEvent(event)
+        end
+        for _, errorEntry in pairs(diagnosticsState.errors) do
+            controller:showDiagnosticsError(diagnosticsDeepCopy(errorEntry))
+        end
+        diagnosticsState.panelSynced = true
+    end
+
     local loaderComplete = not overlayEnabled
     local parryReady = not overlayEnabled
     local bootstrapCancelled = false
@@ -261,7 +801,6 @@ return function(options, loaderContext)
     local retryInFlight = false
 
     local loaderConnections = {}
-    local controller = nil
     local parryConn = nil
     local initConn = nil
 
@@ -402,6 +941,11 @@ return function(options, loaderContext)
         parryReady = not overlayEnabled
         dashboardProgressAlpha = 0
 
+        resetDiagnosticsState()
+        if controller then
+            syncDiagnosticsToController()
+        end
+
         if overlay then
             overlay:setActions(nil)
             overlay:setStatus("Retrying AutoParry download…", { force = true })
@@ -501,6 +1045,7 @@ return function(options, loaderContext)
         local startedConn = loaderSignals.onFetchStarted:Connect(function(payload)
             overlayState.loader.last = payload
             refreshLoaderCounters()
+            recordLoaderEvent("started", payload)
             updateOverlay()
         end)
         table.insert(loaderConnections, startedConn)
@@ -509,6 +1054,7 @@ return function(options, loaderContext)
             overlayState.loader.last = payload
             refreshLoaderCounters()
             refreshLoaderCompletion()
+            recordLoaderEvent("completed", payload)
             updateOverlay()
             checkReady()
         end)
@@ -522,14 +1068,18 @@ return function(options, loaderContext)
                 message = (payload and payload.error) or (payload and payload.path and ("Failed to load %s"):format(payload.path)) or "Failed to download AutoParry modules.",
                 payload = payload,
             }
+            recordLoaderEvent("failed", payload)
             refreshLoaderCompletion()
             updateOverlay()
+            applyDiagnosticsError(overlayState.error)
         end)
         table.insert(loaderConnections, failedConn)
 
         local completeConn = loaderSignals.onAllComplete:Connect(function()
             refreshLoaderCounters()
             refreshLoaderCompletion()
+            recordLoaderEvent("all-complete")
+            resolveDiagnosticsError("loader")
             updateOverlay()
             checkReady()
         end)
@@ -555,6 +1105,8 @@ return function(options, loaderContext)
 
     initConn = Parry.onInitStatus(function(progress)
         overlayState.parry = Util.deepCopy(progress or {})
+        applyParrySnapshotToDiagnostics(overlayState.parry)
+        recordParrySnapshot(progress or overlayState.parry)
         local stage = progress and progress.stage
 
         if stage == "ready" then
@@ -562,6 +1114,7 @@ return function(options, loaderContext)
             if overlayState.error and overlayState.error.kind == "parry" then
                 overlayState.error = nil
             end
+            resolveDiagnosticsError("parry", "AutoParry ready")
         elseif stage == "timeout" then
             parryReady = false
             local reason = progress and progress.reason
@@ -583,6 +1136,11 @@ return function(options, loaderContext)
             if overlayState.error and overlayState.error.kind == "parry" then
                 overlayState.error = nil
             end
+            resolveDiagnosticsError("parry")
+        end
+
+        if overlayState.error then
+            applyDiagnosticsError(overlayState.error)
         end
 
         updateOverlay()
@@ -606,6 +1164,7 @@ return function(options, loaderContext)
 
             if controller then
                 controller:setEnabled(Parry.isEnabled(), { silent = true })
+                syncDiagnosticsToController()
             end
 
             if opts.autoStart or opts.defaultEnabled then
