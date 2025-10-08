@@ -16,6 +16,34 @@ local DiagnosticsPanel = Require("src/ui/diagnostics_panel.lua")
 
 local UI = {}
 
+local UIFLEX_SUPPORTED = pcall(function()
+    local layout = Instance.new("UIFlexLayout")
+    layout:Destroy()
+end)
+
+local function newFlexLayout(fillDirection)
+    local layout
+    if UIFLEX_SUPPORTED then
+        layout = Instance.new("UIFlexLayout")
+    else
+        layout = Instance.new("UIListLayout")
+    end
+
+    if fillDirection then
+        pcall(function()
+            layout.FillDirection = fillDirection
+        end)
+    end
+
+    return layout
+end
+
+local function trySetLayoutProperty(layout, property, value)
+    pcall(function()
+        layout[property] = value
+    end)
+end
+
 local Controller = {}
 Controller.__index = Controller
 
@@ -532,13 +560,12 @@ local function createDashboardFrame(parent)
     local padding = Instance.new("UIPadding")
     padding.Parent = content
 
-    local layout = Instance.new("UIFlexLayout")
-    layout.FillDirection = Enum.FillDirection.Vertical
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    layout.VerticalAlignment = Enum.VerticalAlignment.Top
-    layout.Wraps = false
-    layout.Padding = UDim.new(0, DASHBOARD_THEME.spacing.blockGap.min)
+    local layout = newFlexLayout(Enum.FillDirection.Vertical)
+    trySetLayoutProperty(layout, "SortOrder", Enum.SortOrder.LayoutOrder)
+    trySetLayoutProperty(layout, "HorizontalAlignment", Enum.HorizontalAlignment.Left)
+    trySetLayoutProperty(layout, "VerticalAlignment", Enum.VerticalAlignment.Top)
+    trySetLayoutProperty(layout, "Wraps", false)
+    trySetLayoutProperty(layout, "Padding", UDim.new(0, DASHBOARD_THEME.spacing.blockGap.min))
     layout.Parent = content
 
     local columnsContainer = Instance.new("Frame")
@@ -549,12 +576,11 @@ local function createDashboardFrame(parent)
     columnsContainer.LayoutOrder = 3
     columnsContainer.Parent = content
 
-    local columnsLayout = Instance.new("UIFlexLayout")
-    columnsLayout.FillDirection = Enum.FillDirection.Horizontal
-    columnsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    columnsLayout.VerticalAlignment = Enum.VerticalAlignment.Top
-    columnsLayout.Wraps = true
-    columnsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    local columnsLayout = newFlexLayout(Enum.FillDirection.Horizontal)
+    trySetLayoutProperty(columnsLayout, "HorizontalAlignment", Enum.HorizontalAlignment.Left)
+    trySetLayoutProperty(columnsLayout, "VerticalAlignment", Enum.VerticalAlignment.Top)
+    trySetLayoutProperty(columnsLayout, "Wraps", true)
+    trySetLayoutProperty(columnsLayout, "SortOrder", Enum.SortOrder.LayoutOrder)
     columnsLayout.Parent = columnsContainer
 
     local leftColumn = Instance.new("Frame")
