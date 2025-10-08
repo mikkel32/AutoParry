@@ -236,6 +236,7 @@ local DEFAULT_THEME = {
     progressArcTransparency = 0.4,
     dashboardMountSize = UDim2.new(0.94, 0, 0, 0),
     dashboardMaxWidth = 760,
+    dashboardMinWidth = 360,
 }
 
 local activeOverlay
@@ -1022,11 +1023,13 @@ function LoadingOverlay.new(options)
     dashboardLayout.Parent = dashboardMount
 
     local dashboardMountConstraint = Instance.new("UISizeConstraint")
-    dashboardMountConstraint.MaxSize = Vector2.new(
-        theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760,
-        math.huge
-    )
-    dashboardMountConstraint.MinSize = Vector2.new(360, 0)
+    local dashboardMinWidth = math.max(theme.dashboardMinWidth or DEFAULT_THEME.dashboardMinWidth or 360, 0)
+    local configuredDashboardMaxWidth = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760
+    -- Roblox errors when MaxSize < MinSize; clamp to keep constraints sane even
+    -- if a custom theme requests an unusually small dashboard width.
+    local dashboardMaxWidth = math.max(configuredDashboardMaxWidth, dashboardMinWidth)
+    dashboardMountConstraint.MaxSize = Vector2.new(dashboardMaxWidth, math.huge)
+    dashboardMountConstraint.MinSize = Vector2.new(dashboardMinWidth, 0)
     dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
@@ -1078,6 +1081,7 @@ function LoadingOverlay.new(options)
         _actionsRow = actionsRow,
         _actionsLayout = actionsLayout,
         _dashboardMount = dashboardMount,
+        _dashboardMountConstraint = dashboardMountConstraint,
         _progressArc = progressArc,
         _progressArcGradient = arcGradient,
         _badge = badge,
@@ -2557,6 +2561,13 @@ function LoadingOverlay:applyTheme(themeOverrides)
     if self._dashboardGradient then
         self._dashboardGradient.Color = panelTheme.gradient or DEFAULT_THEME.dashboardPanel.gradient
         self._dashboardGradient.Transparency = panelTheme.gradientTransparency or DEFAULT_THEME.dashboardPanel.gradientTransparency
+    end
+    if self._dashboardMountConstraint then
+        local minWidth = math.max(theme.dashboardMinWidth or DEFAULT_THEME.dashboardMinWidth or 360, 0)
+        local configuredMax = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or minWidth
+        local maxWidth = math.max(configuredMax, minWidth)
+        self._dashboardMountConstraint.MinSize = Vector2.new(minWidth, 0)
+        self._dashboardMountConstraint.MaxSize = Vector2.new(maxWidth, math.huge)
     end
     if self._actions then
         self:setActions(self._actions)

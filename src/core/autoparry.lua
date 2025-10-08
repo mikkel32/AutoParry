@@ -11,7 +11,7 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:FindService("Stats")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualInputManager = game:FindService("VirtualInputManager")
 local CoreGui = game:GetService("CoreGui")
 
 local Require = rawget(_G, "ARequire")
@@ -32,6 +32,7 @@ local DEFAULT_CONFIG = {
     remotesTimeout = 10,
     ballsFolderTimeout = 5,
     verificationRetryInterval = 0,
+    remoteQueueGuards = { "SyncDragonSpirit", "SecondaryEndCD" },
 }
 
 local function getGlobalTable()
@@ -111,6 +112,8 @@ local successConnections: { RBXScriptConnection? } = {}
 local successStatusSnapshot: { [string]: boolean }?
 local ballsFolderStatusSnapshot: { [string]: any }?
 local ballsFolderConnections: { RBXScriptConnection? }?
+local remoteQueueGuardConnections: { [string]: { remote: Instance?, connection: RBXScriptConnection?, destroying: RBXScriptConnection?, nameChanged: RBXScriptConnection? } } = {}
+local remoteQueueGuardWatchers: { RBXScriptConnection? }?
 local restartPending = false
 local scheduleRestart
 local syncImmortalContext = function() end
@@ -132,6 +135,7 @@ local characterRemovingConnection: RBXScriptConnection?
 local trackedBall: BasePart?
 local parryHeld = false
 local parryHeldBallId: string?
+local virtualInputWarningIssued = false
 
 local immortalController = ImmortalModule and ImmortalModule.new({}) or nil
 
@@ -429,6 +433,174 @@ local function connectClientEvent(remote, handler)
     return nil
 end
 
+local remoteQueueGuardTargets: { [string]: boolean } = {}
+
+local function rebuildRemoteQueueGuardTargets()
+    for name in pairs(remoteQueueGuardTargets) do
+        remoteQueueGuardTargets[name] = nil
+    end
+
+    local defaults = DEFAULT_CONFIG.remoteQueueGuards
+    if typeof(defaults) == "table" then
+        for _, entry in pairs(defaults) do
+            if typeof(entry) == "string" and entry ~= "" then
+                remoteQueueGuardTargets[entry] = true
+            end
+        end
+    end
+
+    local overrides = config.remoteQueueGuards
+    if typeof(overrides) == "table" then
+        for _, entry in pairs(overrides) do
+            if typeof(entry) == "string" and entry ~= "" then
+                remoteQueueGuardTargets[entry] = true
+            end
+        end
+    end
+end
+
+rebuildRemoteQueueGuardTargets()
+
+local function clearRemoteQueueGuards()
+    if remoteQueueGuardWatchers then
+        disconnectConnections(remoteQueueGuardWatchers)
+        remoteQueueGuardWatchers = nil
+    end
+
+    for name, guard in pairs(remoteQueueGuardConnections) do
+        safeDisconnect(guard.connection)
+        safeDisconnect(guard.destroying)
+        safeDisconnect(guard.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+end
+
+local function dropRemoteQueueGuard(remote)
+    if not remote then
+        return
+    end
+
+    local name = remote.Name
+    local guard = remoteQueueGuardConnections[name]
+    if guard and guard.remote == remote then
+        safeDisconnect(guard.connection)
+        safeDisconnect(guard.destroying)
+        safeDisconnect(guard.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+end
+
+local function attachRemoteQueueGuard(remote)
+    if not remote or not remoteQueueGuardTargets[remote.Name] then
+        return
+    end
+
+    local okClass, isEvent = pcall(function()
+        return remote:IsA("RemoteEvent")
+    end)
+
+    if not okClass or not isEvent then
+        return
+    end
+
+    local name = remote.Name
+    local existing = remoteQueueGuardConnections[name]
+    if existing and existing.remote == remote and existing.connection then
+        return
+    end
+
+    if existing then
+        safeDisconnect(existing.connection)
+        safeDisconnect(existing.destroying)
+        safeDisconnect(existing.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+
+    local okSignal, signal = pcall(function()
+        return remote.OnClientEvent
+    end)
+
+    if not okSignal or signal == nil then
+        return
+    end
+
+    local okConnect, connection = pcall(function()
+        return signal:Connect(function() end)
+    end)
+
+    if not okConnect or not connection then
+        return
+    end
+
+    local destroyingConnection = connectInstanceEvent(remote, "Destroying", function()
+        dropRemoteQueueGuard(remote)
+    end)
+
+    local nameChangedConnection = connectPropertyChangedSignal(remote, "Name", function()
+        local newName = remote.Name
+        if not remoteQueueGuardTargets[newName] then
+            dropRemoteQueueGuard(remote)
+            return
+        end
+
+        local existingGuard = remoteQueueGuardConnections[newName]
+        if existingGuard and existingGuard.remote ~= remote then
+            dropRemoteQueueGuard(existingGuard.remote)
+        end
+
+        local currentGuard = remoteQueueGuardConnections[name]
+        if currentGuard and currentGuard.remote == remote then
+            remoteQueueGuardConnections[name] = nil
+            remoteQueueGuardConnections[newName] = currentGuard
+        end
+
+        name = newName
+    end)
+
+    remoteQueueGuardConnections[name] = {
+        remote = remote,
+        connection = connection,
+        destroying = destroyingConnection,
+        nameChanged = nameChangedConnection,
+    }
+end
+
+local function setRemoteQueueGuardFolder(folder)
+    clearRemoteQueueGuards()
+
+    if not folder then
+        return
+    end
+
+    for name in pairs(remoteQueueGuardTargets) do
+        local remote = folder:FindFirstChild(name)
+        if remote then
+            attachRemoteQueueGuard(remote)
+        end
+    end
+
+    local watchers = {}
+
+    local addedConnection = folder.ChildAdded:Connect(function(child)
+        attachRemoteQueueGuard(child)
+    end)
+    table.insert(watchers, addedConnection)
+
+    local removedConnection = folder.ChildRemoved:Connect(function(child)
+        dropRemoteQueueGuard(child)
+    end)
+    table.insert(watchers, removedConnection)
+
+    local destroyingConnection = connectInstanceEvent(folder, "Destroying", function()
+        clearRemoteQueueGuards()
+    end)
+    if destroyingConnection then
+        table.insert(watchers, destroyingConnection)
+    end
+
+    remoteQueueGuardWatchers = watchers
+end
+
 local function disconnectVerificationWatchers()
     for index = #verificationWatchers, 1, -1 do
         local connections = verificationWatchers[index]
@@ -449,6 +621,7 @@ local function clearRemoteState()
     disconnectSuccessListeners()
     ParryInputInfo = nil
     RemotesFolder = nil
+    clearRemoteQueueGuards()
     if ballsFolderConnections then
         disconnectConnections(ballsFolderConnections)
         ballsFolderConnections = nil
@@ -805,7 +978,7 @@ local function enterRespawnWaitState()
     updateStatusLabel({ "Auto-Parry F", "Status: waiting for respawn" })
 end
 
-local function clearBallVisuals()
+local function clearBallVisualsInternal()
     if BallHighlight then
         BallHighlight.Enabled = false
         BallHighlight.Adornee = nil
@@ -815,6 +988,63 @@ local function clearBallVisuals()
         BallBillboard.Adornee = nil
     end
     trackedBall = nil
+end
+
+local function safeClearBallVisuals()
+    -- Some exploit environments aggressively nil out locals when reloading the
+    -- module; guard the call so we gracefully fall back instead of throwing.
+    if typeof(clearBallVisualsInternal) == "function" then
+        clearBallVisualsInternal()
+        return
+    end
+
+    if BallHighlight then
+        BallHighlight.Enabled = false
+        BallHighlight.Adornee = nil
+    end
+    if BallBillboard then
+        BallBillboard.Enabled = false
+        BallBillboard.Adornee = nil
+    end
+    trackedBall = nil
+end
+
+local function sendParryKeyEvent(isPressed)
+    local manager = VirtualInputManager
+    if not manager then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: VirtualInputManager unavailable; cannot issue parry input.")
+        end
+        return false
+    end
+
+    local okMethod, method = pcall(function()
+        return manager.SendKeyEvent
+    end)
+
+    if not okMethod or typeof(method) ~= "function" then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: VirtualInputManager.SendKeyEvent missing; cannot issue parry input.")
+        end
+        return false
+    end
+
+    local success, result = pcall(method, manager, isPressed, Enum.KeyCode.F, false, game)
+    if not success then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: failed to send parry input via VirtualInputManager:", result)
+        end
+        return false
+    end
+
+    if virtualInputWarningIssued then
+        virtualInputWarningIssued = false
+    end
+
+    return true
 end
 
 local function destroyDashboardUi()
@@ -988,7 +1218,7 @@ local function ensureUi()
 end
 
 local function destroyUi()
-    clearBallVisuals()
+    safeClearBallVisuals()
     if UiRoot then
         UiRoot:Destroy()
     end
@@ -1251,9 +1481,13 @@ local function pressParry(ball: BasePart?, ballId: string?)
         end
 
         -- release the existing hold before pressing for a new ball
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+        sendParryKeyEvent(false)
         parryHeld = false
         parryHeldBallId = nil
+    end
+
+    if not sendParryKeyEvent(true) then
+        return false
     end
 
     parryHeld = true
@@ -1270,7 +1504,6 @@ local function pressParry(ball: BasePart?, ballId: string?)
         end
     end
 
-    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
     parryEvent:fire(ball, now)
     return true
 end
@@ -1283,7 +1516,7 @@ local function releaseParry()
     local ballId = parryHeldBallId
     parryHeld = false
     parryHeldBallId = nil
-    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+    sendParryKeyEvent(false)
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1296,7 +1529,7 @@ end
 
 local function handleHumanoidDied()
     releaseParry()
-    clearBallVisuals()
+    safeClearBallVisuals()
     enterRespawnWaitState()
     updateCharacter(nil)
     if immortalController then
@@ -1358,7 +1591,7 @@ end
 
 local function handleCharacterRemoving()
     releaseParry()
-    clearBallVisuals()
+    safeClearBallVisuals()
     enterRespawnWaitState()
     updateCharacter(nil)
 end
@@ -1438,6 +1671,7 @@ local function beginInitialization()
         end
 
         configureSuccessListeners(verificationResult.successRemotes)
+        setRemoteQueueGuardFolder(RemotesFolder)
 
         if verificationResult.successRemotes then
             local localEntry = verificationResult.successRemotes.ParrySuccess
@@ -1558,7 +1792,7 @@ local function renderLoop()
 
     if not Character or not RootPart then
         updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
-        clearBallVisuals()
+        safeClearBallVisuals()
         releaseParry()
         return
     end
@@ -1567,7 +1801,7 @@ local function renderLoop()
     local folder = BallsFolder
     if not folder then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
-        clearBallVisuals()
+        safeClearBallVisuals()
         releaseParry()
         return
     end
@@ -1575,7 +1809,7 @@ local function renderLoop()
     if not state.enabled then
         releaseParry()
         updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
-        clearBallVisuals()
+        safeClearBallVisuals()
         updateToggleButton()
         return
     end
@@ -1586,7 +1820,7 @@ local function renderLoop()
     local ball = findRealBall(folder)
     if not ball or not ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
-        clearBallVisuals()
+        safeClearBallVisuals()
         releaseParry()
         return
     end
@@ -1594,7 +1828,7 @@ local function renderLoop()
     local ballId = getBallIdentifier(ball)
     if not ballId then
         updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
-        clearBallVisuals()
+        safeClearBallVisuals()
         releaseParry()
         return
     end
@@ -1947,6 +2181,23 @@ local validators = {
     verificationRetryInterval = function(value)
         return typeof(value) == "number" and value >= 0
     end,
+    remoteQueueGuards = function(value)
+        if value == nil then
+            return true
+        end
+
+        if typeof(value) ~= "table" then
+            return false
+        end
+
+        for _, entry in pairs(value) do
+            if typeof(entry) ~= "string" or entry == "" then
+                return false
+            end
+        end
+
+        return true
+    end,
 }
 
 AutoParry = {}
@@ -2039,6 +2290,9 @@ local function applyConfigOverride(key, value)
         end
     elseif key == "confidenceZ" then
         perfectParrySnapshot.z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ or perfectParrySnapshot.z
+    elseif key == "remoteQueueGuards" then
+        rebuildRemoteQueueGuardTargets()
+        setRemoteQueueGuardFolder(RemotesFolder)
     end
 end
 
@@ -2060,6 +2314,8 @@ end
 function AutoParry.resetConfig()
     config = Util.deepCopy(DEFAULT_CONFIG)
     resetActivationLatency()
+    rebuildRemoteQueueGuardTargets()
+    setRemoteQueueGuardFolder(RemotesFolder)
     syncGlobalSettings()
     return AutoParry.getConfig()
 end
@@ -2154,7 +2410,7 @@ function AutoParry.destroy()
     initialization.token += 1
 
     destroyUi()
-    clearBallVisuals()
+    safeClearBallVisuals()
 
     initialization.started = false
     initialization.completed = false
