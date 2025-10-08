@@ -3929,14 +3929,50 @@ local function mergeTheme(overrides)
     return theme
 end
 
+local function resolveScreenGuiParent(requestedParent)
+    if requestedParent == nil then
+        return CoreGui
+    end
+
+    if typeof(requestedParent) ~= "Instance" then
+        return CoreGui
+    end
+
+    if requestedParent:IsA("LayerCollector")
+        or requestedParent:IsA("BasePlayerGui")
+        or requestedParent:IsA("CoreGui")
+    then
+        return requestedParent
+    end
+
+    local ancestorCollector = requestedParent:FindFirstAncestorWhichIsA("LayerCollector")
+    if ancestorCollector then
+        return ancestorCollector
+    end
+
+    local ancestorPlayerGui = requestedParent:FindFirstAncestorWhichIsA("BasePlayerGui")
+    if ancestorPlayerGui then
+        return ancestorPlayerGui
+    end
+
+    local ancestorCoreGui = requestedParent:FindFirstAncestorWhichIsA("CoreGui")
+    if ancestorCoreGui then
+        return ancestorCoreGui
+    end
+
+    return CoreGui
+end
+
 local function createScreenGui(options)
+    local parent = resolveScreenGuiParent(options.parent)
+
     local gui = Instance.new("ScreenGui")
     gui.Name = options.name or "AutoParryLoadingOverlay"
     gui.DisplayOrder = 10_000
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.IgnoreGuiInset = true
-    gui.Parent = options.parent or CoreGui
+    gui.Parent = parent
     return gui
 end
 
