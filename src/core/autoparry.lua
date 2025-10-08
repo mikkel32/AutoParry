@@ -1294,22 +1294,13 @@ local function releaseParry()
     end
 end
 
-local function callIfFunction(fn, ...)
-    if type(fn) == "function" then
-        return fn(...)
-    end
-end
-
 local function handleHumanoidDied()
-    callIfFunction(releaseParry)
-    callIfFunction(clearBallVisuals)
-    callIfFunction(enterRespawnWaitState)
+    releaseParry()
+    clearBallVisuals()
+    enterRespawnWaitState()
     updateCharacter(nil)
     if immortalController then
-        local handler = immortalController.handleHumanoidDied
-        if type(handler) == "function" then
-            handler(immortalController)
-        end
+        immortalController:handleHumanoidDied()
     end
 end
 
