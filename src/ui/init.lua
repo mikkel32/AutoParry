@@ -325,58 +325,8 @@ local function resolveLayoutMetrics(viewportSize)
     local cardPadding = getResponsiveValue(DASHBOARD_THEME.spacing.cardPadding, breakpoint) or 18
     local controlPadding = getResponsiveValue(DASHBOARD_THEME.spacing.controlPadding, breakpoint) or cardPadding
     local splitColumns = breakpoint ~= "min"
-
-    local availableColumnWidth = resolvedWidth
-    if splitColumns then
-        availableColumnWidth = math.max(math.floor((resolvedWidth - columnGap) / 2 + 0.5), 0)
-    end
-
-    local telemetryColumns
-    if breakpoint == "large" then
-        telemetryColumns = 3
-    elseif breakpoint == "medium" then
-        telemetryColumns = 2
-    elseif splitColumns then
-        telemetryColumns = 2
-    else
-        telemetryColumns = 1
-    end
-    telemetryColumns = math.max(1, telemetryColumns)
-
-    local telemetryContainerWidth = splitColumns and availableColumnWidth or resolvedWidth
-    local telemetryGap = cardGap
-    local telemetryCardWidth = telemetryContainerWidth
-    if telemetryColumns > 1 then
-        local totalGap = telemetryGap * (telemetryColumns - 1)
-        local available = telemetryContainerWidth - totalGap
-        if available <= 0 then
-            available = telemetryContainerWidth
-        end
-        telemetryCardWidth = math.max(math.floor((available / telemetryColumns) + 0.5), 140)
-    end
-
-    local controlContainerWidth = splitColumns and availableColumnWidth or resolvedWidth
-    local controlColumns = 1
-    if controlContainerWidth >= 420 then
-        controlColumns = 2
-    end
-    local controlGap = math.max(cardGap, 12)
-    local controlCardWidth = controlContainerWidth
-    if controlColumns > 1 then
-        local totalGap = controlGap * (controlColumns - 1)
-        local available = controlContainerWidth - totalGap
-        if available <= 0 then
-            available = controlContainerWidth
-        end
-        controlCardWidth = math.max(math.floor((available / controlColumns) + 0.5), 180)
-    end
-
+    local telemetryColumns = splitColumns and 2 or 1
     local controlSwitchWidth = splitColumns and 120 or 108
-    if breakpoint == "large" then
-        controlSwitchWidth = 136
-    elseif breakpoint == "medium" then
-        controlSwitchWidth = 124
-    end
 
     return {
         breakpoint = breakpoint,
@@ -393,14 +343,8 @@ local function resolveLayoutMetrics(viewportSize)
         controlPadding = controlPadding,
         splitColumns = splitColumns,
         telemetryColumns = telemetryColumns,
-        telemetryCardWidth = telemetryCardWidth,
         telemetryCardHeight = DASHBOARD_THEME.telemetryCardHeight,
-        telemetryGap = telemetryGap,
-        controlColumns = controlColumns,
-        controlCardWidth = controlCardWidth,
-        controlGap = controlGap,
         controlSwitchWidth = controlSwitchWidth,
-        controlContentGap = math.max(math.floor(cardPadding * 0.6), 18),
     }
 end
 
@@ -930,13 +874,13 @@ local function createDashboardCard(shell, parent, options)
     return card, padding
 end
 
-local function createStatusCard(shell, parent)
+local function createStatusCard(parent)
     local card = Instance.new("Frame")
     card.Name = "StatusCard"
     card.BackgroundColor3 = Color3.fromRGB(16, 24, 44)
     card.BackgroundTransparency = 0.08
     card.BorderSizePixel = 0
-    card.LayoutOrder = 1
+    card.LayoutOrder = 2
     card.Size = UDim2.new(1, 0, 0, 0)
     card.AutomaticSize = Enum.AutomaticSize.Y
     card.Parent = parent
@@ -947,7 +891,7 @@ local function createStatusCard(shell, parent)
 
     local stroke = Instance.new("UIStroke")
     stroke.Thickness = 1.5
-    stroke.Transparency = 0.4
+    stroke.Transparency = 0.45
     stroke.Color = DASHBOARD_THEME.strokeColor
     stroke.Parent = card
 
@@ -958,51 +902,28 @@ local function createStatusCard(shell, parent)
     })
     gradient.Transparency = NumberSequence.new({
         NumberSequenceKeypoint.new(0, 0.88),
-        NumberSequenceKeypoint.new(1, 0.38),
+        NumberSequenceKeypoint.new(1, 0.4),
     })
-    gradient.Rotation = 128
+    gradient.Rotation = 130
     gradient.Parent = card
 
     local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 22)
-    padding.PaddingBottom = UDim.new(0, 22)
+    padding.PaddingTop = UDim.new(0, 24)
+    padding.PaddingBottom = UDim.new(0, 24)
     padding.PaddingLeft = UDim.new(0, 24)
     padding.PaddingRight = UDim.new(0, 24)
     padding.Parent = card
 
-    local container = Instance.new("Frame")
-    container.Name = "Content"
-    container.BackgroundTransparency = 1
-    container.Size = UDim2.new(1, 0, 0, 0)
-    container.AutomaticSize = Enum.AutomaticSize.Y
-    container.Parent = card
-
-    local containerLayout = Instance.new("UIListLayout")
-    containerLayout.FillDirection = Enum.FillDirection.Vertical
-    containerLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    containerLayout.Padding = UDim.new(0, 12)
-    containerLayout.Parent = container
-
-    local headerRow = Instance.new("Frame")
-    headerRow.Name = "HeaderRow"
-    headerRow.BackgroundTransparency = 1
-    headerRow.Size = UDim2.new(1, 0, 0, 0)
-    headerRow.AutomaticSize = Enum.AutomaticSize.Y
-    headerRow.LayoutOrder = 2
-    headerRow.Parent = container
-
-    local headerLabel = Instance.new("TextLabel")
-    headerLabel.Name = "Heading"
-    headerLabel.BackgroundTransparency = 1
-    headerLabel.Font = Enum.Font.GothamSemibold
-    headerLabel.TextSize = 16
-    headerLabel.TextColor3 = Color3.fromRGB(170, 188, 220)
-    headerLabel.TextXAlignment = Enum.TextXAlignment.Left
-    headerLabel.Text = "Control status"
-    headerLabel.AutomaticSize = Enum.AutomaticSize.Y
-    headerLabel.Size = UDim2.new(1, 0, 0, 18)
-    headerLabel.LayoutOrder = 1
-    headerLabel.Parent = container
+    local header = Instance.new("TextLabel")
+    header.Name = "Heading"
+    header.BackgroundTransparency = 1
+    header.Font = Enum.Font.GothamSemibold
+    header.TextSize = 16
+    header.TextColor3 = Color3.fromRGB(170, 188, 220)
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Text = "Control status"
+    header.Size = UDim2.new(1, -160, 0, 18)
+    header.Parent = card
 
     local statusHeading = Instance.new("TextLabel")
     statusHeading.Name = "StatusHeading"
@@ -1012,29 +933,9 @@ local function createStatusCard(shell, parent)
     statusHeading.TextColor3 = DASHBOARD_THEME.headingColor
     statusHeading.TextXAlignment = Enum.TextXAlignment.Left
     statusHeading.Text = "AutoParry standby"
-    statusHeading.TextWrapped = true
-    statusHeading.AutomaticSize = Enum.AutomaticSize.Y
-    statusHeading.Position = UDim2.new(0, 0, 0, 0)
-    statusHeading.Size = UDim2.new(1, -180, 0, 0)
-    statusHeading.Parent = headerRow
-
-    local toggleButton = Instance.new("TextButton")
-    toggleButton.Name = "ToggleButton"
-    toggleButton.AutoButtonColor = false
-    toggleButton.AnchorPoint = Vector2.new(1, 0)
-    toggleButton.Position = UDim2.new(1, 0, 0, 0)
-    toggleButton.Size = UDim2.new(0, 168, 0, 44)
-    toggleButton.BackgroundColor3 = DASHBOARD_THEME.toggleOffColor
-    toggleButton.TextColor3 = DASHBOARD_THEME.toggleOffTextColor
-    toggleButton.Font = Enum.Font.GothamBold
-    toggleButton.TextSize = 19
-    toggleButton.Text = "Enable AutoParry"
-    toggleButton.BorderSizePixel = 0
-    toggleButton.Parent = headerRow
-
-    local toggleCorner = Instance.new("UICorner")
-    toggleCorner.CornerRadius = UDim.new(0, 12)
-    toggleCorner.Parent = toggleButton
+    statusHeading.Position = UDim2.new(0, 0, 0, 32)
+    statusHeading.Size = UDim2.new(1, -160, 0, 32)
+    statusHeading.Parent = card
 
     local statusSupport = Instance.new("TextLabel")
     statusSupport.Name = "StatusSupport"
@@ -1044,36 +945,28 @@ local function createStatusCard(shell, parent)
     statusSupport.TextColor3 = DASHBOARD_THEME.subheadingColor
     statusSupport.TextXAlignment = Enum.TextXAlignment.Left
     statusSupport.TextWrapped = true
-    statusSupport.AutomaticSize = Enum.AutomaticSize.Y
     statusSupport.Text = "Assist engine standing by for activation."
-    statusSupport.Size = UDim2.new(1, 0, 0, 0)
-    statusSupport.LayoutOrder = 3
-    statusSupport.Parent = container
+    statusSupport.Position = UDim2.new(0, 0, 0, 66)
+    statusSupport.Size = UDim2.new(1, -160, 0, 44)
+    statusSupport.Parent = card
 
-    local insightsRow = Instance.new("Frame")
-    insightsRow.Name = "QuickInsights"
-    insightsRow.BackgroundTransparency = 1
-    insightsRow.Size = UDim2.new(1, 0, 0, 0)
-    insightsRow.AutomaticSize = Enum.AutomaticSize.Y
-    insightsRow.LayoutOrder = 4
-    insightsRow.Visible = false
-    insightsRow.Parent = container
+    local toggleButton = Instance.new("TextButton")
+    toggleButton.Name = "ToggleButton"
+    toggleButton.AutoButtonColor = false
+    toggleButton.AnchorPoint = Vector2.new(1, 0)
+    toggleButton.Position = UDim2.new(1, 0, 0, 20)
+    toggleButton.Size = UDim2.new(0, 160, 0, 46)
+    toggleButton.BackgroundColor3 = DASHBOARD_THEME.toggleOffColor
+    toggleButton.TextColor3 = DASHBOARD_THEME.toggleOffTextColor
+    toggleButton.Font = Enum.Font.GothamBold
+    toggleButton.TextSize = 19
+    toggleButton.Text = "Enable AutoParry"
+    toggleButton.BorderSizePixel = 0
+    toggleButton.Parent = card
 
-    local insightsLayout = newFlexLayout(Enum.FillDirection.Horizontal)
-    trySetLayoutProperty(insightsLayout, "HorizontalAlignment", Enum.HorizontalAlignment.Left)
-    trySetLayoutProperty(insightsLayout, "VerticalAlignment", Enum.VerticalAlignment.Top)
-    trySetLayoutProperty(insightsLayout, "Wraps", true)
-    trySetLayoutProperty(insightsLayout, "SortOrder", Enum.SortOrder.LayoutOrder)
-    trySetLayoutProperty(insightsLayout, "Padding", UDim.new(0, 10))
-    insightsLayout.Parent = insightsRow
-
-    local infoRow = Instance.new("Frame")
-    infoRow.Name = "InfoRow"
-    infoRow.BackgroundTransparency = 1
-    infoRow.Size = UDim2.new(1, 0, 0, 0)
-    infoRow.AutomaticSize = Enum.AutomaticSize.Y
-    infoRow.LayoutOrder = 5
-    infoRow.Parent = container
+    local toggleCorner = Instance.new("UICorner")
+    toggleCorner.CornerRadius = UDim.new(0, 12)
+    toggleCorner.Parent = toggleButton
 
     local tooltip = Instance.new("TextLabel")
     tooltip.Name = "Tooltip"
@@ -1083,10 +976,10 @@ local function createStatusCard(shell, parent)
     tooltip.TextColor3 = Color3.fromRGB(150, 168, 205)
     tooltip.TextXAlignment = Enum.TextXAlignment.Left
     tooltip.TextWrapped = true
-    tooltip.AutomaticSize = Enum.AutomaticSize.Y
-    tooltip.Size = UDim2.new(1, -180, 0, 0)
+    tooltip.Position = UDim2.new(0, 0, 0, 118)
+    tooltip.Size = UDim2.new(1, 0, 0, 20)
     tooltip.Text = ""
-    tooltip.Parent = infoRow
+    tooltip.Parent = card
 
     local hotkeyLabel = Instance.new("TextLabel")
     hotkeyLabel.Name = "HotkeyLabel"
@@ -1096,49 +989,10 @@ local function createStatusCard(shell, parent)
     hotkeyLabel.TextColor3 = Color3.fromRGB(170, 188, 220)
     hotkeyLabel.TextXAlignment = Enum.TextXAlignment.Right
     hotkeyLabel.AnchorPoint = Vector2.new(1, 0)
-    hotkeyLabel.Position = UDim2.new(1, 0, 0, 0)
-    hotkeyLabel.Size = UDim2.new(0, 168, 0, 20)
+    hotkeyLabel.Position = UDim2.new(1, 0, 0, 118)
+    hotkeyLabel.Size = UDim2.new(0, 160, 0, 20)
     hotkeyLabel.Text = ""
-    hotkeyLabel.Parent = infoRow
-
-    local function applyMetrics(metrics)
-        if not metrics then
-            return
-        end
-
-        local buttonWidth = math.clamp(math.floor((metrics.width or 480) * 0.34), 140, 220)
-        toggleButton.Size = UDim2.new(0, buttonWidth, 0, 44)
-        statusHeading.Size = UDim2.new(1, -(buttonWidth + 18), 0, 0)
-        hotkeyLabel.Size = UDim2.new(0, math.max(150, math.floor(buttonWidth * 0.95)), 0, 20)
-        local tooltipOffset = math.max(hotkeyLabel.Size.X.Offset + 12, 0)
-        tooltip.Size = UDim2.new(1, -tooltipOffset, 0, 0)
-
-        local paddingBase = metrics.cardPadding or DASHBOARD_THEME.spacing.cardPadding.medium
-        padding.PaddingTop = UDim.new(0, math.max(18, math.floor(paddingBase * 1.05)))
-        padding.PaddingBottom = UDim.new(0, math.max(18, math.floor(paddingBase * 1.05)))
-        padding.PaddingLeft = UDim.new(0, math.max(20, math.floor(paddingBase)))
-        padding.PaddingRight = UDim.new(0, math.max(20, math.floor(paddingBase)))
-
-        local sectionSpacing = metrics and metrics.sectionGap or 14
-        containerLayout.Padding = UDim.new(0, math.max(10, math.floor(sectionSpacing * 0.75)))
-        trySetLayoutProperty(insightsLayout, "Padding", UDim.new(0, math.max(8, math.floor(sectionSpacing * 0.6))))
-    end
-
-    applyMetrics(shell and shell:getMetrics())
-
-    if shell and shell.addMetricListener then
-        local disconnect = shell:addMetricListener(function(metrics)
-            if card.Parent then
-                applyMetrics(metrics)
-            end
-        end)
-
-        card.AncestryChanged:Connect(function(_, parentInstance)
-            if not parentInstance and disconnect then
-                disconnect()
-            end
-        end)
-    end
+    hotkeyLabel.Parent = card
 
     return {
         frame = card,
@@ -1147,75 +1001,6 @@ local function createStatusCard(shell, parent)
         tooltip = tooltip,
         hotkeyLabel = hotkeyLabel,
         button = toggleButton,
-        insights = {
-            container = insightsRow,
-            layout = insightsLayout,
-        },
-    }
-end
-
-local function createInsightChip(parent, definition)
-    local chipSourceName = (definition and definition.id) or (definition and definition.label) or "Insight"
-    local chip = Instance.new("Frame")
-    chip.Name = tostring(chipSourceName) .. "Chip"
-    chip.BackgroundColor3 = Color3.fromRGB(28, 34, 56)
-    chip.BackgroundTransparency = 0.15
-    chip.BorderSizePixel = 0
-    chip.AutomaticSize = Enum.AutomaticSize.XY
-    chip.Size = UDim2.new(0, 0, 0, 0)
-    chip.Parent = parent
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 10)
-    corner.Parent = chip
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Transparency = 0.55
-    stroke.Color = DASHBOARD_THEME.strokeColor
-    stroke.Parent = chip
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 10)
-    padding.PaddingBottom = UDim.new(0, 10)
-    padding.PaddingLeft = UDim.new(0, 14)
-    padding.PaddingRight = UDim.new(0, 14)
-    padding.Parent = chip
-
-    local layout = Instance.new("UIListLayout")
-    layout.FillDirection = Enum.FillDirection.Vertical
-    layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, 4)
-    layout.Parent = chip
-
-    local label = Instance.new("TextLabel")
-    label.Name = "Label"
-    label.BackgroundTransparency = 1
-    label.Font = Enum.Font.GothamSemibold
-    label.TextSize = 13
-    label.TextColor3 = Color3.fromRGB(185, 205, 240)
-    label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Text = tostring((definition and definition.label) or "Metric")
-    label.AutomaticSize = Enum.AutomaticSize.Y
-    label.Size = UDim2.new(1, 0, 0, 0)
-    label.Parent = chip
-
-    local value = Instance.new("TextLabel")
-    value.Name = "Value"
-    value.BackgroundTransparency = 1
-    value.Font = Enum.Font.GothamBold
-    value.TextSize = 20
-    value.TextColor3 = DASHBOARD_THEME.headingColor
-    value.TextXAlignment = Enum.TextXAlignment.Left
-    value.Text = tostring((definition and definition.value) or "--")
-    value.AutomaticSize = Enum.AutomaticSize.Y
-    value.Size = UDim2.new(1, 0, 0, 0)
-    value.Parent = chip
-
-    return {
-        frame = chip,
-        label = label,
-        value = value,
     }
 end
 
@@ -1332,22 +1117,16 @@ local function createTelemetrySection(shell, definitions)
             return
         end
 
-        local columns = math.max(metrics and metrics.telemetryColumns or 1, 1)
-        local gap = metrics and metrics.telemetryGap or metrics and metrics.cardGap or 12
+        local columns = metrics and metrics.telemetryColumns or 1
+        local gap = metrics and metrics.cardGap or 12
         local height = metrics and metrics.telemetryCardHeight or DASHBOARD_THEME.telemetryCardHeight
-        local width = metrics and metrics.telemetryCardWidth or nil
 
         if columns > 1 then
-            if width and width > 0 then
-                layout.CellSize = UDim2.new(0, width, 0, height)
-            else
-                layout.CellSize = UDim2.new(1 / columns, -gap, 0, height)
-            end
+            layout.CellSize = UDim2.new(1 / columns, -gap, 0, height)
         else
             layout.CellSize = UDim2.new(1, 0, 0, height)
         end
         layout.CellPadding = UDim2.new(0, gap, 0, gap)
-        trySetLayoutProperty(layout, "FillDirectionMaxCells", columns)
     end
 
     if shell and shell.addMetricListener then
@@ -1392,21 +1171,6 @@ local function createControlToggle(shell, parent, definition, onToggle)
         end,
     })
 
-    row.Name = "ControlToggle"
-
-    local textColumn = Instance.new("Frame")
-    textColumn.Name = "TextColumn"
-    textColumn.BackgroundTransparency = 1
-    textColumn.Size = UDim2.new(1, -156, 0, 0)
-    textColumn.AutomaticSize = Enum.AutomaticSize.Y
-    textColumn.Parent = row
-
-    local textLayout = Instance.new("UIListLayout")
-    textLayout.FillDirection = Enum.FillDirection.Vertical
-    textLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    textLayout.Padding = UDim.new(0, 6)
-    textLayout.Parent = textColumn
-
     local title = Instance.new("TextLabel")
     title.Name = "Title"
     title.BackgroundTransparency = 1
@@ -1414,27 +1178,8 @@ local function createControlToggle(shell, parent, definition, onToggle)
     title.TextSize = 17
     title.TextColor3 = DASHBOARD_THEME.headingColor
     title.TextXAlignment = Enum.TextXAlignment.Left
-    title.TextWrapped = true
-    title.AutomaticSize = Enum.AutomaticSize.Y
-    title.Size = UDim2.new(1, 0, 0, 0)
     title.Text = definition.title or "Control"
-    title.LayoutOrder = 1
-    title.Parent = textColumn
-
-    local badge
-    if definition.badge then
-        badge = Instance.new("TextLabel")
-        badge.Name = "Badge"
-        badge.BackgroundTransparency = 1
-        badge.Font = Enum.Font.GothamSemibold
-        badge.TextSize = 13
-        badge.TextColor3 = Color3.fromRGB(180, 205, 255)
-        badge.TextXAlignment = Enum.TextXAlignment.Left
-        badge.Text = definition.badge
-        badge.AutomaticSize = Enum.AutomaticSize.XY
-        badge.LayoutOrder = 2
-        badge.Parent = textColumn
-    end
+    title.Parent = row
 
     local description = Instance.new("TextLabel")
     description.Name = "Description"
@@ -1444,18 +1189,31 @@ local function createControlToggle(shell, parent, definition, onToggle)
     description.TextColor3 = Color3.fromRGB(160, 178, 210)
     description.TextWrapped = true
     description.TextXAlignment = Enum.TextXAlignment.Left
-    description.AutomaticSize = Enum.AutomaticSize.Y
-    description.Size = UDim2.new(1, 0, 0, 0)
     description.Text = definition.description or ""
-    description.LayoutOrder = 3
-    description.Parent = textColumn
+    description.Position = UDim2.new(0, 0, 0, 24)
+    description.Parent = row
+
+    local badge
+    if definition.badge then
+        badge = Instance.new("TextLabel")
+        badge.Name = "Badge"
+        badge.BackgroundTransparency = 1
+        badge.Font = Enum.Font.GothamSemibold
+        badge.TextSize = 13
+        badge.TextColor3 = Color3.fromRGB(180, 205, 255)
+        badge.Text = definition.badge
+        badge.TextXAlignment = Enum.TextXAlignment.Left
+        badge.Position = UDim2.new(0, 0, 0, 58)
+        badge.Size = UDim2.new(0, 80, 0, 18)
+        badge.Parent = row
+    end
 
     local switch = Instance.new("TextButton")
     switch.Name = "Switch"
     switch.AutoButtonColor = false
-    switch.AnchorPoint = Vector2.new(1, 0)
-    switch.Position = UDim2.new(1, 0, 0, 0)
-    switch.Size = UDim2.new(0, 120, 0, 36)
+    switch.AnchorPoint = Vector2.new(1, 0.5)
+    switch.Position = UDim2.new(1, 0, 0.5, 0)
+    switch.Size = UDim2.new(0, 120, 0, 34)
     switch.BackgroundColor3 = DASHBOARD_THEME.toggleOffColor
     switch.TextColor3 = DASHBOARD_THEME.toggleOffTextColor
     switch.Font = Enum.Font.GothamBold
@@ -1470,24 +1228,10 @@ local function createControlToggle(shell, parent, definition, onToggle)
 
     local function applyResponsiveMetrics(metrics)
         local switchWidth = metrics and metrics.controlSwitchWidth or 120
-        local spacing = metrics and metrics.controlContentGap or 24
-        local cardWidth = metrics and metrics.controlCardWidth or nil
-        local columns = metrics and metrics.controlColumns or 1
-        local gap = metrics and metrics.controlGap or 12
-
-        if cardWidth and cardWidth > 0 then
-            row.Size = UDim2.new(0, cardWidth, 0, 0)
-        elseif columns > 1 then
-            row.Size = UDim2.new(1 / columns, -(gap * (columns - 1) / columns), 0, 0)
-        else
-            row.Size = UDim2.new(1, 0, 0, 0)
-        end
-
-        switch.Size = UDim2.new(0, switchWidth, 0, 36)
-        switch.Position = UDim2.new(1, 0, 0, 4)
-        textColumn.Size = UDim2.new(1, -(switchWidth + spacing), 0, 0)
-        textLayout.Padding = UDim.new(0, math.max(6, math.floor(spacing * 0.25)))
-        trySetLayoutProperty(textLayout, "HorizontalAlignment", Enum.HorizontalAlignment.Left)
+        local spacing = 24
+        switch.Size = UDim2.new(0, switchWidth, 0, 34)
+        title.Size = UDim2.new(1, -(switchWidth + spacing), 0, 20)
+        description.Size = UDim2.new(1, -(switchWidth + spacing), 0, 34)
     end
 
     applyResponsiveMetrics(shell and shell:getMetrics())
@@ -1583,33 +1327,17 @@ local function createControlsSection(shell, definitions, onToggle)
     list.AutomaticSize = Enum.AutomaticSize.Y
     list.Parent = section
 
-    local layout = newFlexLayout(Enum.FillDirection.Horizontal)
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 12)
     layout.Parent = list
-    local isFlex = layout.ClassName == "UIFlexLayout"
-    if isFlex then
-        trySetLayoutProperty(layout, "HorizontalAlignment", Enum.HorizontalAlignment.Left)
-        trySetLayoutProperty(layout, "VerticalAlignment", Enum.VerticalAlignment.Top)
-        trySetLayoutProperty(layout, "Wraps", true)
-        trySetLayoutProperty(layout, "SortOrder", Enum.SortOrder.LayoutOrder)
-        trySetLayoutProperty(layout, "Padding", UDim.new(0, DASHBOARD_THEME.spacing.cardGap.min))
-    else
-        trySetLayoutProperty(layout, "FillDirection", Enum.FillDirection.Vertical)
-        trySetLayoutProperty(layout, "SortOrder", Enum.SortOrder.LayoutOrder)
-        layout.Padding = UDim.new(0, 12)
-    end
 
     local function applyMetrics(metrics)
         if metrics then
-            local gap = metrics.controlGap or metrics.sectionGap or 12
-            if isFlex then
-                trySetLayoutProperty(layout, "Padding", UDim.new(0, gap))
-            else
-                layout.Padding = UDim.new(0, gap)
-            end
+            layout.Padding = UDim.new(0, metrics.sectionGap)
         end
     end
-
-    applyMetrics(shell and shell:getMetrics())
 
     if shell and shell.addMetricListener then
         local disconnect = shell:addMetricListener(function(metrics)
@@ -1628,15 +1356,12 @@ local function createControlsSection(shell, definitions, onToggle)
     end
 
     local toggles = {}
-    for index, definition in ipairs(definitions) do
+    for _, definition in ipairs(definitions) do
         local toggle = createControlToggle(shell, list, definition, function(state)
             if typeof(onToggle) == "function" then
                 onToggle(definition, state)
             end
         end)
-        if toggle and toggle.frame then
-            toggle.frame.LayoutOrder = index
-        end
         toggles[definition.id or definition.title] = toggle
     end
 
@@ -1879,98 +1604,21 @@ function Controller:updateTelemetry(id, payload)
         return
     end
 
-    local resolvedLabel
-    local resolvedValue
-
     if typeof(payload) == "table" then
         if payload.label ~= nil and card.label then
-            resolvedLabel = tostring(payload.label)
-            card.label.Text = resolvedLabel
+            card.label.Text = tostring(payload.label)
         end
         if payload.value ~= nil and card.value then
-            resolvedValue = tostring(payload.value)
-            card.value.Text = resolvedValue
+            card.value.Text = tostring(payload.value)
         end
         if payload.hint ~= nil and card.hint then
             card.hint.Text = tostring(payload.hint)
         end
     else
         if card.value then
-            resolvedValue = tostring(payload)
-            card.value.Text = resolvedValue
+            card.value.Text = tostring(payload)
         end
     end
-
-    if self._statusInsights and self._statusInsights.lookup then
-        local insight = self._statusInsights.lookup[id]
-        if not insight and resolvedLabel then
-            insight = self._statusInsights.lookup[resolvedLabel]
-        end
-        if insight then
-            if resolvedLabel and insight.label then
-                insight.label.Text = resolvedLabel
-            end
-            if resolvedValue and insight.value then
-                insight.value.Text = resolvedValue
-            elseif typeof(payload) == "table" and payload.value ~= nil and insight.value then
-                insight.value.Text = tostring(payload.value)
-            elseif insight.value and payload ~= nil and resolvedValue == nil then
-                insight.value.Text = tostring(payload)
-            end
-        end
-    end
-end
-
-function Controller:_rebuildStatusInsights(definitions)
-    local insights = self._statusCard and self._statusCard.insights
-    if not insights then
-        self._statusInsights = nil
-        return
-    end
-
-    local container = insights.container
-    local layout = insights.layout
-    if not container or not layout then
-        self._statusInsights = nil
-        return
-    end
-
-    for _, child in ipairs(container:GetChildren()) do
-        if child ~= layout then
-            child:Destroy()
-        end
-    end
-
-    local lookup = {}
-    local list = {}
-
-    if typeof(definitions) == "table" then
-        local maxCount = math.min(#definitions, 3)
-        for index = 1, maxCount do
-            local definition = definitions[index]
-            local chip = createInsightChip(container, definition or {})
-            chip.frame.LayoutOrder = index
-
-            local key = (definition and definition.id) or (definition and definition.label) or ("metric_" .. index)
-            lookup[key] = chip
-            if definition and definition.label then
-                lookup[definition.label] = chip
-            end
-
-            list[index] = {
-                id = key,
-                view = chip,
-            }
-        end
-    end
-
-    container.Visible = next(lookup) ~= nil
-    self._statusInsights = {
-        container = container,
-        layout = layout,
-        lookup = lookup,
-        list = list,
-    }
 end
 
 function Controller:setTelemetry(definitions)
@@ -1995,7 +1643,6 @@ function Controller:setTelemetry(definitions)
 
     self._telemetryCards = cards
     self._telemetryDefinitions = definitions
-    self:_rebuildStatusInsights(definitions)
 end
 
 function Controller:getTelemetryDefinitions()
@@ -2264,8 +1911,7 @@ function UI.mount(options)
         header.tagline.Text = options.tagline
     end
 
-    local statusParent = (shell.columns and shell.columns.left) or shell.content
-    local statusCard = createStatusCard(shell, statusParent)
+    local statusCard = createStatusCard(shell.content)
     statusCard.tooltip.Text = options.tooltip or ""
     statusCard.tooltip.Visible = options.tooltip ~= nil and options.tooltip ~= ""
     statusCard.hotkeyLabel.Text = hotkeyDisplay and ("Hotkey: %s"):format(hotkeyDisplay) or ""
@@ -2308,11 +1954,9 @@ function UI.mount(options)
         _diagnosticsSection = diagnostics,
         _diagnostics = diagnostics and diagnostics.panel,
         _loaderPending = false,
-        _statusInsights = nil,
     }, Controller)
 
     controller:setHotkeyDisplay(hotkeyDisplay)
-    controller:_rebuildStatusInsights(telemetryDefinitions)
 
     if options.statusText or options.statusSupport then
         controller:setStatusText(options.statusText, options.statusSupport)
