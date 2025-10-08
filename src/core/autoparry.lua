@@ -29,6 +29,7 @@ local DEFAULT_CONFIG = {
     ballsFolderName = "Balls",
     playerTimeout = 10,
     remotesTimeout = 10,
+    parryRemoteTimeout = 10,
     ballsFolderTimeout = 5,
     verificationRetryInterval = 0,
 }
@@ -104,7 +105,9 @@ local BallsFolder: Instance?
 local watchedBallsFolder: Instance?
 local RemotesFolder: Instance?
 
-local ParryInputInfo: {[string]: any}?
+local ParryRemote: Instance?
+local ParryRemoteInfo: {[string]: any}?
+local parryRemoteConnections: { RBXScriptConnection? } = {}
 local verificationWatchers: { { RBXScriptConnection? } } = {}
 local successConnections: { RBXScriptConnection? } = {}
 local successStatusSnapshot: { [string]: boolean }?
@@ -441,9 +444,11 @@ local function disconnectSuccessListeners()
 end
 
 local function clearRemoteState()
+    disconnectConnections(parryRemoteConnections)
     disconnectVerificationWatchers()
     disconnectSuccessListeners()
-    ParryInputInfo = nil
+    ParryRemote = nil
+    ParryRemoteInfo = nil
     RemotesFolder = nil
     if ballsFolderConnections then
         disconnectConnections(ballsFolderConnections)
@@ -560,6 +565,58 @@ local function watchResource(instance, reason)
     end
 end
 
+local function monitorParryRemote(remote)
+    disconnectConnections(parryRemoteConnections)
+
+    if not remote then
+        return
+    end
+
+    local function currentParent()
+        local ok, parent = pcall(function()
+            return remote.Parent
+        end)
+
+        if ok then
+            return parent
+        end
+
+        return nil
+    end
+
+    if currentParent() == nil then
+        scheduleRestart("parry-remote-removed")
+        return
+    end
+
+    local parentConnection = connectPropertyChangedSignal(remote, "Parent", function()
+        if currentParent() == nil then
+            scheduleRestart("parry-remote-removed")
+        end
+    end)
+
+    if parentConnection then
+        table.insert(parryRemoteConnections, parentConnection)
+    end
+
+    local ancestryConnection = connectInstanceEvent(remote, "AncestryChanged", function(_, parent)
+        if parent == nil then
+            scheduleRestart("parry-remote-ancestry")
+        end
+    end)
+
+    if ancestryConnection then
+        table.insert(parryRemoteConnections, ancestryConnection)
+    end
+
+    local destroyingConnection = connectInstanceEvent(remote, "Destroying", function()
+        scheduleRestart("parry-remote-destroyed")
+    end)
+
+    if destroyingConnection then
+        table.insert(parryRemoteConnections, destroyingConnection)
+    end
+end
 
 scheduleRestart = function(reason)
     if restartPending or initialization.destroyed then
@@ -574,21 +631,15 @@ scheduleRestart = function(reason)
 
     local payload = { stage = "restarting", reason = reason }
 
-    if ParryInputInfo then
-        if ParryInputInfo.remoteName then
-            payload.remoteName = ParryInputInfo.remoteName
+    if ParryRemoteInfo then
+        if ParryRemoteInfo.remoteName then
+            payload.remoteName = ParryRemoteInfo.remoteName
         end
-        if ParryInputInfo.variant then
-            payload.remoteVariant = ParryInputInfo.variant
+        if ParryRemoteInfo.variant then
+            payload.remoteVariant = ParryRemoteInfo.variant
         end
-        if ParryInputInfo.className then
-            payload.remoteClass = ParryInputInfo.className
-        end
-        if ParryInputInfo.keyCode then
-            payload.inputKey = ParryInputInfo.keyCode
-        end
-        if ParryInputInfo.method then
-            payload.inputMethod = ParryInputInfo.method
+        if ParryRemoteInfo.className then
+            payload.remoteClass = ParryRemoteInfo.className
         end
     end
 
@@ -1128,21 +1179,18 @@ function publishReadyStatus()
         ballsFolder = getBallsFolderLabel(),
     }
 
-    if ParryInputInfo then
-        if ParryInputInfo.remoteName then
-            payload.remoteName = ParryInputInfo.remoteName
+    if ParryRemoteInfo then
+        if ParryRemoteInfo.remoteName then
+            payload.remoteName = ParryRemoteInfo.remoteName
         end
-        if ParryInputInfo.className then
-            payload.remoteClass = ParryInputInfo.className
+        if ParryRemoteInfo.className then
+            payload.remoteClass = ParryRemoteInfo.className
         end
-        if ParryInputInfo.variant then
-            payload.remoteVariant = ParryInputInfo.variant
+        if ParryRemoteInfo.variant then
+            payload.remoteVariant = ParryRemoteInfo.variant
         end
-        if ParryInputInfo.method then
-            payload.remoteMethod = ParryInputInfo.method
-        end
-        if ParryInputInfo.keyCode then
-            payload.inputKey = ParryInputInfo.keyCode
+        if ParryRemoteInfo.method then
+            payload.remoteMethod = ParryRemoteInfo.method
         end
     end
 
@@ -1369,9 +1417,12 @@ local function beginInitialization()
 
         LocalPlayer = verificationResult.player
         RemotesFolder = verificationResult.remotesFolder
-        ParryInputInfo = verificationResult.parryInputInfo
+        ParryRemote = verificationResult.parryRemote
+        ParryRemoteInfo = verificationResult.parryRemoteInfo
 
         syncImmortalContext()
+
+        monitorParryRemote(ParryRemote)
 
         disconnectVerificationWatchers()
 
@@ -1786,6 +1837,9 @@ local validators = {
         return typeof(value) == "number" and value >= 0
     end,
     remotesTimeout = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    parryRemoteTimeout = function(value)
         return typeof(value) == "number" and value >= 0
     end,
     ballsFolderTimeout = function(value)

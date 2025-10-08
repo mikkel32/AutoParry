@@ -87,6 +87,34 @@ local function isRemoteEvent(remote)
     return false, okClass and className or typeOf(remote)
 end
 
+local function createRemoteFireWrapper(remote, methodName)
+    return function(...)
+        local current = remote[methodName]
+        if not isCallable(current) then
+            error(
+                string.format(
+                    "AutoParry: parry button missing %s",
+                    methodName
+                ),
+                0
+            )
+        end
+
+        return current(remote, ...)
+    end
+end
+
+local function findRemoteFire(remote)
+    local okFire, fire = pcall(function()
+        return remote.Fire
+    end)
+    if okFire and isCallable(fire) then
+        return "Fire", createRemoteFireWrapper(remote, "Fire")
+    end
+
+    return nil, nil
+end
+
 local function locateSuccessRemotes(remotes)
     local definitions = {
         { key = "ParrySuccess", name = "ParrySuccess" },
@@ -271,40 +299,144 @@ local function ensureRemotesFolder(report, timeout, retryInterval)
     end
 end
 
-local function announceParryInput(report)
+local function ensureParryRemote(report, remotes, timeout, retryInterval, candidates)
+    local candidateDefinitions = {}
+    local candidateNames = {}
+
+    for _, entry in ipairs(candidates) do
+        local displayName = entry.displayName or entry.name
+        table.insert(candidateDefinitions, entry)
+        table.insert(candidateNames, displayName)
+    end
+
     emit(report, {
-        stage = "parry-input",
-        target = "virtual-input",
+        stage = "waiting-remotes",
+        target = "remote",
         status = "pending",
         elapsed = 0,
+        candidates = candidateNames,
     })
 
-    local info = {
-        method = "VirtualInputManager:SendKeyEvent",
-        className = "VirtualInputManager",
-        kind = "virtual-input",
-        remoteName = "VirtualInputManager",
-        remoteChildName = "SendKeyEvent",
-        remoteContainerName = "VirtualInputManager",
-        variant = "F-key",
-        keyCode = "F",
-    }
+    local start = os.clock()
 
-    emit(report, {
-        stage = "parry-input",
-        target = "virtual-input",
-        status = "ok",
-        elapsed = 0,
-        remoteName = info.remoteName,
-        remoteChildName = info.remoteChildName,
-        remoteVariant = info.variant,
-        remoteMethod = info.method,
-        className = info.className,
-        keyCode = info.keyCode,
-        message = "AutoParry will press the F key locally via VirtualInputManager.",
-    })
+    local function inspectCandidate(candidate)
+        local okFound, found = pcall(remotes.FindFirstChild, remotes, candidate.name)
+        if not okFound or not found then
+            return nil
+        end
 
-    return info
+        local remote = found
+        local containerName = nil
+
+        if candidate.childName then
+            local okChild, child = pcall(found.FindFirstChild, found, candidate.childName)
+            if not okChild or not child then
+                return nil
+            end
+
+            remote = child
+            containerName = found.Name
+        end
+
+        local className = getClassName(remote)
+
+        local okBindable, isBindable = pcall(function()
+            local isA = remote.IsA
+            if not isCallable(isA) then
+                return false
+            end
+
+            return isA(remote, "BindableEvent")
+        end)
+
+        if not okBindable or not isBindable then
+            emit(report, {
+                stage = "error",
+                target = "remote",
+                status = "failed",
+                reason = "parry-remote-unsupported",
+                className = className,
+                remoteName = remote.Name,
+                candidates = candidateNames,
+                message = "AutoParry: ParryButtonPress.parryButtonPress must be a BindableEvent",
+            })
+
+            error("AutoParry: ParryButtonPress.parryButtonPress must be a BindableEvent", 0)
+        end
+
+        local methodName, fire = findRemoteFire(remote)
+        if not methodName or not fire then
+            emit(report, {
+                stage = "error",
+                target = "remote",
+                status = "failed",
+                reason = "parry-remote-missing-method",
+                className = className,
+                remoteName = remote.Name,
+                candidates = candidateNames,
+                message = "AutoParry: ParryButtonPress.parryButtonPress missing Fire",
+            })
+
+            error("AutoParry: ParryButtonPress.parryButtonPress missing Fire", 0)
+        end
+
+        local info = {
+            method = methodName,
+            className = className,
+            kind = className,
+            remoteName = candidate.name,
+            remoteChildName = remote.Name,
+            remoteContainerName = containerName,
+            variant = candidate.variant,
+        }
+
+        return true, remote, fire, info
+    end
+
+    while true do
+        for _, candidate in ipairs(candidateDefinitions) do
+            local status, remote, fire, info = inspectCandidate(candidate)
+            if status then
+                emit(report, {
+                    stage = "waiting-remotes",
+                    target = "remote",
+                    status = "ok",
+                    elapsed = os.clock() - start,
+                    remoteName = info.remoteName,
+                    remoteVariant = info.variant,
+                    remoteMethod = info.method,
+                    remoteClass = info.className,
+                    candidates = candidateNames,
+                })
+
+                return remote, fire, info
+            end
+        end
+
+        local elapsed = os.clock() - start
+        emit(report, {
+            stage = "waiting-remotes",
+            target = "remote",
+            status = "waiting",
+            elapsed = elapsed,
+            candidates = candidateNames,
+        })
+
+        if timeout and elapsed >= timeout then
+            emit(report, {
+                stage = "timeout",
+                target = "remote",
+                status = "failed",
+                reason = "parry-remote",
+                elapsed = elapsed,
+                candidates = candidateNames,
+            })
+
+            error("AutoParry: parry remote missing (ParryButtonPress.parryButtonPress)", 0)
+        end
+
+        waitInterval(retryInterval)
+    end
 end
 
 local function verifyBallsFolder(report, folderName, timeout, retryInterval)
@@ -412,13 +544,23 @@ function Verification.run(options)
     local report = options.report
     local retryInterval = options.retryInterval or config.verificationRetryInterval or 0
 
+    local candidateDefinitions = options.candidates or {
+        {
+            name = "ParryButtonPress",
+            childName = "parryButtonPress",
+            variant = "modern",
+            displayName = "ParryButtonPress.parryButtonPress",
+        },
+    }
+
     local playerTimeout = config.playerTimeout or options.playerTimeout or 10
     local remotesTimeout = config.remotesTimeout or options.remotesTimeout or 10
+    local parryRemoteTimeout = config.parryRemoteTimeout or options.parryRemoteTimeout or 10
     local ballsFolderTimeout = config.ballsFolderTimeout or options.ballsFolderTimeout or 5
 
     local player = ensurePlayer(report, playerTimeout, retryInterval)
     local remotes = ensureRemotesFolder(report, remotesTimeout, retryInterval)
-    local inputInfo = announceParryInput(report)
+    local remote, baseFire, remoteInfo = ensureParryRemote(report, remotes, parryRemoteTimeout, retryInterval, candidateDefinitions)
 
     local successRemotes = locateSuccessRemotes(remotes)
 
@@ -428,15 +570,17 @@ function Verification.run(options)
         remotes = summarizeSuccessRemotes(successRemotes),
     })
 
-    inputInfo = inputInfo or {}
-    inputInfo.successRemotes = successRemotes
+    remoteInfo = remoteInfo or {}
+    remoteInfo.successRemotes = successRemotes
 
     local ballsStatus, ballsFolder = verifyBallsFolder(report, config.ballsFolderName or "Balls", ballsFolderTimeout, retryInterval)
 
     return {
         player = player,
         remotesFolder = remotes,
-        parryInputInfo = inputInfo,
+        parryRemote = remote,
+        parryRemoteBaseFire = baseFire,
+        parryRemoteInfo = remoteInfo,
         successRemotes = successRemotes,
         ballsFolder = ballsFolder,
         ballsStatus = ballsStatus,
