@@ -12,6 +12,7 @@ local Workspace = game:GetService("Workspace")
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
 local LoadingOverlay = Require("src/ui/loading_overlay.lua")
+local DiagnosticsPanel = Require("src/ui/diagnostics_panel.lua")
 
 local UI = {}
 
@@ -1299,6 +1300,36 @@ local function createControlsSection(shell, definitions, onToggle)
     }
 end
 
+local function createDiagnosticsSection(shell, options)
+    local section = Instance.new("Frame")
+    section.Name = "Diagnostics"
+    section.BackgroundTransparency = 1
+    section.Size = UDim2.new(1, 0, 0, 0)
+    section.AutomaticSize = Enum.AutomaticSize.Y
+    section.LayoutOrder = 1
+
+    local targetParent
+    if shell then
+        if shell.columns and shell.columns.right then
+            targetParent = shell.columns.right
+        elseif shell.content then
+            targetParent = shell.content
+        end
+    end
+
+    section.Parent = targetParent
+
+    local panel = DiagnosticsPanel.new({
+        parent = section,
+        theme = options and options.theme,
+    })
+
+    return {
+        frame = section,
+        panel = panel,
+    }
+end
+
 local function createActionsRow(parent)
     local row = Instance.new("Frame")
     row.Name = "Actions"
@@ -1441,6 +1472,10 @@ function Controller:getLayoutMetrics()
         self._layoutMetrics = self._layoutMetrics or self._shell:getMetrics()
     end
     return self._layoutMetrics
+end
+
+function Controller:getDiagnosticsPanel()
+    return self._diagnostics
 end
 
 function Controller:setTooltip(text)
@@ -1658,6 +1693,42 @@ function Controller:setActions(actions)
     end
 end
 
+function Controller:resetDiagnostics()
+    if self._diagnostics then
+        self._diagnostics:reset()
+    end
+end
+
+function Controller:setDiagnosticsStages(stages)
+    if self._diagnostics then
+        self._diagnostics:setStages(stages)
+    end
+end
+
+function Controller:pushDiagnosticsEvent(event)
+    if self._diagnostics then
+        self._diagnostics:pushEvent(event)
+    end
+end
+
+function Controller:showDiagnosticsError(errorInfo)
+    if self._diagnostics then
+        self._diagnostics:showError(errorInfo)
+    end
+end
+
+function Controller:setDiagnosticsFilter(filterId)
+    if self._diagnostics and self._diagnostics.setFilter then
+        self._diagnostics:setFilter(filterId)
+    end
+end
+
+function Controller:setDiagnosticsCollapsed(sectionId, collapsed)
+    if self._diagnostics and self._diagnostics.setCollapsed then
+        self._diagnostics:setCollapsed(sectionId, collapsed)
+    end
+end
+
 function Controller:onChanged(callback)
     assert(typeof(callback) == "function", "UI.onChanged expects a function")
     return self._changed:connect(callback)
@@ -1699,6 +1770,11 @@ function Controller:destroy()
         self._hotkeyConnection = nil
     end
 
+    if self._diagnostics then
+        self._diagnostics:destroy()
+        self._diagnostics = nil
+    end
+
     if self.gui then
         self.gui:Destroy()
         self.gui = nil
@@ -1721,6 +1797,7 @@ function Controller:destroy()
     self._telemetrySection = nil
     self._telemetryCards = nil
     self._controlsSection = nil
+    self._diagnosticsSection = nil
     self._actionsRow = nil
     self._shell = nil
     self._columns = nil
@@ -1762,6 +1839,8 @@ function UI.mount(options)
     local telemetryDefinitions = options.telemetry or DEFAULT_TELEMETRY_CARDS
     local telemetry = createTelemetrySection(shell, telemetryDefinitions)
 
+    local diagnostics = createDiagnosticsSection(shell, options and options.diagnostics)
+
     local controlSignal = Util.Signal.new()
     local controlDefinitions = options.controls or DEFAULT_CONTROL_SWITCHES
     local controls = createControlsSection(shell, controlDefinitions, function(definition, state)
@@ -1792,6 +1871,8 @@ function UI.mount(options)
         _shell = shell,
         _columns = shell.columns,
         _layoutMetrics = shell:getMetrics(),
+        _diagnosticsSection = diagnostics,
+        _diagnostics = diagnostics and diagnostics.panel,
     }, Controller)
 
     controller:setHotkeyDisplay(hotkeyDisplay)
