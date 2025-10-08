@@ -73,6 +73,11 @@ local DEFAULT_THEME = {
     eventStrokeColor = Color3.fromRGB(70, 106, 170),
     eventStrokeTransparency = 0.65,
     eventCorner = UDim.new(0, 10),
+    eventListHeight = 240,
+    eventListPadding = Vector2.new(10, 8),
+    eventScrollBarThickness = 6,
+    eventScrollBarColor = Color3.fromRGB(82, 156, 255),
+    eventScrollBarTransparency = 0.25,
     eventMessageFont = Enum.Font.Gotham,
     eventMessageSize = 14,
     eventDetailSize = 13,
@@ -507,12 +512,74 @@ function DiagnosticsPanel.new(options)
 
     local filterButtons = {}
 
-    local eventList = Instance.new("Frame")
+    local eventBase = theme.eventBackground or DEFAULT_THEME.eventBackground
+    local accentColor = (theme.filterButton and theme.filterButton.activeColor)
+        or (theme.statusColors and theme.statusColors.active)
+        or (DEFAULT_THEME.statusColors and DEFAULT_THEME.statusColors.active)
+        or Color3.fromRGB(112, 198, 255)
+
+    local eventViewport = Instance.new("Frame")
+    eventViewport.Name = "EventViewport"
+    eventViewport.BackgroundColor3 = eventBase
+    eventViewport.BackgroundTransparency = theme.eventTransparency or DEFAULT_THEME.eventTransparency or 0.04
+    eventViewport.BorderSizePixel = 0
+    eventViewport.AutomaticSize = Enum.AutomaticSize.None
+    eventViewport.Size = UDim2.new(1, 0, 0, theme.eventListHeight or DEFAULT_THEME.eventListHeight)
+    eventViewport.ClipsDescendants = true
+    eventViewport.Parent = eventsSection.body
+
+    local eventViewportCorner = Instance.new("UICorner")
+    eventViewportCorner.CornerRadius = theme.eventCorner or DEFAULT_THEME.eventCorner or UDim.new(0, 10)
+    eventViewportCorner.Parent = eventViewport
+
+    local eventViewportStroke = Instance.new("UIStroke")
+    eventViewportStroke.Color = theme.eventStrokeColor or DEFAULT_THEME.eventStrokeColor
+    eventViewportStroke.Transparency = theme.eventStrokeTransparency or DEFAULT_THEME.eventStrokeTransparency or 0.4
+    eventViewportStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    eventViewportStroke.Parent = eventViewport
+
+    local viewportGradient = Instance.new("UIGradient")
+    viewportGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, eventBase:Lerp(accentColor, 0.08)),
+        ColorSequenceKeypoint.new(1, eventBase),
+    })
+    viewportGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, math.clamp((theme.eventTransparency or 0.04) + 0.05, 0, 1)),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    viewportGradient.Rotation = 90
+    viewportGradient.Parent = eventViewport
+
+    local viewportPadding = Instance.new("UIPadding")
+    viewportPadding.PaddingTop = UDim.new(0, 6)
+    viewportPadding.PaddingBottom = UDim.new(0, 6)
+    viewportPadding.PaddingLeft = UDim.new(0, 6)
+    viewportPadding.PaddingRight = UDim.new(0, 6)
+    viewportPadding.Parent = eventViewport
+
+    local eventList = Instance.new("ScrollingFrame")
     eventList.Name = "Events"
+    eventList.Active = true
     eventList.BackgroundTransparency = 1
-    eventList.Size = UDim2.new(1, 0, 0, 0)
-    eventList.AutomaticSize = Enum.AutomaticSize.Y
-    eventList.Parent = eventsSection.body
+    eventList.BorderSizePixel = 0
+    eventList.AutomaticSize = Enum.AutomaticSize.None
+    eventList.Size = UDim2.new(1, 0, 1, 0)
+    eventList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    eventList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    eventList.ScrollBarThickness = theme.eventScrollBarThickness or DEFAULT_THEME.eventScrollBarThickness or 6
+    eventList.ScrollBarImageColor3 = theme.eventScrollBarColor or DEFAULT_THEME.eventScrollBarColor
+    eventList.ScrollBarImageTransparency = theme.eventScrollBarTransparency or DEFAULT_THEME.eventScrollBarTransparency or 0.2
+    eventList.ScrollingDirection = Enum.ScrollingDirection.Y
+    eventList.ElasticBehavior = Enum.ElasticBehavior.Never
+    eventList.Parent = eventViewport
+
+    local eventPadding = theme.eventListPadding or DEFAULT_THEME.eventListPadding or Vector2.new(10, 8)
+    local eventListPadding = Instance.new("UIPadding")
+    eventListPadding.PaddingTop = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingBottom = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingLeft = UDim.new(0, eventPadding.X)
+    eventListPadding.PaddingRight = UDim.new(0, eventPadding.X)
+    eventListPadding.Parent = eventList
 
     local eventLayout = Instance.new("UIListLayout")
     eventLayout.FillDirection = Enum.FillDirection.Vertical
