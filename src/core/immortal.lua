@@ -89,6 +89,22 @@ local function clampToRange(currentBallPos, p)
     return p
 end
 
+local function isInstanceDestroyed(instance)
+    if not instance then
+        return true
+    end
+
+    if instance.Parent then
+        return false
+    end
+
+    local ok, isDescendant = pcall(function()
+        return instance:IsDescendantOf(game)
+    end)
+
+    return not ok or not isDescendant
+end
+
 local function futureBallPos(bPos, bVel, t, ping)
     local look = t + ping * PING_MULT
     if look < 0 then
@@ -195,6 +211,11 @@ function Immortal:_ensureHighlightParent()
         return
     end
 
+    if isInstanceDestroyed(self._highlight) then
+        self._highlight = nil
+        return
+    end
+
     local player = self._player or Players.LocalPlayer
     if not player then
         return
@@ -209,14 +230,25 @@ function Immortal:_ensureHighlightParent()
     end
 
     if playerGui and self._highlight.Parent ~= playerGui then
-        self._highlight.Parent = playerGui
+        local ok = pcall(function()
+            self._highlight.Parent = playerGui
+        end)
+        if not ok then
+            self._highlight = nil
+        end
     end
 end
 
 function Immortal:_ensureHighlight()
     if self._highlight then
-        self:_ensureHighlightParent()
-        return self._highlight
+        if isInstanceDestroyed(self._highlight) then
+            self._highlight = nil
+        else
+            self:_ensureHighlightParent()
+            if self._highlight then
+                return self._highlight
+            end
+        end
     end
 
     local player = self._player or Players.LocalPlayer
@@ -243,7 +275,15 @@ function Immortal:_ensureHighlight()
     highlight.FillTransparency = 0.3
     highlight.OutlineTransparency = 0
     highlight.Enabled = false
-    highlight.Parent = playerGui
+
+    local ok = pcall(function()
+        highlight.Parent = playerGui
+    end)
+
+    if not ok then
+        highlight:Destroy()
+        return nil
+    end
 
     self._highlight = highlight
     return highlight
@@ -737,7 +777,7 @@ function Immortal:_start()
     end
 
     self:_ensureHighlight()
-    self._resetPlanner()
+    self:_resetPlanner()
     self._heartbeat = RunService.Heartbeat:Connect(function(dt)
         self:_heartbeatStep(dt)
     end)
