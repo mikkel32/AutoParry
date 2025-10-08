@@ -28,9 +28,9 @@ local STEP_DEFINITIONS = {
     },
     {
         id = "remotes",
-        title = "Game Remotes",
-        description = "Connecting to Blade Ball remote events.",
-        tooltip = "Verifies that the required remote folders exist within ReplicatedStorage.Remotes.",
+        title = "Parry Input",
+        description = "Arming the local F-key press.",
+        tooltip = "Ensures the virtual F-key input is configured and ready to trigger.",
     },
     {
         id = "success",
@@ -2739,7 +2739,7 @@ function VerificationDashboard:_applyParrySnapshot(snapshot)
 
     if stage == "ready" then
         self:_applyStepState("player", "ok", "Player locked")
-        self:_applyStepState("remotes", "ok", string.format("%s (%s)", snapshot.remoteName or "Parry remote", snapshot.remoteVariant or "detected"))
+        self:_applyStepState("remotes", "ok", string.format("%s (%s)", snapshot.remoteName or "Virtual input", snapshot.remoteVariant or "F key"))
         if snapshot.successEvents then
             self:_applyStepState("success", "ok", "Success listeners wired")
         else
@@ -2759,8 +2759,8 @@ function VerificationDashboard:_applyParrySnapshot(snapshot)
             self:_applyStepState("player", "failed", "Timed out waiting for player")
         elseif reason == "remotes-folder" or target == "folder" then
             self:_applyStepState("remotes", "failed", "Remotes folder missing")
-        elseif reason == "parry-remote" or target == "remote" then
-            self:_applyStepState("remotes", "failed", "Parry remote unavailable")
+        elseif reason == "parry-remote" or reason == "parry-input" or target == "remote" then
+            self:_applyStepState("remotes", "failed", "F-key input unavailable")
         elseif reason == "balls-folder" then
             self:_applyStepState("balls", "warning", "Balls folder not found")
         end
@@ -2769,7 +2769,7 @@ function VerificationDashboard:_applyParrySnapshot(snapshot)
 
     if stage == "error" then
         if target == "remote" then
-            self:_applyStepState("remotes", "failed", snapshot.message or "Unsupported parry remote")
+            self:_applyStepState("remotes", "failed", snapshot.message or "Virtual input unavailable")
         elseif target == "folder" then
             self:_applyStepState("remotes", "failed", snapshot.message or "Remotes folder removed")
         else
@@ -2797,12 +2797,23 @@ function VerificationDashboard:_applyParrySnapshot(snapshot)
             end
         elseif target == "remote" then
             if status == "ok" then
-                local name = snapshot.remoteName or "Parry remote"
-                local variant = snapshot.remoteVariant or "detected"
+                local name = snapshot.remoteName or "Virtual input"
+                local variant = snapshot.remoteVariant or "F key"
                 self:_applyStepState("remotes", "ok", string.format("%s (%s)", name, variant))
             elseif status == "waiting" or status == "pending" then
-                self:_applyStepState("remotes", "active", "Scanning for parry remote…")
+                self:_applyStepState("remotes", "active", "Preparing F-key parry input…")
             end
+        end
+        return
+    end
+
+    if stage == "parry-input" then
+        if status == "ok" then
+            local name = snapshot.remoteName or "Virtual input"
+            local variant = snapshot.remoteVariant or "F key"
+            self:_applyStepState("remotes", "ok", string.format("%s (%s)", name, variant))
+        else
+            self:_applyStepState("remotes", "active", "Arming F-key parry input…")
         end
         return
     end
@@ -2896,7 +2907,7 @@ function VerificationDashboard:_applyError(errorState)
 
     if reason == "local-player" then
         self:_applyStepState("player", "failed", message)
-    elseif reason == "remotes-folder" or reason == "parry-remote" or reason == "remote" then
+    elseif reason == "remotes-folder" or reason == "parry-remote" or reason == "parry-input" or reason == "remote" then
         self:_applyStepState("remotes", "failed", message)
     elseif reason == "balls-folder" or reason == "balls" then
         self:_applyStepState("balls", "warning", message)

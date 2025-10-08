@@ -25,6 +25,8 @@ local REASON_STAGE_MAP = {
     ["remotes-folder"] = "remotes",
     ["remote"] = "remotes",
     ["parry-remote"] = "remotes",
+    ["parry-input"] = "remotes",
+    ["virtual-input"] = "remotes",
     ["success"] = "success",
     ["success-events"] = "success",
     ["balls"] = "balls",
@@ -213,8 +215,8 @@ local function buildErrorDetail(state)
 
         if reasonLower == "local-player" then
             addTips("Wait for your avatar to spawn in before retrying AutoParry.")
-        elseif reasonLower == "remotes-folder" or reasonLower == "parry-remote" or reasonLower == "remote" then
-            addTips("Join or rejoin a Blade Ball match so the parry remotes replicate.")
+        elseif reasonLower == "remotes-folder" or reasonLower == "parry-remote" or reasonLower == "remote" or reasonLower == "parry-input" then
+            addTips("Make sure Roblox has focus so AutoParry can press the F key with VirtualInputManager.")
         elseif reasonLower == "balls" or reasonLower == "balls-folder" then
             addTips("Ensure a match is active with balls in play before enabling AutoParry.")
         end
@@ -302,9 +304,11 @@ local function defaultStatusFormatter(state)
         return { text = "AutoParry ready!" }
     elseif stage == "waiting-remotes" then
         if parry.target == "remote" then
-            return { text = "Waiting for parry remote…" }
+            return { text = "Preparing F-key parry input…" }
         end
         return { text = "Waiting for Blade Ball remotes…" }
+    elseif stage == "parry-input" then
+        return { text = "Arming F-key parry input…" }
     elseif stage == "waiting-player" then
         return { text = "Waiting for your player…" }
     elseif stage == "timeout" then
@@ -337,6 +341,8 @@ local function defaultProgressFormatter(state)
         parryAlpha = 1
     elseif parryStage == "waiting-remotes" then
         parryAlpha = 0.7
+    elseif parryStage == "parry-input" then
+        parryAlpha = 0.85
     elseif parryStage == "waiting-player" then
         parryAlpha = 0.4
     elseif parryStage == "timeout" then
@@ -706,8 +712,8 @@ return function(options, loaderContext)
                 mark("player", "failed", "Timed out waiting for player", nil, true)
             elseif reason == "remotes-folder" or target == "folder" then
                 mark("remotes", "failed", "Remotes folder missing", nil, true)
-            elseif reason == "parry-remote" or target == "remote" then
-                mark("remotes", "failed", "Parry remote unavailable", nil, true)
+            elseif reason == "parry-remote" or reason == "parry-input" or target == "remote" then
+                mark("remotes", "failed", "F-key input unavailable", nil, true)
             elseif reason == "balls-folder" then
                 mark("balls", "warning", "Balls folder not found", "AutoParry will continue without ball telemetry if the folder is missing.")
             else
@@ -715,7 +721,7 @@ return function(options, loaderContext)
             end
         elseif stage == "error" then
             if target == "remote" then
-                mark("remotes", "failed", snapshot.message or "Unsupported parry remote", nil, true)
+                mark("remotes", "failed", snapshot.message or "Virtual input unavailable", nil, true)
             elseif target == "folder" then
                 mark("remotes", "failed", snapshot.message or "Remotes folder removed", nil, true)
             else
@@ -738,12 +744,20 @@ return function(options, loaderContext)
                 end
             elseif target == "remote" then
                 if status == "ok" then
-                    local name = snapshot.remoteName or "Parry remote"
-                    local variant = snapshot.remoteVariant or "detected"
+                    local name = snapshot.remoteName or "Virtual input"
+                    local variant = snapshot.remoteVariant or "F key"
                     mark("remotes", "ok", string.format("%s (%s)", name, variant), nil, true)
                 else
-                    mark("remotes", "active", "Scanning for parry remote…", nil, true)
+                    mark("remotes", "active", "Preparing F-key parry input…", nil, true)
                 end
+            end
+        elseif stage == "parry-input" then
+            if status == "ok" then
+                local name = snapshot.remoteName or "Virtual input"
+                local variant = snapshot.remoteVariant or "F key"
+                mark("remotes", "ok", string.format("%s (%s)", name, variant), nil, true)
+            else
+                mark("remotes", "active", "Arming F-key parry input…", nil, true)
             end
         elseif stage == "verifying-success-remotes" then
             if snapshot.remotes or status == "ok" then
@@ -801,10 +815,17 @@ return function(options, loaderContext)
             else
                 if status == "ok" then
                     severity = "success"
-                    message = string.format("Parry remote detected (%s)", progress.remoteVariant or "detected")
+                    message = string.format("Virtual input ready (%s)", progress.remoteVariant or "F key")
                 else
-                    message = "Scanning for parry remote"
+                    message = "Preparing F-key parry input"
                 end
+            end
+        elseif stage == "parry-input" then
+            if status == "ok" then
+                severity = "success"
+                message = string.format("Virtual input ready (%s)", progress.remoteVariant or "F key")
+            else
+                message = "Arming F-key parry input"
             end
         elseif stage == "verifying-success-remotes" then
             if progress.remotes or status == "ok" then
@@ -831,8 +852,8 @@ return function(options, loaderContext)
                 message = "Timed out waiting for player"
             elseif reasonText == "remotes-folder" then
                 message = "Timed out waiting for remotes folder"
-            elseif reasonText == "parry-remote" or reasonText == "remote" then
-                message = "Timed out waiting for parry remote"
+            elseif reasonText == "parry-remote" or reasonText == "remote" or reasonText == "parry-input" then
+                message = "Timed out preparing F-key parry input"
             elseif reasonText == "balls-folder" then
                 message = "Ball folder timed out"
             else
