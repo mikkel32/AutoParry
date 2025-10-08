@@ -740,6 +740,8 @@ function LoadingOverlay.new(options)
         _dashboardGradient = dashboardGradient,
         _containerGlow = glow,
         _containerGradient = containerGradient,
+        _containerPadding = containerPadding,
+        _containerLayout = containerLayout,
         _viewportConnection = nil,
         _badgeStatus = "Initializing AutoParry",
         _badgeProgress = 0,
@@ -755,6 +757,12 @@ function LoadingOverlay.new(options)
         _actionButtons = {},
         _actionConnections = {},
         _actions = nil,
+        _defaultContainerHeight = (container.Size.Y.Scale == 0 and container.Size.Y.Offset) or nil,
+        _defaultContentSize = contentFrame.Size,
+        _defaultHeroHeight = (heroFrame.Size.Y.Scale == 0 and heroFrame.Size.Y.Offset) or nil,
+        _defaultInfoSize = infoColumn.Size,
+        _defaultDashboardSize = dashboardColumn.Size,
+        _layoutState = nil,
     }, LoadingOverlay)
 
     local spinnerTween = TweenService:Create(spinner, TweenInfo.new(1.2, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
@@ -797,65 +805,275 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
     local theme = self._theme or DEFAULT_THEME
     local responsive = theme.responsive or DEFAULT_THEME.responsive or {}
     local viewportWidth = viewportSize and viewportSize.X or (theme.containerSize and theme.containerSize.X.Offset) or 640
-    local minWidth = responsive.minWidth or 360
-    local maxWidth = responsive.maxWidth or viewportWidth
-    local desiredWidth = math.clamp(math.floor(viewportWidth * 0.7), minWidth, maxWidth)
-    local defaultHeight = (theme.containerSize and theme.containerSize.Y.Offset)
+    local fallbackContainerHeight = (theme.containerSize and theme.containerSize.Y.Offset)
         or (DEFAULT_THEME.containerSize and DEFAULT_THEME.containerSize.Y.Offset)
         or 360
+    local viewportHeight = viewportSize and viewportSize.Y or (fallbackContainerHeight + 240)
 
-    container.Size = UDim2.new(0, desiredWidth, 0, defaultHeight)
+    local minWidth = responsive.minWidth or 360
+    local maxWidth = responsive.maxWidth or viewportWidth
+    local columnSpacing = responsive.columnSpacing or 32
+    local mediumWidth = responsive.mediumWidth or 540
+    local largeWidth = responsive.largeWidth or 720
 
     local contentLayout = self._contentLayout
+    local contentFrame = self._contentFrame
     local infoColumn = self._infoColumn
     local dashboardColumn = self._dashboardColumn
     local heroFrame = self._heroFrame
+
     if not infoColumn or not dashboardColumn then
         return
     end
 
-    local columnSpacing = responsive.columnSpacing or 32
-    if contentLayout then
-        contentLayout.Padding = UDim.new(0, columnSpacing)
+    local containerPadding = self._containerPadding
+    local topPadding = (containerPadding and containerPadding.PaddingTop.Offset) or 0
+    local bottomPadding = (containerPadding and containerPadding.PaddingBottom.Offset) or 0
+    local containerLayout = self._containerLayout
+    local sectionGap = (containerLayout and containerLayout.Padding.Offset) or 0
+
+    local defaultHeight = self._defaultContainerHeight
+        or (theme.containerSize and theme.containerSize.Y.Offset)
+        or (DEFAULT_THEME.containerSize and DEFAULT_THEME.containerSize.Y.Offset)
+        or 360
+
+    local baselineContainerHeight = defaultHeight
+    local defaultContentSize = self._defaultContentSize or UDim2.new(1, 0, 1, -160)
+    local defaultHeroHeight = self._defaultHeroHeight or 160
+    local defaultInfoSize = self._defaultInfoSize or UDim2.new(0.46, -12, 1, -12)
+    local defaultDashboardSize = self._defaultDashboardSize or UDim2.new(0.54, 0, 1, 0)
+
+    local function resolveHeight(size, reference)
+        if typeof(size) ~= "UDim2" then
+            return nil
+        end
+        if size.Y.Scale == 0 then
+            return size.Y.Offset
+        end
+        return math.floor((reference or 0) * size.Y.Scale + size.Y.Offset)
     end
 
-    if viewportWidth <= (responsive.mediumWidth or 540) then
-        if contentLayout then
-            contentLayout.FillDirection = Enum.FillDirection.Vertical
-            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    local baseContentHeight = resolveHeight(defaultContentSize, baselineContainerHeight)
+        or math.max(240, baselineContainerHeight - (topPadding + bottomPadding) - defaultHeroHeight - sectionGap)
+    local baseInfoHeight = resolveHeight(defaultInfoSize, baseContentHeight)
+        or math.max(220, math.floor(baseContentHeight * 0.55))
+    local baseDashboardHeight = resolveHeight(defaultDashboardSize, baseContentHeight)
+        or math.max(220, math.floor(baseContentHeight * 0.45))
+
+    local horizontalInset = math.clamp(math.floor(viewportWidth * 0.12), 24, 160)
+    local widthBudget = math.max(0, viewportWidth - horizontalInset)
+    local widthGoal = math.floor(viewportWidth * 0.72)
+    local clampLower = math.min(minWidth, maxWidth)
+    widthGoal = math.clamp(widthGoal, clampLower, maxWidth)
+    local desiredWidth = math.min(widthGoal, widthBudget)
+    local widthMargin = math.max(12, math.floor(horizontalInset * 0.25))
+    local maxVisualWidth = math.max(0, viewportWidth - widthMargin)
+    desiredWidth = math.min(desiredWidth, maxVisualWidth)
+    if maxVisualWidth >= 120 then
+        desiredWidth = math.max(120, desiredWidth)
+    end
+    desiredWidth = math.max(0, desiredWidth)
+
+    local verticalInset = math.clamp(math.floor(viewportHeight * 0.12), 48, 220)
+    local safeHeight = math.max(defaultHeight, topPadding + bottomPadding + 240)
+    safeHeight = math.max(safeHeight, viewportHeight - verticalInset)
+    if viewportSize then
+        safeHeight = math.min(safeHeight, viewportHeight - math.max(24, math.floor(verticalInset * 0.5)))
+    end
+    safeHeight = math.max(0, safeHeight)
+
+    local availableContentHeight = safeHeight - topPadding - bottomPadding
+    if availableContentHeight < 120 then
+        availableContentHeight = math.max(40, availableContentHeight)
+    end
+    local aspectRatio = viewportHeight > 0 and viewportWidth / viewportHeight or 1.6
+
+    local verticalSpacing = math.min(columnSpacing, 24)
+    local widthOffset = math.max(24, math.floor(columnSpacing * 0.75))
+
+    local heightPressure = availableContentHeight <= baseContentHeight + math.max(24, sectionGap)
+    local forceStack = viewportWidth <= mediumWidth or heightPressure or aspectRatio < 1.15
+    local preferHybrid = not forceStack and (viewportWidth <= largeWidth or aspectRatio < 1.45 or availableContentHeight < baseContentHeight * 1.35)
+
+    local target = {
+        mode = "wide",
+        width = math.floor(desiredWidth + 0.5),
+        height = math.floor(math.min(safeHeight, defaultHeight) + 0.5),
+        heroHeight = defaultHeroHeight,
+        contentHeight = baseContentHeight,
+        infoHeight = resolveHeight(defaultInfoSize, baseContentHeight),
+        dashboardHeight = resolveHeight(defaultDashboardSize, baseContentHeight),
+        fillDirection = Enum.FillDirection.Horizontal,
+        horizontalAlignment = Enum.HorizontalAlignment.Center,
+        verticalAlignment = Enum.VerticalAlignment.Center,
+        padding = columnSpacing,
+        contentSize = defaultContentSize,
+        infoSize = defaultInfoSize,
+        dashboardSize = defaultDashboardSize,
+        viewportWidth = math.floor(viewportWidth + 0.5),
+        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or nil,
+    }
+
+    if forceStack then
+        local heroMin = math.max(120, math.floor(defaultHeroHeight * 0.7))
+        local heroMax = math.max(heroMin, math.floor(defaultHeroHeight * 1.45))
+        local infoMin = math.max(200, math.floor(baseInfoHeight * 0.75))
+        local dashMin = math.max(240, math.floor(baseDashboardHeight * 0.8))
+
+        local heroHeight = math.clamp(math.floor(availableContentHeight * 0.27 + 0.5), heroMin, heroMax)
+        local remaining = math.max(availableContentHeight - heroHeight - sectionGap, infoMin + dashMin + verticalSpacing)
+        local infoHeight = math.clamp(math.floor(remaining * 0.45 + 0.5), infoMin, remaining - dashMin - verticalSpacing)
+        local dashboardHeight = math.max(dashMin, remaining - infoHeight - verticalSpacing)
+
+        if remaining - infoHeight - verticalSpacing < dashMin then
+            local deficit = dashMin - (remaining - infoHeight - verticalSpacing)
+            infoHeight = math.max(infoMin, infoHeight - deficit)
+            dashboardHeight = remaining - infoHeight - verticalSpacing
         end
 
-        infoColumn.Size = UDim2.new(1, -32, 0, 260)
-        dashboardColumn.Size = UDim2.new(1, -32, 0, 320)
+        local contentHeight = infoHeight + dashboardHeight + verticalSpacing
+        local containerHeight = topPadding + heroHeight + sectionGap + contentHeight + bottomPadding
 
-        if heroFrame then
-            heroFrame.Size = UDim2.new(1, 0, 0, 190)
-        end
-    elseif viewportWidth <= (responsive.largeWidth or 720) then
-        if contentLayout then
-            contentLayout.FillDirection = Enum.FillDirection.Vertical
-            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        if containerHeight > safeHeight then
+            local overflow = containerHeight - safeHeight
+            local dashReduction = math.min(overflow * 0.6, math.max(0, dashboardHeight - dashMin))
+            dashboardHeight = dashboardHeight - dashReduction
+            overflow = overflow - dashReduction
+
+            local infoReduction = math.min(overflow * 0.6, math.max(0, infoHeight - infoMin))
+            infoHeight = infoHeight - infoReduction
+            overflow = overflow - infoReduction
+
+            if overflow > 0 then
+                heroHeight = math.max(heroMin, heroHeight - overflow)
+            end
+
+            contentHeight = infoHeight + dashboardHeight + verticalSpacing
+            containerHeight = topPadding + heroHeight + sectionGap + contentHeight + bottomPadding
         end
 
-        infoColumn.Size = UDim2.new(1, -32, 0, 300)
-        dashboardColumn.Size = UDim2.new(1, -32, 0, 340)
+        target.mode = "stacked"
+        target.height = math.floor(math.min(containerHeight, safeHeight) + 0.5)
+        target.heroHeight = math.floor(heroHeight + 0.5)
+        target.contentHeight = math.floor(contentHeight + 0.5)
+        target.infoHeight = math.floor(infoHeight + 0.5)
+        target.dashboardHeight = math.floor(dashboardHeight + 0.5)
+        target.fillDirection = Enum.FillDirection.Vertical
+        target.horizontalAlignment = Enum.HorizontalAlignment.Center
+        target.verticalAlignment = Enum.VerticalAlignment.Top
+        target.padding = verticalSpacing
+        target.contentSize = UDim2.new(1, 0, 0, target.contentHeight)
+        target.infoSize = UDim2.new(1, -widthOffset, 0, target.infoHeight)
+        target.dashboardSize = UDim2.new(1, -widthOffset, 0, target.dashboardHeight)
+    elseif preferHybrid then
+        local heroMin = math.max(130, math.floor(defaultHeroHeight * 0.8))
+        local heroMax = math.max(heroMin, math.floor(defaultHeroHeight * 1.3))
+        local heroHeight = math.clamp(math.floor(availableContentHeight * 0.24 + 0.5), heroMin, heroMax)
 
-        if heroFrame then
-            heroFrame.Size = UDim2.new(1, 0, 0, 180)
+        local columnsAvailable = math.max(availableContentHeight - heroHeight - sectionGap, 240)
+        local targetColumnHeight = math.clamp(
+            math.floor(math.max(baseContentHeight * 0.55, math.max(baseInfoHeight, baseDashboardHeight)) + 0.5),
+            240,
+            columnsAvailable
+        )
+
+        local availableAfterHero = safeHeight - (topPadding + bottomPadding + heroHeight + sectionGap)
+        if availableAfterHero < targetColumnHeight then
+            targetColumnHeight = math.max(220, availableAfterHero)
         end
+
+        if targetColumnHeight < 220 then
+            local deficit = 220 - targetColumnHeight
+            heroHeight = math.max(heroMin, heroHeight - deficit)
+            availableAfterHero = safeHeight - (topPadding + bottomPadding + heroHeight + sectionGap)
+            targetColumnHeight = math.max(200, math.min(columnsAvailable, availableAfterHero))
+        end
+
+        local containerHeight = topPadding + heroHeight + sectionGap + targetColumnHeight + bottomPadding
+
+        if containerHeight > safeHeight then
+            local overflow = containerHeight - safeHeight
+            targetColumnHeight = math.max(200, targetColumnHeight - overflow)
+            containerHeight = topPadding + heroHeight + sectionGap + targetColumnHeight + bottomPadding
+        end
+
+        local hybridPadding = math.max(16, math.floor(columnSpacing * 0.6))
+
+        target.mode = "hybrid"
+        target.height = math.floor(containerHeight + 0.5)
+        target.heroHeight = math.floor(heroHeight + 0.5)
+        target.contentHeight = math.floor(targetColumnHeight + 0.5)
+        target.infoHeight = target.contentHeight
+        target.dashboardHeight = target.contentHeight
+        target.fillDirection = Enum.FillDirection.Horizontal
+        target.horizontalAlignment = Enum.HorizontalAlignment.Center
+        target.verticalAlignment = Enum.VerticalAlignment.Top
+        target.padding = hybridPadding
+        target.contentSize = UDim2.new(1, 0, 0, target.contentHeight)
+        target.infoSize = UDim2.new(0.5, -hybridPadding, 0, target.contentHeight)
+        target.dashboardSize = UDim2.new(0.5, -hybridPadding, 0, target.contentHeight)
     else
-        if contentLayout then
-            contentLayout.FillDirection = Enum.FillDirection.Horizontal
-            contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-        end
+        local wideHeight = topPadding + defaultHeroHeight + sectionGap + baseContentHeight + bottomPadding
+        target.height = math.floor(math.min(safeHeight, wideHeight) + 0.5)
+        target.heroHeight = defaultHeroHeight
+        target.contentHeight = baseContentHeight
+        target.infoHeight = resolveHeight(defaultInfoSize, baseContentHeight)
+        target.dashboardHeight = resolveHeight(defaultDashboardSize, baseContentHeight)
+        target.fillDirection = Enum.FillDirection.Horizontal
+        target.horizontalAlignment = Enum.HorizontalAlignment.Center
+        target.verticalAlignment = Enum.VerticalAlignment.Center
+        target.padding = columnSpacing
+        target.contentSize = defaultContentSize
+        target.infoSize = defaultInfoSize
+        target.dashboardSize = defaultDashboardSize
+    end
 
-        infoColumn.Size = UDim2.new(0.46, -columnSpacing, 1, -12)
-        dashboardColumn.Size = UDim2.new(0.54, 0, 1, -12)
-
-        if heroFrame then
-            heroFrame.Size = UDim2.new(1, 0, 0, 150)
+    local previous = self._layoutState
+    if previous then
+        local widthDiff = math.abs((previous.width or 0) - target.width)
+        local heightDiff = math.abs((previous.height or 0) - target.height)
+        local heroDiff = math.abs((previous.heroHeight or 0) - (target.heroHeight or 0))
+        local contentDiff = math.abs((previous.contentHeight or 0) - (target.contentHeight or 0))
+        if previous.mode == target.mode
+            and widthDiff <= 1
+            and heightDiff <= 1
+            and heroDiff <= 1
+            and contentDiff <= 1
+        then
+            if not viewportSize or previous.viewportWidth == target.viewportWidth then
+                if not viewportSize or previous.viewportHeight == target.viewportHeight then
+                    return
+                end
+            end
         end
     end
+
+    if contentLayout then
+        contentLayout.FillDirection = target.fillDirection
+        contentLayout.HorizontalAlignment = target.horizontalAlignment
+        contentLayout.VerticalAlignment = target.verticalAlignment
+        contentLayout.Padding = UDim.new(0, target.padding)
+    end
+
+    if contentFrame and target.contentSize then
+        contentFrame.Size = target.contentSize
+    end
+
+    if infoColumn and target.infoSize then
+        infoColumn.Size = target.infoSize
+    end
+
+    if dashboardColumn and target.dashboardSize then
+        dashboardColumn.Size = target.dashboardSize
+    end
+
+    if heroFrame and target.heroHeight then
+        heroFrame.Size = UDim2.new(1, 0, 0, target.heroHeight)
+    end
+
+    container.Size = UDim2.new(0, target.width, 0, target.height)
+
+    self._layoutState = target
 end
 
 function LoadingOverlay:_connectResponsiveLayout()
