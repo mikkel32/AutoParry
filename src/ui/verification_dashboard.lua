@@ -197,9 +197,7 @@ local DEFAULT_THEME = {
         sparkTransparency = 0.25,
         cellSize = UDim2.new(0.5, -12, 0, 104),
         cellPadding = UDim2.new(0, 12, 0, 12),
-        maxColumns = 3,
-        compactHeight = 92,
-        singleColumnHeight = 116,
+        maxColumns = 2,
     },
     controls = {
         headerFont = Enum.Font.GothamSemibold,
@@ -239,9 +237,6 @@ local DEFAULT_THEME = {
         iconSize = UDim2.new(0, 34, 0, 34),
         iconColor = Color3.fromRGB(210, 224, 255),
         iconAccentColor = Color3.fromRGB(112, 198, 255),
-        maxColumns = 3,
-        compactHeight = 96,
-        singleColumnHeight = 120,
     },
     summary = {
         chipBackground = Color3.fromRGB(30, 36, 48),
@@ -337,7 +332,6 @@ local DEFAULT_HEADER_SUMMARY = {
         id = "status",
         label = "System",
         value = "Online",
-        dynamic = true,
     },
     {
         id = "delta",
@@ -408,17 +402,6 @@ local function mergeTable(base, overrides)
         end
     end
     return merged
-end
-
-local function computeGridCellSize(columns, padding, height)
-    columns = math.max(1, math.floor(columns + 0.5))
-    padding = math.max(0, math.floor(padding + 0.5))
-    local scale = 1 / columns
-    local offset = 0
-    if columns > 1 then
-        offset = -math.floor(((columns - 1) * padding) / columns + 0.5)
-    end
-    return UDim2.new(scale, offset, 0, math.max(0, math.floor(height + 0.5)))
 end
 
 local function createLogoBadge(parent, theme)
@@ -585,7 +568,6 @@ local function createSummaryChip(parent, theme, definition, index)
         id = identifier,
         defaultLabel = defaultLabel,
         defaultValue = defaultValue,
-        dynamic = definition.dynamic,
     }
 end
 
@@ -975,8 +957,7 @@ local function createControlToggle(parent, theme, definition)
     button.AutoButtonColor = false
     button.BackgroundColor3 = controlsTheme.toggleOffColor
     button.BorderSizePixel = 0
-    button.Size = UDim2.new(1, -4, 1, -4)
-    button.SizeConstraint = Enum.SizeConstraint.RelativeXY
+    button.Size = UDim2.new(0, 260, 0, 112)
     button.Text = ""
     button.Parent = parent
 
@@ -1469,22 +1450,6 @@ function VerificationDashboard.new(options)
     telemetryGrid.FillDirectionMaxCells = (theme.telemetry and theme.telemetry.maxColumns) or DEFAULT_THEME.telemetry.maxColumns or 2
     telemetryGrid.Parent = telemetryFrame
 
-    local telemetryPaddingX = telemetryGrid.CellPadding.X.Offset or 0
-    local telemetryDefaultHeight = telemetryGrid.CellSize.Y.Offset
-    if telemetryDefaultHeight <= 0 then
-        telemetryDefaultHeight = (theme.telemetry and theme.telemetry.cellSize and theme.telemetry.cellSize.Y.Offset)
-            or DEFAULT_THEME.telemetry.cellSize.Y.Offset
-    end
-    local telemetryCompactHeight = (theme.telemetry and theme.telemetry.compactHeight)
-        or DEFAULT_THEME.telemetry.compactHeight
-        or math.max(telemetryDefaultHeight - 12, 84)
-    local telemetrySingleHeight = (theme.telemetry and theme.telemetry.singleColumnHeight)
-        or DEFAULT_THEME.telemetry.singleColumnHeight
-        or math.max(telemetryDefaultHeight + 12, telemetryDefaultHeight)
-    local telemetryMaxColumns = telemetryGrid.FillDirectionMaxCells
-    local telemetryLargeCellSize = computeGridCellSize(3, telemetryPaddingX, telemetryCompactHeight)
-    local telemetrySingleCellSize = computeGridCellSize(1, telemetryPaddingX, telemetrySingleHeight)
-
     local telemetryCards = {}
     for index, definition in ipairs(DEFAULT_TELEMETRY) do
         local card = createTelemetryCard(telemetryFrame, theme, definition)
@@ -1567,24 +1532,8 @@ function VerificationDashboard.new(options)
     controlGrid.SortOrder = Enum.SortOrder.LayoutOrder
     controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
     controlGrid.CellSize = UDim2.new(0.5, -12, 0, 112)
-    controlGrid.FillDirectionMaxCells = (theme.controls and theme.controls.maxColumns)
-        or DEFAULT_THEME.controls.maxColumns
-        or 2
+    controlGrid.FillDirectionMaxCells = 2
     controlGrid.Parent = controlGridContainer
-
-    local controlPaddingX = controlGrid.CellPadding.X.Offset or 0
-    local controlDefaultHeight = controlGrid.CellSize.Y.Offset
-    if controlDefaultHeight <= 0 then
-        controlDefaultHeight = DEFAULT_THEME.controls.toggleHeight or 112
-    end
-    local controlCompactHeight = (theme.controls and theme.controls.compactHeight)
-        or DEFAULT_THEME.controls.compactHeight
-        or math.max(controlDefaultHeight - 12, 92)
-    local controlSingleHeight = (theme.controls and theme.controls.singleColumnHeight)
-        or DEFAULT_THEME.controls.singleColumnHeight
-        or math.max(controlDefaultHeight + 12, controlDefaultHeight)
-    local controlLargeCellSize = computeGridCellSize(3, controlPaddingX, controlCompactHeight)
-    local controlSingleCellSize = computeGridCellSize(1, controlPaddingX, controlSingleHeight)
 
     local controlButtons = {}
 
@@ -1878,21 +1827,10 @@ function VerificationDashboard.new(options)
     } or nil
     local telemetryDefaults = {
         cellSize = telemetryGrid.CellSize,
-        cellPadding = telemetryGrid.CellPadding,
-        maxColumns = telemetryMaxColumns,
-        defaultHeight = telemetryDefaultHeight,
-        compactHeight = telemetryCompactHeight,
-        singleHeight = telemetrySingleHeight,
-        paddingX = telemetryPaddingX,
+        maxColumns = telemetryGrid.FillDirectionMaxCells,
     }
     local controlGridDefaults = {
-        cellSize = controlGrid.CellSize,
-        cellPadding = controlGrid.CellPadding,
         maxColumns = controlGrid.FillDirectionMaxCells,
-        defaultHeight = controlDefaultHeight,
-        compactHeight = controlCompactHeight,
-        singleHeight = controlSingleHeight,
-        paddingX = controlPaddingX,
     }
     local actionsDefaults = {
         fillDirection = actionsLayout.FillDirection,
@@ -1959,18 +1897,12 @@ function VerificationDashboard.new(options)
         _summaryDefinitions = Util.deepCopy(summaryDefinitions),
         _telemetryFrame = telemetryFrame,
         _telemetryGrid = telemetryGrid,
-        _telemetryDefaults = telemetryDefaults,
-        _telemetryLargeCellSize = telemetryLargeCellSize,
-        _telemetrySingleCellSize = telemetrySingleCellSize,
         _telemetryCards = telemetryCards,
         _controlPanel = controlPanel,
         _controlStroke = controlStroke,
         _controlGradient = controlGradient,
         _controlHeader = controlHeader,
         _controlGrid = controlGrid,
-        _controlGridDefaults = controlGridDefaults,
-        _controlLargeCellSize = controlLargeCellSize,
-        _controlSingleCellSize = controlSingleCellSize,
         _controlButtons = controlButtons,
         _controlConnections = {},
         _controlState = {},
@@ -2020,9 +1952,10 @@ function VerificationDashboard.new(options)
         _titleDefaults = titleDefaults,
         _subtitleDefaults = subtitleDefaults,
         _summaryDefaults = summaryDefaults,
+        _telemetryDefaults = telemetryDefaults,
+        _controlGridDefaults = controlGridDefaults,
         _actionsDefaults = actionsDefaults,
         _actionsFrameDefaults = actionsFrameDefaults,
-        _subtitleDefaultText = subtitle.Text,
         _logoShimmerTween = nil,
         _connections = {},
         _responsiveState = {},
@@ -2428,27 +2361,17 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             self._summaryLayout.HorizontalAlignment = width <= 700 and Enum.HorizontalAlignment.Center
                 or Enum.HorizontalAlignment.Left
         end
-        if self._telemetryGrid and self._telemetryDefaults then
+        if self._telemetryGrid then
             if width <= 700 then
                 self._telemetryGrid.FillDirectionMaxCells = 1
-                self._telemetryGrid.CellSize = self._telemetrySingleCellSize
-                    or computeGridCellSize(1, self._telemetryDefaults.paddingX or 0, self._telemetryDefaults.singleHeight or self._telemetryDefaults.defaultHeight)
+                self._telemetryGrid.CellSize = UDim2.new(1, -12, 0, 112)
             else
-                local maxColumns = math.max(1, math.min(2, self._telemetryDefaults.maxColumns or 2))
-                self._telemetryGrid.FillDirectionMaxCells = maxColumns
+                self._telemetryGrid.FillDirectionMaxCells = math.min(2, self._telemetryDefaults.maxColumns or 2)
                 self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
             end
         end
-        if self._controlGrid and self._controlGridDefaults then
-            if width <= 700 then
-                self._controlGrid.FillDirectionMaxCells = 1
-                self._controlGrid.CellSize = self._controlSingleCellSize
-                    or computeGridCellSize(1, self._controlGridDefaults.paddingX or 0, self._controlGridDefaults.singleHeight or self._controlGridDefaults.defaultHeight)
-            else
-                local maxColumns = math.max(1, math.min(2, self._controlGridDefaults.maxColumns or 2))
-                self._controlGrid.FillDirectionMaxCells = maxColumns
-                self._controlGrid.CellSize = self._controlGridDefaults.cellSize or self._controlGrid.CellSize
-            end
+        if self._controlGrid then
+            self._controlGrid.FillDirectionMaxCells = width <= 700 and 1 or (self._controlGridDefaults.maxColumns or 2)
         end
         if self._actionsLayout then
             self._actionsLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -2517,8 +2440,6 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             self._secondaryColumn.Size = UDim2.new(0, secondaryWidth, 0, 0)
             self._secondaryColumn.LayoutOrder = 2
         end
-        state.primaryWidth = primaryWidth
-        state.secondaryWidth = secondaryWidth
         if self._insightsCard then
             self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
         end
@@ -2542,29 +2463,12 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
             self._summaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
         end
-        if self._telemetryGrid and self._telemetryDefaults then
-            local maxColumns = math.max(1, self._telemetryDefaults.maxColumns or 2)
-            if maxColumns >= 3 then
-                self._telemetryGrid.FillDirectionMaxCells = 3
-                self._telemetryGrid.CellSize = self._telemetryLargeCellSize
-                    or computeGridCellSize(3, self._telemetryDefaults.paddingX or 0, self._telemetryDefaults.compactHeight or self._telemetryDefaults.defaultHeight)
-            else
-                local mediumColumns = math.max(2, maxColumns)
-                self._telemetryGrid.FillDirectionMaxCells = mediumColumns
-                self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
-            end
+        if self._telemetryGrid then
+            self._telemetryGrid.FillDirectionMaxCells = self._telemetryDefaults.maxColumns or 2
+            self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
         end
         if self._controlGrid and self._controlGridDefaults then
-            local maxColumns = math.max(1, self._controlGridDefaults.maxColumns or 2)
-            if maxColumns >= 3 then
-                self._controlGrid.FillDirectionMaxCells = 3
-                self._controlGrid.CellSize = self._controlLargeCellSize
-                    or computeGridCellSize(3, self._controlGridDefaults.paddingX or 0, self._controlGridDefaults.compactHeight or self._controlGridDefaults.defaultHeight)
-            else
-                local mediumColumns = math.max(2, maxColumns)
-                self._controlGrid.FillDirectionMaxCells = mediumColumns
-                self._controlGrid.CellSize = self._controlGridDefaults.cellSize or self._controlGrid.CellSize
-            end
+            self._controlGrid.FillDirectionMaxCells = self._controlGridDefaults.maxColumns or self._controlGrid.FillDirectionMaxCells
         end
     end
 end
@@ -2796,9 +2700,6 @@ function VerificationDashboard:setHeaderSummary(summary)
             if payload.value ~= nil then
                 valueText = payload.value
             end
-            if payload.dynamic ~= nil then
-                chip.dynamic = payload.dynamic
-            end
         end
 
         if chip.label then
@@ -2969,23 +2870,6 @@ function VerificationDashboard:applyTheme(theme)
             self._telemetryGrid.CellPadding = telemetryTheme.cellPadding or DEFAULT_THEME.telemetry.cellPadding
             self._telemetryGrid.CellSize = telemetryTheme.cellSize or DEFAULT_THEME.telemetry.cellSize
             self._telemetryGrid.FillDirectionMaxCells = telemetryTheme.maxColumns or DEFAULT_THEME.telemetry.maxColumns or 2
-            if self._telemetryDefaults then
-                local padding = self._telemetryGrid.CellPadding or DEFAULT_THEME.telemetry.cellPadding
-                local paddingX = padding and padding.X and padding.X.Offset or 0
-                local baseSize = self._telemetryGrid.CellSize or DEFAULT_THEME.telemetry.cellSize
-                local baseHeight = baseSize and baseSize.Y and baseSize.Y.Offset or DEFAULT_THEME.telemetry.cellSize.Y.Offset
-                local compactHeight = telemetryTheme.compactHeight or DEFAULT_THEME.telemetry.compactHeight or math.max(baseHeight - 12, 84)
-                local singleHeight = telemetryTheme.singleColumnHeight or DEFAULT_THEME.telemetry.singleColumnHeight or math.max(baseHeight + 12, baseHeight)
-                self._telemetryDefaults.cellPadding = padding
-                self._telemetryDefaults.cellSize = baseSize
-                self._telemetryDefaults.maxColumns = self._telemetryGrid.FillDirectionMaxCells
-                self._telemetryDefaults.defaultHeight = baseHeight
-                self._telemetryDefaults.compactHeight = compactHeight
-                self._telemetryDefaults.singleHeight = singleHeight
-                self._telemetryDefaults.paddingX = paddingX
-                self._telemetryLargeCellSize = computeGridCellSize(3, paddingX, compactHeight)
-                self._telemetrySingleCellSize = computeGridCellSize(1, paddingX, singleHeight)
-            end
         end
 
         if self._telemetryCards then
@@ -3022,30 +2906,6 @@ function VerificationDashboard:applyTheme(theme)
                     card.defaultHintColor = hintColor
                 end
             end
-        end
-    end
-
-    if self._controlGrid then
-        local controlsTheme = currentTheme.controls or DEFAULT_THEME.controls
-        self._controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
-        self._controlGrid.CellSize = UDim2.new(0.5, -12, 0, controlsTheme.toggleHeight or 112)
-        self._controlGrid.FillDirectionMaxCells = controlsTheme.maxColumns or DEFAULT_THEME.controls.maxColumns or 2
-        if self._controlGridDefaults then
-            local padding = self._controlGrid.CellPadding or UDim2.new(0, 12, 0, 12)
-            local paddingX = padding and padding.X and padding.X.Offset or 0
-            local baseSize = self._controlGrid.CellSize or UDim2.new(0.5, -12, 0, controlsTheme.toggleHeight or 112)
-            local baseHeight = baseSize and baseSize.Y and baseSize.Y.Offset or controlsTheme.toggleHeight or 112
-            local compactHeight = controlsTheme.compactHeight or DEFAULT_THEME.controls.compactHeight or math.max(baseHeight - 12, 92)
-            local singleHeight = controlsTheme.singleColumnHeight or DEFAULT_THEME.controls.singleColumnHeight or math.max(baseHeight + 12, baseHeight)
-            self._controlGridDefaults.cellPadding = padding
-            self._controlGridDefaults.cellSize = baseSize
-            self._controlGridDefaults.maxColumns = self._controlGrid.FillDirectionMaxCells
-            self._controlGridDefaults.defaultHeight = baseHeight
-            self._controlGridDefaults.compactHeight = compactHeight
-            self._controlGridDefaults.singleHeight = singleHeight
-            self._controlGridDefaults.paddingX = paddingX
-            self._controlLargeCellSize = computeGridCellSize(3, paddingX, compactHeight)
-            self._controlSingleCellSize = computeGridCellSize(1, paddingX, singleHeight)
         end
     end
 
@@ -3472,23 +3332,6 @@ function VerificationDashboard:_updateTimelineBadge()
         end
         self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
         self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
-    end
-
-    if self._subtitle then
-        self._subtitle.Text = statusText
-    end
-
-    if self._summaryChips then
-        local statusChip = self._summaryChips.status or self._summaryChips.system or self._summaryChips["system"]
-        if statusChip and statusChip.value then
-            local allowDynamic = statusChip.dynamic
-            if allowDynamic == nil then
-                allowDynamic = statusChip.definition == nil or statusChip.definition.dynamic ~= false
-            end
-            if allowDynamic then
-                statusChip.value.Text = badgeText
-            end
-        end
     end
 end
 

@@ -149,17 +149,6 @@ local function mergeTheme(theme)
     return merged
 end
 
-local function computeGridCellSize(columns, padding, height)
-    columns = math.max(1, math.floor(columns + 0.5))
-    padding = math.max(0, math.floor(padding + 0.5))
-    local scale = 1 / columns
-    local offset = 0
-    if columns > 1 then
-        offset = -math.floor(((columns - 1) * padding) / columns + 0.5)
-    end
-    return UDim2.new(scale, offset, 0, math.max(0, math.floor(height + 0.5)))
-end
-
 local function createSection(theme, parent, name, layoutOrder)
     local container = Instance.new("Frame")
     container.Name = name .. "Section"
@@ -508,31 +497,6 @@ function DiagnosticsPanel.new(options)
         stageOrder[index] = definition.id
     end
 
-    if stagesSection.layout then
-        stagesSection.layout:Destroy()
-    end
-
-    local stageGrid = Instance.new("UIGridLayout")
-    stageGrid.Name = "StageGrid"
-    stageGrid.FillDirection = Enum.FillDirection.Horizontal
-    stageGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
-    stageGrid.VerticalAlignment = Enum.VerticalAlignment.Top
-    stageGrid.SortOrder = Enum.SortOrder.LayoutOrder
-    stageGrid.CellPadding = UDim2.new(0, theme.sectionSpacing, 0, theme.sectionSpacing)
-    stageGrid.CellSize = computeGridCellSize(2, theme.sectionSpacing, 76)
-    stageGrid.Parent = stagesSection.body
-    stagesSection.layout = stageGrid
-
-    local stageGridDefaults = {
-        cellPadding = stageGrid.CellPadding,
-        cellSize = stageGrid.CellSize,
-        maxColumns = 2,
-        padding = theme.sectionSpacing,
-        defaultHeight = 76,
-        singleHeight = 84,
-    }
-    local stageSingleCellSize = computeGridCellSize(1, theme.sectionSpacing, stageGridDefaults.singleHeight)
-
     local filterRow = Instance.new("Frame")
     filterRow.Name = "Filters"
     filterRow.BackgroundTransparency = 1
@@ -647,19 +611,14 @@ function DiagnosticsPanel.new(options)
         },
         _stageRows = stageRows,
         _stageOrder = stageOrder,
-        _stageGrid = stageGrid,
-        _stageGridDefaults = stageGridDefaults,
-        _stageSingleCellSize = stageSingleCellSize,
         _events = {},
         _eventRows = {},
         _eventsList = eventList,
         _filters = {},
         _filterButtons = filterButtons,
-        _filterLayout = filterLayout,
         _activeFilter = nil,
         _badges = {},
         _startClock = os.clock(),
-        _connections = {},
     }, DiagnosticsPanel)
 
     for _, filter in ipairs(DEFAULT_FILTERS) do
@@ -689,14 +648,6 @@ function DiagnosticsPanel.new(options)
 
     self:setFilter("all")
 
-    local resizeConnection = frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
-        self:_updateLayout()
-    end)
-    table.insert(self._connections, resizeConnection)
-    task.defer(function()
-        self:_updateLayout()
-    end)
-
     return self
 end
 
@@ -721,43 +672,6 @@ function DiagnosticsPanel:_styleStageRow(row, stage)
     row.title.TextColor3 = color
     row.message.TextColor3 = theme.statusTextColor
     row.detail.TextColor3 = theme.statusDetailColor
-end
-
-function DiagnosticsPanel:_updateLayout(width)
-    if self._destroyed then
-        return
-    end
-
-    local frame = self.frame
-    if not frame then
-        return
-    end
-
-    width = tonumber(width) or frame.AbsoluteSize.X or 0
-
-    local grid = self._stageGrid
-    if grid and self._stageGridDefaults then
-        local defaults = self._stageGridDefaults
-        local padding = defaults.cellPadding or UDim2.new(0, defaults.padding or 0, 0, defaults.padding or 0)
-        local paddingX = (padding and padding.X and padding.X.Offset) or defaults.padding or 0
-        local defaultHeight = defaults.defaultHeight or 76
-        local singleHeight = defaults.singleHeight or (defaultHeight + 6)
-        if width <= 380 then
-            grid.FillDirectionMaxCells = 1
-            grid.CellSize = self._stageSingleCellSize or computeGridCellSize(1, paddingX, singleHeight)
-        else
-            grid.FillDirectionMaxCells = defaults.maxColumns or 2
-            grid.CellSize = defaults.cellSize or computeGridCellSize(2, paddingX, defaultHeight)
-        end
-    end
-
-    if self._filterLayout then
-        if width <= 420 then
-            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
-        else
-            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
-        end
-    end
 end
 
 function DiagnosticsPanel:_updateEventRow(entry, event)
@@ -956,17 +870,6 @@ function DiagnosticsPanel:destroy()
     end
 
     self._destroyed = true
-
-    if self._connections then
-        for _, connection in ipairs(self._connections) do
-            if connection and connection.Disconnect then
-                connection:Disconnect()
-            elseif connection and connection.disconnect then
-                connection:disconnect()
-            end
-        end
-        self._connections = nil
-    end
 
     if self.frame then
         self.frame:Destroy()
