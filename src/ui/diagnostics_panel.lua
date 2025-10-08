@@ -256,7 +256,7 @@ local function createStageRow(theme, parent, definition)
     frame.BackgroundTransparency = theme.stageTransparency
     frame.BorderSizePixel = 0
     frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Size = UDim2.new(1, 0, 0, 72)
+    frame.Size = UDim2.new(1, 0, 0, 0)
     frame.Parent = parent
 
     local corner = Instance.new("UICorner")
@@ -278,42 +278,58 @@ local function createStageRow(theme, parent, definition)
     local icon = Instance.new("ImageLabel")
     icon.Name = "StatusIcon"
     icon.BackgroundTransparency = 1
-    icon.Size = UDim2.new(0, 24, 0, 24)
-    icon.Position = UDim2.new(0, 0, 0, 0)
+    icon.Size = UDim2.new(0, 28, 0, 28)
+    icon.Position = UDim2.new(0, 0, 0, 2)
     icon.Image = theme.iconAssets.pending
     icon.ImageColor3 = theme.statusColors.pending
     icon.Parent = frame
 
+    local textColumn = Instance.new("Frame")
+    textColumn.Name = "TextColumn"
+    textColumn.BackgroundTransparency = 1
+    textColumn.Position = UDim2.new(0, 36, 0, 0)
+    textColumn.Size = UDim2.new(1, -36, 0, 0)
+    textColumn.AutomaticSize = Enum.AutomaticSize.Y
+    textColumn.Parent = frame
+
+    local textLayout = Instance.new("UIListLayout")
+    textLayout.FillDirection = Enum.FillDirection.Vertical
+    textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    textLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    textLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    textLayout.Padding = UDim.new(0, 4)
+    textLayout.Parent = textColumn
+
     local title = Instance.new("TextLabel")
     title.Name = "Title"
     title.BackgroundTransparency = 1
-    title.Position = UDim2.new(0, 32, 0, 0)
-    title.Size = UDim2.new(1, -32, 0, 20)
+    title.Size = UDim2.new(1, 0, 0, 0)
+    title.AutomaticSize = Enum.AutomaticSize.Y
     title.Font = theme.statusFonts.title
     title.TextSize = theme.statusTextSizes.title
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.TextColor3 = theme.statusTextColor
     title.Text = definition.title or "Stage"
-    title.Parent = frame
+    title.Parent = textColumn
 
     local message = Instance.new("TextLabel")
     message.Name = "Message"
     message.BackgroundTransparency = 1
-    message.Position = UDim2.new(0, 32, 0, 22)
-    message.Size = UDim2.new(1, -32, 0, 18)
+    message.Size = UDim2.new(1, 0, 0, 0)
+    message.AutomaticSize = Enum.AutomaticSize.Y
     message.Font = theme.statusFonts.message
     message.TextSize = theme.statusTextSizes.message
     message.TextXAlignment = Enum.TextXAlignment.Left
     message.TextColor3 = theme.statusDetailColor
     message.Text = definition.description or ""
     message.TextWrapped = true
-    message.Parent = frame
+    message.Parent = textColumn
 
     local detail = Instance.new("TextLabel")
     detail.Name = "Detail"
     detail.BackgroundTransparency = 1
-    detail.Position = UDim2.new(0, 32, 0, 42)
-    detail.Size = UDim2.new(1, -32, 0, 16)
+    detail.Size = UDim2.new(1, 0, 0, 0)
+    detail.AutomaticSize = Enum.AutomaticSize.Y
     detail.Font = theme.statusFonts.detail
     detail.TextSize = theme.statusTextSizes.detail
     detail.TextXAlignment = Enum.TextXAlignment.Left
@@ -321,7 +337,7 @@ local function createStageRow(theme, parent, definition)
     detail.TextTransparency = theme.statusDetailTransparency
     detail.TextWrapped = true
     detail.Visible = false
-    detail.Parent = frame
+    detail.Parent = textColumn
 
     return {
         frame = frame,
@@ -329,6 +345,7 @@ local function createStageRow(theme, parent, definition)
         title = title,
         message = message,
         detail = detail,
+        textColumn = textColumn,
     }
 end
 
@@ -485,28 +502,89 @@ function DiagnosticsPanel.new(options)
     layout.Parent = frame
 
     local stagesSection = createSection(theme, frame, "Verification stages", 1)
-    local eventsSection = createSection(theme, frame, "Event history", 2)
-    local errorsSection = createSection(theme, frame, "Alerts", 3)
+
+    local secondaryRow = Instance.new("Frame")
+    secondaryRow.Name = "SecondaryRow"
+    secondaryRow.BackgroundTransparency = 1
+    secondaryRow.Size = UDim2.new(1, 0, 0, 0)
+    secondaryRow.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryRow.LayoutOrder = 2
+    secondaryRow.Parent = frame
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Horizontal
+    secondaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    secondaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, theme.sectionSpacing)
+    secondaryLayout.Parent = secondaryRow
+
+    local eventsSection = createSection(theme, secondaryRow, "Event history", 1)
+    local errorsSection = createSection(theme, secondaryRow, "Alerts", 2)
+    eventsSection.frame.Size = UDim2.new(0.58, 0, 0, 0)
+    errorsSection.frame.Size = UDim2.new(0.38, 0, 0, 0)
 
     local stageRows = {}
     local stageOrder = {}
+    local stageRowContainers = {}
+    local stageSpacing = theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12
+
+    local function getStageRowContainer(pairIndex)
+        local container = stageRowContainers[pairIndex]
+        if container then
+            return container
+        end
+
+        local rowFrame = Instance.new("Frame")
+        rowFrame.Name = string.format("StageRow%d", pairIndex)
+        rowFrame.BackgroundTransparency = 1
+        rowFrame.Size = UDim2.new(1, 0, 0, 0)
+        rowFrame.AutomaticSize = Enum.AutomaticSize.Y
+        rowFrame.LayoutOrder = pairIndex
+        rowFrame.Parent = stagesSection.body
+
+        local rowLayout = Instance.new("UIListLayout")
+        rowLayout.FillDirection = Enum.FillDirection.Horizontal
+        rowLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        rowLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+        rowLayout.SortOrder = Enum.SortOrder.LayoutOrder
+        rowLayout.Padding = UDim.new(0, stageSpacing)
+        rowLayout.Parent = rowFrame
+
+        container = {
+            frame = rowFrame,
+            layout = rowLayout,
+            cards = {},
+        }
+        stageRowContainers[pairIndex] = container
+        return container
+    end
+
     for index, definition in ipairs(DEFAULT_STAGES) do
-        local row = createStageRow(theme, stagesSection.body, definition)
-        row.frame.LayoutOrder = index
+        local pairIndex = math.floor((index - 1) / 2) + 1
+        local columnIndex = ((index - 1) % 2) + 1
+        local container = getStageRowContainer(pairIndex)
+        local row = createStageRow(theme, container.frame, definition)
+        row.frame.LayoutOrder = columnIndex
+        row.frame.Size = UDim2.new(0.5, -math.floor(stageSpacing * 0.5), 0, 0)
         stageRows[definition.id] = row
         stageOrder[index] = definition.id
+        table.insert(container.cards, row.frame)
+        row._container = container
     end
 
     local filterRow = Instance.new("Frame")
     filterRow.Name = "Filters"
     filterRow.BackgroundTransparency = 1
-    filterRow.Size = UDim2.new(1, 0, 0, 32)
+    filterRow.Size = UDim2.new(1, 0, 0, 0)
+    filterRow.AutomaticSize = Enum.AutomaticSize.Y
     filterRow.Parent = eventsSection.body
 
     local filterLayout = Instance.new("UIListLayout")
     filterLayout.FillDirection = Enum.FillDirection.Horizontal
     filterLayout.SortOrder = Enum.SortOrder.LayoutOrder
     filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    filterLayout.VerticalAlignment = Enum.VerticalAlignment.Top
     filterLayout.Padding = UDim.new(0, 8)
     filterLayout.Parent = filterRow
 
@@ -611,6 +689,13 @@ function DiagnosticsPanel.new(options)
         },
         _stageRows = stageRows,
         _stageOrder = stageOrder,
+        _stageRowContainers = stageRowContainers,
+        _stageRowSpacing = stageSpacing,
+        _secondaryRow = secondaryRow,
+        _lowerLayout = secondaryLayout,
+        _columnRatios = { events = 0.58, errors = 0.38 },
+        _connections = {},
+        _destroyed = false,
         _events = {},
         _eventRows = {},
         _eventsList = eventList,
@@ -647,8 +732,95 @@ function DiagnosticsPanel.new(options)
     end
 
     self:setFilter("all")
+    self:_installResponsiveHandlers()
 
     return self
+end
+
+function DiagnosticsPanel:_applyResponsiveLayout()
+    if self._destroyed then
+        return
+    end
+
+    local frame = self.frame
+    if not frame then
+        return
+    end
+
+    local width = frame.AbsoluteSize.X
+    if width <= 0 then
+        return
+    end
+
+    local stageContainers = self._stageRowContainers or {}
+    local spacing = math.max(6, self._stageRowSpacing or 12)
+    local halfSpacing = math.floor(spacing * 0.5)
+    local narrowSpacing = math.max(4, math.floor(spacing * 0.5))
+    local singleColumnThreshold = 640
+
+    for index = 1, #stageContainers do
+        local container = stageContainers[index]
+        if container then
+            local layout = container.layout
+            local stack = width < singleColumnThreshold
+            if layout then
+                layout.FillDirection = stack and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal
+                layout.Padding = UDim.new(0, stack and narrowSpacing or spacing)
+            end
+
+            for _, card in ipairs(container.cards) do
+                if card then
+                    if stack then
+                        card.Size = UDim2.new(1, 0, 0, 0)
+                    else
+                        card.Size = UDim2.new(0.5, -halfSpacing, 0, 0)
+                    end
+                end
+            end
+        end
+    end
+
+    local lowerLayout = self._lowerLayout
+    local ratios = self._columnRatios or { events = 0.58, errors = 0.38 }
+    local stackThreshold = 720
+    local stackColumns = width < stackThreshold
+
+    if lowerLayout then
+        lowerLayout.FillDirection = stackColumns and Enum.FillDirection.Vertical or Enum.FillDirection.Horizontal
+        lowerLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    end
+
+    local eventsSection = self._sections and self._sections.events
+    local errorsSection = self._sections and self._sections.errors
+    if eventsSection and eventsSection.frame then
+        eventsSection.frame.Size = stackColumns and UDim2.new(1, 0, 0, 0)
+            or UDim2.new(ratios.events or 0.58, 0, 0, 0)
+    end
+    if errorsSection and errorsSection.frame then
+        errorsSection.frame.Size = stackColumns and UDim2.new(1, 0, 0, 0)
+            or UDim2.new(ratios.errors or 0.38, 0, 0, 0)
+    end
+end
+
+function DiagnosticsPanel:_installResponsiveHandlers()
+    if not self.frame then
+        return
+    end
+
+    local connections = self._connections or {}
+    self._connections = connections
+
+    local connection = self.frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        self:_applyResponsiveLayout()
+    end)
+    table.insert(connections, connection)
+
+    task.defer(function()
+        if self._destroyed then
+            return
+        end
+        self:_applyResponsiveLayout()
+    end)
 end
 
 function DiagnosticsPanel:_styleStageRow(row, stage)
@@ -672,6 +844,8 @@ function DiagnosticsPanel:_styleStageRow(row, stage)
     row.title.TextColor3 = color
     row.message.TextColor3 = theme.statusTextColor
     row.detail.TextColor3 = theme.statusDetailColor
+
+    self:_applyResponsiveLayout()
 end
 
 function DiagnosticsPanel:_updateEventRow(entry, event)
@@ -871,6 +1045,19 @@ function DiagnosticsPanel:destroy()
 
     self._destroyed = true
 
+    if self._connections then
+        for _, connection in ipairs(self._connections) do
+            if connection then
+                if connection.Disconnect then
+                    connection:Disconnect()
+                elseif connection.disconnect then
+                    connection:disconnect()
+                end
+            end
+        end
+        self._connections = nil
+    end
+
     if self.frame then
         self.frame:Destroy()
         self.frame = nil
@@ -878,9 +1065,11 @@ function DiagnosticsPanel:destroy()
 
     self._sections = nil
     self._stageRows = nil
+    self._stageRowContainers = nil
     self._eventRows = nil
     self._eventsList = nil
     self._badges = nil
+    self._lowerLayout = nil
 end
 
 return DiagnosticsPanel
