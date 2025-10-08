@@ -64,7 +64,7 @@ local DEFAULT_THEME = {
     progressFillColor = Color3.fromRGB(0, 170, 255),
     statusTextColor = Color3.fromRGB(240, 240, 240),
     tipTextColor = Color3.fromRGB(185, 185, 185),
-    containerSize = UDim2.new(0, 640, 0, 360),
+    containerSize = UDim2.new(0, 960, 0, 580),
     containerTransparency = 0.08,
     containerCornerRadius = UDim.new(0, 18),
     containerStrokeColor = Color3.fromRGB(0, 150, 255),
@@ -207,12 +207,35 @@ local DEFAULT_THEME = {
         largeWidth = 720,
         maxWidth = 820,
         columnSpacing = 32,
+        minScale = 0.82,
+        maxScale = 1.04,
+    },
+    backdropGradient = {
+        color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(6, 12, 28)),
+            ColorSequenceKeypoint.new(0.45, Color3.fromRGB(8, 18, 44)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(6, 12, 28)),
+        }),
+        transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.1),
+            NumberSequenceKeypoint.new(0.5, 0.18),
+            NumberSequenceKeypoint.new(1, 0.3),
+        }),
+        rotation = 65,
+    },
+    shadow = {
+        padding = Vector2.new(120, 120),
+        color = Color3.fromRGB(0, 32, 64),
+        outerColor = Color3.fromRGB(0, 12, 24),
+        transparency = 0.88,
+        gradientInnerTransparency = 0.45,
     },
     hologramBadgeColor = Color3.fromRGB(0, 210, 255),
     hologramBadgeTransparency = 0.25,
     progressArcColor = Color3.fromRGB(0, 210, 255),
     progressArcTransparency = 0.4,
-    dashboardMountSize = UDim2.new(1, -12, 1, -12),
+    dashboardMountSize = UDim2.new(0.94, 0, 0, 0),
+    dashboardMaxWidth = 760,
 }
 
 local activeOverlay
@@ -454,7 +477,19 @@ function LoadingOverlay.new(options)
     backdrop.BackgroundColor3 = theme.backdropColor or DEFAULT_THEME.backdropColor
     backdrop.BackgroundTransparency = theme.backdropTransparency or DEFAULT_THEME.backdropTransparency
     backdrop.BorderSizePixel = 0
+    backdrop.ClipsDescendants = false
     backdrop.Parent = gui
+
+    local backdropGradientConfig = theme.backdropGradient or DEFAULT_THEME.backdropGradient
+    local backdropGradient
+    if backdropGradientConfig then
+        backdropGradient = Instance.new("UIGradient")
+        backdropGradient.Name = "BackdropGradient"
+        backdropGradient.Color = backdropGradientConfig.color or DEFAULT_THEME.backdropGradient.color
+        backdropGradient.Transparency = backdropGradientConfig.transparency or DEFAULT_THEME.backdropGradient.transparency
+        backdropGradient.Rotation = backdropGradientConfig.rotation or DEFAULT_THEME.backdropGradient.rotation or 0
+        backdropGradient.Parent = backdrop
+    end
 
     local container = Instance.new("Frame")
     container.Name = "Container"
@@ -465,7 +500,63 @@ function LoadingOverlay.new(options)
     container.BackgroundTransparency = theme.containerTransparency or DEFAULT_THEME.containerTransparency or 0
     container.BorderSizePixel = 0
     container.ClipsDescendants = false
+    container.ZIndex = 2
     container.Parent = backdrop
+
+    local containerScale = Instance.new("UIScale")
+    containerScale.Name = "AdaptiveScale"
+    containerScale.Scale = 1
+    containerScale.Parent = container
+
+    local shadowTheme = theme.shadow or DEFAULT_THEME.shadow
+    local containerShadow
+    local containerShadowGradient
+    if shadowTheme then
+        local paddingValue = shadowTheme.padding or DEFAULT_THEME.shadow.padding
+        local paddingX, paddingY
+        if typeof(paddingValue) == "Vector2" then
+            paddingX = paddingValue.X
+            paddingY = paddingValue.Y
+        elseif typeof(paddingValue) == "number" then
+            paddingX = paddingValue
+            paddingY = paddingValue
+        else
+            paddingX = DEFAULT_THEME.shadow.padding.X
+            paddingY = DEFAULT_THEME.shadow.padding.Y
+        end
+
+        containerShadow = Instance.new("Frame")
+        containerShadow.Name = "Shadow"
+        containerShadow.AnchorPoint = Vector2.new(0.5, 0.5)
+        containerShadow.Position = UDim2.new(0.5, 0, 0.5, 0)
+        containerShadow.Size = UDim2.new(
+            1,
+            paddingX,
+            1,
+            paddingY
+        )
+        containerShadow.BackgroundColor3 = shadowTheme.color or DEFAULT_THEME.shadow.color
+        containerShadow.BackgroundTransparency = shadowTheme.transparency or DEFAULT_THEME.shadow.transparency
+        containerShadow.BorderSizePixel = 0
+        containerShadow.ZIndex = 0
+        containerShadow.Parent = container
+
+        local shadowCorner = Instance.new("UICorner")
+        shadowCorner.CornerRadius = theme.containerCornerRadius or DEFAULT_THEME.containerCornerRadius
+        shadowCorner.Parent = containerShadow
+
+        local shadowGradient = Instance.new("UIGradient")
+        shadowGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, shadowTheme.color or DEFAULT_THEME.shadow.color),
+            ColorSequenceKeypoint.new(1, shadowTheme.outerColor or DEFAULT_THEME.shadow.outerColor or DEFAULT_THEME.shadow.color),
+        })
+        shadowGradient.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, shadowTheme.gradientInnerTransparency or DEFAULT_THEME.shadow.gradientInnerTransparency or 0.5),
+            NumberSequenceKeypoint.new(1, 1),
+        })
+        shadowGradient.Parent = containerShadow
+        containerShadowGradient = shadowGradient
+    end
 
     local containerCorner = Instance.new("UICorner")
     containerCorner.CornerRadius = theme.containerCornerRadius or DEFAULT_THEME.containerCornerRadius
@@ -884,6 +975,8 @@ function LoadingOverlay.new(options)
     dashboardSurface.BackgroundColor3 = (theme.dashboardPanel and theme.dashboardPanel.backgroundColor) or DEFAULT_THEME.dashboardPanel.backgroundColor
     dashboardSurface.BackgroundTransparency = (theme.dashboardPanel and theme.dashboardPanel.backgroundTransparency) or DEFAULT_THEME.dashboardPanel.backgroundTransparency
     dashboardSurface.BorderSizePixel = 0
+    dashboardSurface.ClipsDescendants = true
+    dashboardSurface.ZIndex = 3
     dashboardSurface.Parent = dashboardColumn
 
     local dashboardCorner = Instance.new("UICorner")
@@ -905,10 +998,36 @@ function LoadingOverlay.new(options)
     local dashboardMount = Instance.new("Frame")
     dashboardMount.Name = "DashboardMount"
     dashboardMount.BackgroundTransparency = 1
+    dashboardMount.AutomaticSize = Enum.AutomaticSize.Y
     dashboardMount.Size = theme.dashboardMountSize or DEFAULT_THEME.dashboardMountSize
     dashboardMount.Position = UDim2.new(0.5, 0, 0.5, 0)
     dashboardMount.AnchorPoint = Vector2.new(0.5, 0.5)
+    dashboardMount.ZIndex = 4
+    dashboardMount.LayoutOrder = 1
     dashboardMount.Parent = dashboardSurface
+
+    local dashboardMountPadding = Instance.new("UIPadding")
+    dashboardMountPadding.PaddingTop = UDim.new(0, 12)
+    dashboardMountPadding.PaddingBottom = UDim.new(0, 12)
+    dashboardMountPadding.PaddingLeft = UDim.new(0, 18)
+    dashboardMountPadding.PaddingRight = UDim.new(0, 18)
+    dashboardMountPadding.Parent = dashboardMount
+
+    local dashboardLayout = Instance.new("UIListLayout")
+    dashboardLayout.FillDirection = Enum.FillDirection.Vertical
+    dashboardLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    dashboardLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    dashboardLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    dashboardLayout.Padding = UDim.new(0, 18)
+    dashboardLayout.Parent = dashboardMount
+
+    local dashboardMountConstraint = Instance.new("UISizeConstraint")
+    dashboardMountConstraint.MaxSize = Vector2.new(
+        theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760,
+        math.huge
+    )
+    dashboardMountConstraint.MinSize = Vector2.new(360, 0)
+    dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
         spinner,
@@ -926,7 +1045,11 @@ function LoadingOverlay.new(options)
     local self = setmetatable({
         _gui = gui,
         _backdrop = backdrop,
+        _backdropGradient = backdropGradient,
         _container = container,
+        _containerScale = containerScale,
+        _containerShadow = containerShadow,
+        _containerShadowGradient = containerShadowGradient,
         _spinner = spinner,
         _progressBar = progressBar,
         _progressFill = progressFill,
@@ -979,6 +1102,7 @@ function LoadingOverlay.new(options)
         _dashboardSurface = dashboardSurface,
         _dashboardStroke = dashboardStroke,
         _dashboardGradient = dashboardGradient,
+        _dashboardLayout = dashboardLayout,
         _containerGlow = glow,
         _containerGradient = containerGradient,
         _containerPadding = containerPadding,
@@ -1228,7 +1352,7 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
         infoSize = infoSize,
         dashboardSize = dashboardSize,
         viewportWidth = math.floor(viewportWidth + 0.5),
-        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or nil,
+        viewportHeight = math.floor(viewportHeight + 0.5),
     }
 
     if contentLayout then
@@ -1268,18 +1392,60 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
     target.contentWidth = contentWidthPixels
     target.dashboardWidth = dashboardWidth
 
-    if self._dashboard and self._dashboard.updateLayout then
-        self._dashboard:updateLayout({
-            mode = target.mode,
-            containerWidth = target.width,
-            containerHeight = target.height,
-            dashboardWidth = dashboardWidth,
-            dashboardHeight = target.dashboardHeight,
-            contentWidth = contentWidthPixels,
-        })
+    local scale = 1
+    if viewportWidth and viewportWidth > 0 then
+        local widthAllowance = viewportWidth - horizontalMargin * 0.5
+        if widthAllowance > 0 then
+            scale = math.min(scale, widthAllowance / target.width)
+        end
+    end
+    if viewportHeight and viewportHeight > 0 then
+        local heightAllowance = viewportHeight - verticalMargin * 0.5
+        if heightAllowance > 0 then
+            scale = math.min(scale, heightAllowance / target.height)
+        end
     end
 
-    self._layoutState = target
+    local minScale = responsive.minScale or DEFAULT_THEME.responsive.minScale or 0.82
+    local maxScale = responsive.maxScale or DEFAULT_THEME.responsive.maxScale or 1
+    scale = math.clamp(scale, minScale, maxScale)
+
+    if self._containerScale then
+        self._containerScale.Scale = scale
+    end
+
+    local scaledWidth = math.floor(target.width * scale + 0.5)
+    local scaledHeight = math.floor(target.height * scale + 0.5)
+    local scaledDashboardWidth = math.floor(dashboardWidth * scale + 0.5)
+    local scaledDashboardHeight = math.floor(target.dashboardHeight * scale + 0.5)
+    local scaledContentWidth = math.floor(contentWidthPixels * scale + 0.5)
+
+    local layoutBounds = {
+        mode = target.mode,
+        breakpoint = target.mode,
+        containerWidth = scaledWidth,
+        containerHeight = scaledHeight,
+        width = scaledWidth,
+        height = scaledHeight,
+        dashboardWidth = scaledDashboardWidth,
+        dashboardHeight = scaledDashboardHeight,
+        contentWidth = scaledContentWidth,
+        heroHeight = math.floor(target.heroHeight * scale + 0.5),
+        infoHeight = math.floor(target.infoHeight * scale + 0.5),
+        contentHeight = math.floor(target.contentHeight * scale + 0.5),
+        viewportWidth = viewportWidth and math.floor(viewportWidth + 0.5) or scaledWidth,
+        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or scaledHeight,
+        scale = scale,
+        raw = target,
+        rawWidth = target.width,
+        rawHeight = target.height,
+    }
+
+    if self._dashboard and self._dashboard.updateLayout then
+        self._dashboard:updateLayout(layoutBounds)
+    end
+
+    self._layoutState = layoutBounds
 end
 
 function LoadingOverlay:_connectResponsiveLayout()
@@ -2177,10 +2343,43 @@ function LoadingOverlay:applyTheme(themeOverrides)
         self._backdrop.BackgroundColor3 = theme.backdropColor or DEFAULT_THEME.backdropColor
         self._backdrop.BackgroundTransparency = theme.backdropTransparency or DEFAULT_THEME.backdropTransparency
     end
+    if self._backdropGradient then
+        local backdropTheme = theme.backdropGradient or DEFAULT_THEME.backdropGradient
+        if backdropTheme then
+            self._backdropGradient.Color = backdropTheme.color or DEFAULT_THEME.backdropGradient.color
+            self._backdropGradient.Transparency = backdropTheme.transparency or DEFAULT_THEME.backdropGradient.transparency
+            self._backdropGradient.Rotation = backdropTheme.rotation or DEFAULT_THEME.backdropGradient.rotation or 0
+        end
+    end
     if self._container then
         self._container.Size = theme.containerSize or DEFAULT_THEME.containerSize
         self._container.BackgroundColor3 = theme.containerBackgroundColor or Color3.fromRGB(10, 14, 28)
         self._container.BackgroundTransparency = theme.containerTransparency or DEFAULT_THEME.containerTransparency or 0
+    end
+    if self._containerShadow then
+        local shadow = theme.shadow or DEFAULT_THEME.shadow
+        local paddingValue = shadow and shadow.padding or DEFAULT_THEME.shadow.padding
+        local paddingX, paddingY
+        if typeof(paddingValue) == "Vector2" then
+            paddingX, paddingY = paddingValue.X, paddingValue.Y
+        elseif typeof(paddingValue) == "number" then
+            paddingX, paddingY = paddingValue, paddingValue
+        else
+            paddingX, paddingY = DEFAULT_THEME.shadow.padding.X, DEFAULT_THEME.shadow.padding.Y
+        end
+        self._containerShadow.Size = UDim2.new(1, paddingX, 1, paddingY)
+        self._containerShadow.BackgroundColor3 = (shadow and shadow.color) or DEFAULT_THEME.shadow.color
+        self._containerShadow.BackgroundTransparency = (shadow and shadow.transparency) or DEFAULT_THEME.shadow.transparency
+        if self._containerShadowGradient then
+            self._containerShadowGradient.Color = ColorSequence.new({
+                ColorSequenceKeypoint.new(0, (shadow and shadow.color) or DEFAULT_THEME.shadow.color),
+                ColorSequenceKeypoint.new(1, (shadow and shadow.outerColor) or DEFAULT_THEME.shadow.outerColor or DEFAULT_THEME.shadow.color),
+            })
+            self._containerShadowGradient.Transparency = NumberSequence.new({
+                NumberSequenceKeypoint.new(0, (shadow and shadow.gradientInnerTransparency) or DEFAULT_THEME.shadow.gradientInnerTransparency or 0.5),
+                NumberSequenceKeypoint.new(1, 1),
+            })
+        end
     end
     if self._containerGradient then
         self._containerGradient.Color = theme.gradient and theme.gradient.color or DEFAULT_THEME.gradient.color
