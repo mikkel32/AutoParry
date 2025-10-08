@@ -177,6 +177,8 @@ local perfectParrySnapshot = {
 
 local pingSample = { value = 0, time = 0 }
 local PING_REFRESH_INTERVAL = 0.1
+local PROXIMITY_PRESS_GRACE = 0.05
+local PROXIMITY_HOLD_GRACE = 0.1
 
 local function newRollingStat(): RollingStat
     return { count = 0, mean = 0, m2 = 0 }
@@ -1461,15 +1463,18 @@ local function ensureInitialization()
     beginInitialization()
 end
 
-local function computeBallDebug(speed, distance, mu, sigma, inequality, delta)
+local function computeBallDebug(speed, distance, safeRadius, mu, sigma, inequality, delta, tti, tts)
     return string.format(
-        "💨 Speed: %.1f\n📏 Dist: %.2f\nμ: %.3f\nσ: %.3f\nμ+zσ: %.3f\nΔ: %.3f",
+        "💨 Speed: %.1f\n📏 Dist: %.2f (safe: %.1f)\nμ: %.3f\nσ: %.3f\nμ+zσ: %.3f\nΔ: %.3f\nTTI: %.3f\nTTIₛ: %.3f",
         speed,
         distance,
+        safeRadius,
         mu,
         sigma,
         inequality,
-        delta
+        delta,
+        tti,
+        tts
     )
 end
 
@@ -1702,7 +1707,38 @@ local function renderLoop()
     local fired = false
     local released = false
 
-    local shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    local approaching = filteredVr > EPSILON
+    local distanceToSafe = math.max(distance - safeRadius, 0)
+    local timeToImpact = math.huge
+    local timeToSafeRadius = math.huge
+    if approaching then
+        timeToImpact = distance / math.max(filteredVr, EPSILON)
+        if distanceToSafe <= EPSILON then
+            timeToSafeRadius = 0
+        else
+            timeToSafeRadius = distanceToSafe / math.max(filteredVr, EPSILON)
+        end
+    end
+
+    local responseWindow = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
+
+    local proximityPress = targetingMe and approaching and (distance <= safeRadius or timeToSafeRadius <= responseWindow)
+    local proximityHold = targetingMe and approaching and (distance <= safeRadius or timeToSafeRadius <= holdWindow)
+
+    local shouldPress = proximityPress
+    if not shouldPress then
+        shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    end
+
+    local shouldHold = proximityHold
+    if targetingMe and muValid and sigmaValid and muMinus < 0 then
+        shouldHold = true
+    end
+    if shouldPress then
+        shouldHold = true
+    end
+
     if shouldPress then
         fired = pressParry(ball, ballId)
     end
@@ -1725,7 +1761,7 @@ local function renderLoop()
     end
 
     if parryHeld then
-        if (not targetingMe) or not (muValid and sigmaValid) or muMinus >= 0 or (parryHeldBallId and parryHeldBallId ~= ballId) then
+        if (not shouldHold) or (parryHeldBallId and parryHeldBallId ~= ballId) then
             releaseParry()
             released = true
         end
@@ -1739,6 +1775,8 @@ local function renderLoop()
         string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
+        string.format("TTI: %.3f | TTIₛ: %.3f", timeToImpact, timeToSafeRadius),
+        string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
         string.format("Targeting: %s", tostring(targetingMe)),
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
@@ -1749,15 +1787,18 @@ local function renderLoop()
     end
 
     if fired then
-        table.insert(debugLines, "🔥 Press F: inequality satisfied")
+        table.insert(debugLines, "🔥 Press F: proximity/inequality met")
     elseif parryHeld and not released then
-        table.insert(debugLines, "Hold: μ−zσ < 0")
+        table.insert(debugLines, "Hold: maintaining safe-radius window")
     else
-        table.insert(debugLines, "Hold: inequality not met")
+        table.insert(debugLines, "Hold: conditions not met")
     end
 
     updateStatusLabel(debugLines)
-    setBallVisuals(ball, computeBallDebug(velocity.Magnitude, distance, mu, sigma, muPlus, delta))
+    setBallVisuals(
+        ball,
+        computeBallDebug(velocity.Magnitude, distance, safeRadius, mu, sigma, muPlus, delta, timeToImpact, timeToSafeRadius)
+    )
 end
 
 
