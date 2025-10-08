@@ -3929,59 +3929,14 @@ local function mergeTheme(overrides)
     return theme
 end
 
-local function isValidScreenGuiParent(instance)
-    if not instance then
-        return false
-    end
-
-    return instance:IsA("CoreGui")
-        or instance:IsA("BasePlayerGui")
-        or instance:IsA("StarterGui")
-        or instance:IsA("GuiService")
-end
-
-local function resolveScreenGuiParent(requestedParent)
-    if typeof(requestedParent) ~= "Instance" then
-        return CoreGui
-    end
-
-    if isValidScreenGuiParent(requestedParent) then
-        return requestedParent
-    end
-
-    local parent = requestedParent:FindFirstAncestorWhichIsA("BasePlayerGui")
-        or requestedParent:FindFirstAncestorWhichIsA("StarterGui")
-        or requestedParent:FindFirstAncestorWhichIsA("CoreGui")
-        or requestedParent:FindFirstAncestorWhichIsA("GuiService")
-    if isValidScreenGuiParent(parent) then
-        return parent
-    end
-
-    local layerCollector = requestedParent
-    if not layerCollector:IsA("LayerCollector") then
-        layerCollector = requestedParent:FindFirstAncestorWhichIsA("LayerCollector")
-    end
-
-    if layerCollector then
-        local containerParent = layerCollector.Parent
-        if isValidScreenGuiParent(containerParent) then
-            return containerParent
-        end
-    end
-
-    return CoreGui
-end
-
 local function createScreenGui(options)
-    local parent = resolveScreenGuiParent(options.parent)
-
     local gui = Instance.new("ScreenGui")
     gui.Name = options.name or "AutoParryLoadingOverlay"
     gui.DisplayOrder = 10_000
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.IgnoreGuiInset = true
-    gui.Parent = parent
+    gui.Parent = options.parent or CoreGui
     return gui
 end
 
@@ -6206,7 +6161,7 @@ function VerificationDashboard.new(options)
 
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Stretch
     layout.VerticalAlignment = Enum.VerticalAlignment.Top
     layout.SortOrder = Enum.SortOrder.LayoutOrder
     layout.Padding = UDim.new(0, 18)
