@@ -99,6 +99,27 @@ local DEFAULT_THEME = {
         textSize = 14,
         padding = Vector2.new(12, 8),
     },
+    overview = {
+        backgroundColor = Color3.fromRGB(26, 30, 40),
+        backgroundTransparency = 0.08,
+        strokeColor = Color3.fromRGB(82, 156, 255),
+        strokeTransparency = 0.6,
+        accentColor = Color3.fromRGB(112, 198, 255),
+        successColor = Color3.fromRGB(118, 228, 182),
+        warningColor = Color3.fromRGB(255, 198, 110),
+        dangerColor = Color3.fromRGB(248, 110, 128),
+        headerFont = Enum.Font.GothamSemibold,
+        headerTextSize = 13,
+        headerColor = Color3.fromRGB(176, 192, 224),
+        valueFont = Enum.Font.GothamBlack,
+        valueTextSize = 24,
+        valueColor = Color3.fromRGB(232, 242, 255),
+        detailFont = Enum.Font.Gotham,
+        detailTextSize = 13,
+        detailColor = Color3.fromRGB(160, 176, 210),
+        chipCorner = UDim.new(0, 12),
+        padding = Vector2.new(18, 16),
+    },
 }
 
 local DEFAULT_STAGES = {
@@ -120,6 +141,14 @@ local DEFAULT_STAGE_MAP = {}
 for _, definition in ipairs(DEFAULT_STAGES) do
     DEFAULT_STAGE_MAP[definition.id] = definition
 end
+
+local STAGE_STATUS_PRIORITY = {
+    failed = 5,
+    warning = 4,
+    active = 3,
+    pending = 2,
+    ok = 1,
+}
 
 local function deepCopy(data)
     if Util and Util.deepCopy then
@@ -255,8 +284,8 @@ local function createStageRow(theme, parent, definition)
     frame.BackgroundColor3 = theme.stageBackground
     frame.BackgroundTransparency = theme.stageTransparency
     frame.BorderSizePixel = 0
-    frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Size = UDim2.new(1, 0, 0, 72)
+    frame.AutomaticSize = Enum.AutomaticSize.None
+    frame.Size = UDim2.new(1, 0, 0, 90)
     frame.Parent = parent
 
     local corner = Instance.new("UICorner")
@@ -267,6 +296,20 @@ local function createStageRow(theme, parent, definition)
     stroke.Color = theme.stageStrokeColor
     stroke.Transparency = theme.stageStrokeTransparency
     stroke.Parent = frame
+
+    local accent = Instance.new("Frame")
+    accent.Name = "Accent"
+    accent.AnchorPoint = Vector2.new(0, 0.5)
+    accent.Position = UDim2.new(0, -2, 0.5, 0)
+    accent.Size = UDim2.new(0, 6, 1, -24)
+    accent.BorderSizePixel = 0
+    accent.BackgroundColor3 = theme.statusColors.pending
+    accent.BackgroundTransparency = 0.35
+    accent.Parent = frame
+
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(1, 0)
+    accentCorner.Parent = accent
 
     local padding = Instance.new("UIPadding")
     padding.PaddingTop = UDim.new(0, theme.bodyPadding)
@@ -325,6 +368,7 @@ local function createStageRow(theme, parent, definition)
 
     return {
         frame = frame,
+        accent = accent,
         icon = icon,
         title = title,
         message = message,
@@ -465,6 +509,88 @@ local function createBadge(theme, parent, id)
     }
 end
 
+local function createOverviewCard(theme, parent, id, title)
+    local config = theme.overview or DEFAULT_THEME.overview
+
+    local frame = Instance.new("Frame")
+    frame.Name = string.format("Overview_%s", id or "Card")
+    frame.BackgroundColor3 = config.backgroundColor or DEFAULT_THEME.overview.backgroundColor
+    frame.BackgroundTransparency = config.backgroundTransparency or DEFAULT_THEME.overview.backgroundTransparency or 0.08
+    frame.BorderSizePixel = 0
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.Size = UDim2.new(1, 0, 0, 0)
+    frame.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = config.chipCorner or DEFAULT_THEME.overview.chipCorner or UDim.new(0, 12)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = config.strokeColor or DEFAULT_THEME.overview.strokeColor
+    stroke.Transparency = config.strokeTransparency or DEFAULT_THEME.overview.strokeTransparency or 0.6
+    stroke.Thickness = 1.2
+    stroke.Parent = frame
+
+    local padding = config.padding or DEFAULT_THEME.overview.padding or Vector2.new(18, 16)
+    local contentPadding = Instance.new("UIPadding")
+    contentPadding.PaddingTop = UDim.new(0, padding.Y)
+    contentPadding.PaddingBottom = UDim.new(0, padding.Y)
+    contentPadding.PaddingLeft = UDim.new(0, padding.X)
+    contentPadding.PaddingRight = UDim.new(0, padding.X)
+    contentPadding.Parent = frame
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = frame
+
+    local header = Instance.new("TextLabel")
+    header.Name = "Label"
+    header.BackgroundTransparency = 1
+    header.Font = config.headerFont or DEFAULT_THEME.overview.headerFont
+    header.TextSize = config.headerTextSize or DEFAULT_THEME.overview.headerTextSize
+    header.TextColor3 = config.headerColor or DEFAULT_THEME.overview.headerColor
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Text = string.upper(title or id or "Overview")
+    header.Size = UDim2.new(1, 0, 0, math.max(20, (config.headerTextSize or DEFAULT_THEME.overview.headerTextSize) + 6))
+    header.LayoutOrder = 1
+    header.Parent = frame
+
+    local value = Instance.new("TextLabel")
+    value.Name = "Value"
+    value.BackgroundTransparency = 1
+    value.Font = config.valueFont or DEFAULT_THEME.overview.valueFont
+    value.TextSize = config.valueTextSize or DEFAULT_THEME.overview.valueTextSize
+    value.TextColor3 = config.valueColor or DEFAULT_THEME.overview.valueColor
+    value.TextXAlignment = Enum.TextXAlignment.Left
+    value.Text = "--"
+    value.Size = UDim2.new(1, 0, 0, value.TextSize + 6)
+    value.LayoutOrder = 2
+    value.Parent = frame
+
+    local detail = Instance.new("TextLabel")
+    detail.Name = "Detail"
+    detail.BackgroundTransparency = 1
+    detail.Font = config.detailFont or DEFAULT_THEME.overview.detailFont
+    detail.TextSize = config.detailTextSize or DEFAULT_THEME.overview.detailTextSize
+    detail.TextColor3 = config.detailColor or DEFAULT_THEME.overview.detailColor
+    detail.TextXAlignment = Enum.TextXAlignment.Left
+    detail.TextWrapped = true
+    detail.Text = "Awaiting data"
+    detail.Size = UDim2.new(1, 0, 0, math.max(18, detail.TextSize + 4))
+    detail.LayoutOrder = 3
+    detail.Parent = frame
+
+    return {
+        frame = frame,
+        stroke = stroke,
+        title = header,
+        value = value,
+        detail = detail,
+    }
+end
+
 function DiagnosticsPanel.new(options)
     options = options or {}
     local parent = assert(options.parent, "DiagnosticsPanel.new requires a parent")
@@ -481,17 +607,100 @@ function DiagnosticsPanel.new(options)
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
     layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, theme.sectionSpacing)
+    layout.Padding = UDim.new(0, (theme.sectionSpacing or 12) + 4)
     layout.Parent = frame
 
-    local stagesSection = createSection(theme, frame, "Verification stages", 1)
-    local eventsSection = createSection(theme, frame, "Event history", 2)
-    local errorsSection = createSection(theme, frame, "Alerts", 3)
+    local overviewRow = Instance.new("Frame")
+    overviewRow.Name = "OverviewRow"
+    overviewRow.BackgroundTransparency = 1
+    overviewRow.Size = UDim2.new(1, 0, 0, 0)
+    overviewRow.AutomaticSize = Enum.AutomaticSize.Y
+    overviewRow.LayoutOrder = 1
+    overviewRow.Parent = frame
+
+    local overviewLayout = Instance.new("UIListLayout")
+    overviewLayout.FillDirection = Enum.FillDirection.Horizontal
+    overviewLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    overviewLayout.Padding = UDim.new(0, theme.sectionSpacing or 12)
+    overviewLayout.Parent = overviewRow
+
+    local overviewCards = {
+        status = createOverviewCard(theme, overviewRow, "status", "Verification"),
+        events = createOverviewCard(theme, overviewRow, "events", "Events"),
+        alerts = createOverviewCard(theme, overviewRow, "alerts", "Alerts"),
+    }
+    overviewCards.status.frame.LayoutOrder = 1
+    overviewCards.events.frame.LayoutOrder = 2
+    overviewCards.alerts.frame.LayoutOrder = 3
+
+    local contentRow = Instance.new("Frame")
+    contentRow.Name = "ContentRow"
+    contentRow.BackgroundTransparency = 1
+    contentRow.Size = UDim2.new(1, 0, 0, 0)
+    contentRow.AutomaticSize = Enum.AutomaticSize.Y
+    contentRow.LayoutOrder = 2
+    contentRow.Parent = frame
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Vertical
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    contentLayout.Padding = UDim.new(0, theme.sectionSpacing or 12)
+    contentLayout.Parent = contentRow
+
+    local primaryColumn = Instance.new("Frame")
+    primaryColumn.Name = "PrimaryColumn"
+    primaryColumn.BackgroundTransparency = 1
+    primaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    primaryColumn.LayoutOrder = 1
+    primaryColumn.Parent = contentRow
+
+    local primaryLayout = Instance.new("UIListLayout")
+    primaryLayout.FillDirection = Enum.FillDirection.Vertical
+    primaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    primaryLayout.Padding = UDim.new(0, theme.sectionSpacing)
+    primaryLayout.Parent = primaryColumn
+
+    local secondaryColumn = Instance.new("Frame")
+    secondaryColumn.Name = "SecondaryColumn"
+    secondaryColumn.BackgroundTransparency = 1
+    secondaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    secondaryColumn.LayoutOrder = 2
+    secondaryColumn.Parent = contentRow
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Vertical
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, theme.sectionSpacing)
+    secondaryLayout.Parent = secondaryColumn
+
+    local stagesSection = createSection(theme, primaryColumn, "Verification stages", 1)
+    local eventsSection = createSection(theme, secondaryColumn, "Event history", 1)
+    local errorsSection = createSection(theme, primaryColumn, "Alerts", 2)
+
+    local stageGrid = Instance.new("Frame")
+    stageGrid.Name = "StageGrid"
+    stageGrid.BackgroundTransparency = 1
+    stageGrid.Size = UDim2.new(1, 0, 0, 0)
+    stageGrid.AutomaticSize = Enum.AutomaticSize.Y
+    stageGrid.Parent = stagesSection.body
+
+    local stageLayout = Instance.new("UIGridLayout")
+    stageLayout.FillDirection = Enum.FillDirection.Horizontal
+    stageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    stageLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    stageLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    stageLayout.CellPadding = UDim2.new(0, theme.sectionSpacing, 0, theme.sectionSpacing)
+    stageLayout.CellSize = UDim2.new(1, 0, 0, 90)
+    stageLayout.Parent = stageGrid
 
     local stageRows = {}
     local stageOrder = {}
     for index, definition in ipairs(DEFAULT_STAGES) do
-        local row = createStageRow(theme, stagesSection.body, definition)
+        local row = createStageRow(theme, stageGrid, definition)
         row.frame.LayoutOrder = index
         stageRows[definition.id] = row
         stageOrder[index] = definition.id
@@ -609,6 +818,17 @@ function DiagnosticsPanel.new(options)
             events = eventsSection,
             errors = errorsSection,
         },
+        _overviewRow = overviewRow,
+        _overviewLayout = overviewLayout,
+        _overviewCards = overviewCards,
+        _contentRow = contentRow,
+        _contentLayout = contentLayout,
+        _primaryColumn = primaryColumn,
+        _secondaryColumn = secondaryColumn,
+        _primaryLayout = primaryLayout,
+        _secondaryLayout = secondaryLayout,
+        _stageGrid = stageGrid,
+        _stageLayout = stageLayout,
         _stageRows = stageRows,
         _stageOrder = stageOrder,
         _events = {},
@@ -616,9 +836,29 @@ function DiagnosticsPanel.new(options)
         _eventsList = eventList,
         _filters = {},
         _filterButtons = filterButtons,
+        _filterRow = filterRow,
+        _filterLayout = filterLayout,
         _activeFilter = nil,
         _badges = {},
+        _badgesFrame = badges,
+        _badgesLayout = badgesLayout,
         _startClock = os.clock(),
+        _metrics = {
+            totalStages = #stageOrder,
+            readyStages = 0,
+            warningStages = 0,
+            failedStages = 0,
+            activeStage = nil,
+            events = 0,
+            loaderEvents = 0,
+            parryEvents = 0,
+            warnings = 0,
+            errors = 0,
+            activeAlerts = 0,
+            lastEvent = nil,
+        },
+        _connections = {},
+        _destroyed = false,
     }, DiagnosticsPanel)
 
     for _, filter in ipairs(DEFAULT_FILTERS) do
@@ -647,6 +887,8 @@ function DiagnosticsPanel.new(options)
     end
 
     self:setFilter("all")
+    self:_refreshOverview()
+    self:_installResponsiveHandlers()
 
     return self
 end
@@ -672,6 +914,337 @@ function DiagnosticsPanel:_styleStageRow(row, stage)
     row.title.TextColor3 = color
     row.message.TextColor3 = theme.statusTextColor
     row.detail.TextColor3 = theme.statusDetailColor
+
+    if row.accent then
+        row.accent.BackgroundColor3 = color
+        row.accent.BackgroundTransparency = (status == "pending" or status == "active") and 0.35 or 0.1
+    end
+
+    if row.frame then
+        local base = theme.stageBackground
+        local emphasis = status == "ok" and 0.08 or (status == "failed" and 0.2 or 0.14)
+        row.frame.BackgroundColor3 = base:Lerp(color, emphasis)
+    end
+end
+
+function DiagnosticsPanel:_updateStageMetrics(stageMap)
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    local ready = 0
+    local warning = 0
+    local failed = 0
+    local focusScore = -math.huge
+    local focusInfo = nil
+
+    for _, id in ipairs(self._stageOrder or {}) do
+        local stage = stageMap[id]
+        if stage then
+            local status = stage.status or "pending"
+            if status == "ok" then
+                ready += 1
+            elseif status == "warning" then
+                warning += 1
+            elseif status == "failed" then
+                failed += 1
+            end
+
+            local score = STAGE_STATUS_PRIORITY[status] or 0
+            if status ~= "ok" and score >= focusScore then
+                focusScore = score
+                local label = stage.title or stage.message or stage.description or stage.id or id
+                focusInfo = {
+                    id = id,
+                    title = label,
+                    status = status,
+                }
+            end
+        end
+    end
+
+    metrics.totalStages = #(self._stageOrder or {})
+    metrics.readyStages = ready
+    metrics.warningStages = warning
+    metrics.failedStages = failed
+    metrics.activeStage = focusInfo
+end
+
+function DiagnosticsPanel:_registerEventMetrics(event)
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    metrics.events = (metrics.events or 0) + 1
+    if event.kind == "loader" then
+        metrics.loaderEvents = (metrics.loaderEvents or 0) + 1
+    elseif event.kind == "parry" then
+        metrics.parryEvents = (metrics.parryEvents or 0) + 1
+    end
+
+    if event.severity == "warning" then
+        metrics.warnings = (metrics.warnings or 0) + 1
+    elseif event.severity == "error" then
+        metrics.errors = (metrics.errors or 0) + 1
+    end
+
+    metrics.lastEvent = {
+        kind = event.kind,
+        message = event.message,
+        detail = event.detail,
+        timestamp = event.timestamp,
+    }
+end
+
+function DiagnosticsPanel:_recountActiveAlerts()
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    local active = 0
+    for _, badge in pairs(self._badges) do
+        if badge.active then
+            active += 1
+        end
+    end
+
+    metrics.activeAlerts = active
+end
+
+function DiagnosticsPanel:_refreshOverview()
+    if self._destroyed then
+        return
+    end
+
+    local cards = self._overviewCards
+    if not cards then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local overviewTheme = theme.overview or DEFAULT_THEME.overview
+    local metrics = self._metrics or {}
+
+    local totalStages = metrics.totalStages or #(self._stageOrder or {})
+    local readyStages = metrics.readyStages or 0
+    local statusCard = cards.status
+    if statusCard then
+        statusCard.value.Text = string.format("%d/%d", readyStages, totalStages)
+        local focus = metrics.activeStage
+        if readyStages >= totalStages and totalStages > 0 then
+            statusCard.value.TextColor3 = overviewTheme.successColor or overviewTheme.valueColor
+            statusCard.detail.Text = "All verification stages passed"
+        else
+            statusCard.value.TextColor3 = overviewTheme.accentColor or overviewTheme.valueColor
+            if focus then
+                statusCard.detail.Text = string.format("Focus: %s", tostring(focus.title or focus.id or "stage"))
+            else
+                statusCard.detail.Text = "Awaiting verification data"
+            end
+        end
+    end
+
+    local eventsCard = cards.events
+    if eventsCard then
+        local eventsTotal = metrics.events or 0
+        eventsCard.value.Text = tostring(eventsTotal)
+        eventsCard.value.TextColor3 = overviewTheme.valueColor or Color3.new(1, 1, 1)
+        local loader = metrics.loaderEvents or 0
+        local parry = metrics.parryEvents or 0
+        local lastEvent = metrics.lastEvent
+        local summary = string.format("Loader %d • Parry %d", loader, parry)
+        if lastEvent then
+            local elapsed = formatElapsed(self._startClock, lastEvent.timestamp) or "now"
+            local label = lastEvent.message or lastEvent.detail or lastEvent.kind or "event"
+            summary = string.format("%s\nLast: %s (%s)", summary, label, elapsed)
+        elseif eventsTotal == 0 then
+            summary = string.format("%s\nNo events yet", summary)
+        end
+        eventsCard.detail.Text = summary
+    end
+
+    local alertsCard = cards.alerts
+    if alertsCard then
+        local active = metrics.activeAlerts or 0
+        local warnings = metrics.warnings or 0
+        local errors = metrics.errors or 0
+        if active > 0 or errors > 0 then
+            alertsCard.value.Text = tostring(active > 0 and active or errors)
+            alertsCard.value.TextColor3 = overviewTheme.dangerColor or overviewTheme.warningColor
+            if active > 0 then
+                alertsCard.detail.Text = string.format("%d alert%s requiring action", active, active == 1 and "" or "s")
+            else
+                alertsCard.detail.Text = string.format("%d error event%s logged", errors, errors == 1 and "" or "s")
+            end
+        elseif warnings > 0 then
+            alertsCard.value.Text = tostring(warnings)
+            alertsCard.value.TextColor3 = overviewTheme.warningColor or overviewTheme.accentColor
+            alertsCard.detail.Text = string.format("%d warning event%s logged", warnings, warnings == 1 and "" or "s")
+        else
+            alertsCard.value.Text = "0"
+            alertsCard.value.TextColor3 = overviewTheme.successColor or overviewTheme.valueColor
+            alertsCard.detail.Text = "No active alerts"
+        end
+    end
+end
+
+function DiagnosticsPanel:_installResponsiveHandlers()
+    if self._destroyed or not self.frame then
+        return
+    end
+
+    local connection = self.frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        if self._destroyed then
+            return
+        end
+        self:_applyResponsiveLayout(self.frame.AbsoluteSize.X)
+    end)
+    table.insert(self._connections, connection)
+
+    task.defer(function()
+        if self._destroyed then
+            return
+        end
+        self:_applyResponsiveLayout(self.frame.AbsoluteSize.X)
+    end)
+end
+
+function DiagnosticsPanel:_applyResponsiveLayout(width)
+    if self._destroyed then
+        return
+    end
+
+    width = tonumber(width) or 0
+    if width <= 0 and self.frame then
+        width = self.frame.AbsoluteSize.X
+    end
+    if width <= 0 then
+        return
+    end
+
+    local breakpoint
+    if width < 640 then
+        breakpoint = "small"
+    elseif width < 880 then
+        breakpoint = "medium"
+    else
+        breakpoint = "large"
+    end
+    self._currentBreakpoint = breakpoint
+
+    if self._overviewLayout then
+        if breakpoint == "small" then
+            self._overviewLayout.FillDirection = Enum.FillDirection.Vertical
+            self._overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._overviewLayout.Padding = UDim.new(0, 10)
+        else
+            self._overviewLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._overviewLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        end
+    end
+
+    local cards = self._overviewCards
+    if cards then
+        if breakpoint == "small" then
+            for _, card in pairs(cards) do
+                if card.frame then
+                    card.frame.Size = UDim2.new(1, 0, 0, 0)
+                end
+            end
+        elseif breakpoint == "medium" then
+            if cards.status and cards.status.frame then
+                cards.status.frame.Size = UDim2.new(0.5, -6, 0, 0)
+            end
+            if cards.events and cards.events.frame then
+                cards.events.frame.Size = UDim2.new(0.5, -6, 0, 0)
+            end
+            if cards.alerts and cards.alerts.frame then
+                cards.alerts.frame.Size = UDim2.new(1, 0, 0, 0)
+            end
+        else
+            local segments = 0
+            for _, card in pairs(cards) do
+                if card.frame then
+                    segments += 1
+                end
+            end
+            segments = math.max(segments, 1)
+            local widthScale = 1 / segments
+            for _, card in pairs(cards) do
+                if card.frame then
+                    card.frame.Size = UDim2.new(widthScale, -8, 0, 0)
+                end
+            end
+        end
+    end
+
+    if self._contentLayout then
+        if breakpoint == "large" then
+            self._contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        else
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        end
+    end
+
+    if self._primaryColumn and self._secondaryColumn then
+        if breakpoint == "large" then
+            self._primaryColumn.Size = UDim2.new(0.56, -8, 0, 0)
+            self._secondaryColumn.Size = UDim2.new(0.44, -8, 0, 0)
+        else
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+        end
+    end
+
+    if self._stageLayout then
+        if breakpoint == "large" then
+            self._stageLayout.CellSize = UDim2.new(0.5, -8, 0, 98)
+            self._stageLayout.CellPadding = UDim2.new(0, 12, 0, 12)
+        else
+            self._stageLayout.CellSize = UDim2.new(1, 0, 0, 98)
+            self._stageLayout.CellPadding = UDim2.new(0, 10, 0, 10)
+        end
+    end
+
+    if self._filterLayout then
+        local filterTheme = (self._theme and self._theme.filterButton) or DEFAULT_THEME.filterButton
+        if breakpoint == "small" then
+            self._filterLayout.FillDirection = Enum.FillDirection.Vertical
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._filterLayout.Padding = UDim.new(0, 6)
+            for _, button in pairs(self._filterButtons) do
+                button.Size = UDim2.new(1, 0, 0, 28)
+                button.TextXAlignment = Enum.TextXAlignment.Left
+            end
+        else
+            self._filterLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._filterLayout.Padding = UDim.new(0, 8)
+            for _, button in pairs(self._filterButtons) do
+                local widthEstimate = math.max(60, button.TextBounds.X + filterTheme.padding.X * 2)
+                button.Size = UDim2.new(0, widthEstimate, 0, 26)
+                button.TextXAlignment = Enum.TextXAlignment.Center
+            end
+        end
+    end
+
+    if self._badgesLayout then
+        if breakpoint == "small" then
+            self._badgesLayout.FillDirection = Enum.FillDirection.Vertical
+            self._badgesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        else
+            self._badgesLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._badgesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+    end
 end
 
 function DiagnosticsPanel:_updateEventRow(entry, event)
@@ -774,6 +1347,9 @@ function DiagnosticsPanel:setStages(stages)
             end
         end
     end
+
+    self:_updateStageMetrics(map)
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:pushEvent(event)
@@ -803,6 +1379,8 @@ function DiagnosticsPanel:pushEvent(event)
 
     self:_updateEventRow(entry, copied)
     self:_applyFilter()
+    self:_registerEventMetrics(copied)
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:showError(errorInfo)
@@ -811,13 +1389,16 @@ function DiagnosticsPanel:showError(errorInfo)
             badge.frame:Destroy()
         end
         self._badges = {}
+        self:_recountActiveAlerts()
+        self:_refreshOverview()
         return
     end
 
     local id = tostring(errorInfo.id or errorInfo.kind or (#self._badges + 1))
     local badge = self._badges[id]
     if not badge then
-        badge = createBadge(self._theme, self._sections.errors.body.Badges, id)
+        local badgeParent = (self._badgesFrame and self._badgesFrame.Parent) and self._badgesFrame or (self._sections.errors and self._sections.errors.body and self._sections.errors.body.Badges)
+        badge = createBadge(self._theme, badgeParent, id)
         self._badges[id] = badge
     end
 
@@ -832,6 +1413,8 @@ function DiagnosticsPanel:showError(errorInfo)
 
     badge.active = active
     badge.severity = severity
+    self:_recountActiveAlerts()
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:reset()
@@ -845,6 +1428,20 @@ function DiagnosticsPanel:reset()
         badge.frame:Destroy()
     end
     self._badges = {}
+
+    if self._metrics then
+        self._metrics.events = 0
+        self._metrics.loaderEvents = 0
+        self._metrics.parryEvents = 0
+        self._metrics.warnings = 0
+        self._metrics.errors = 0
+        self._metrics.activeAlerts = 0
+        self._metrics.lastEvent = nil
+        self._metrics.readyStages = 0
+        self._metrics.warningStages = 0
+        self._metrics.failedStages = 0
+        self._metrics.activeStage = nil
+    end
 
     self._startClock = os.clock()
     self:setFilter("all")
@@ -862,6 +1459,8 @@ function DiagnosticsPanel:reset()
             row.detail.Text = ""
         end
     end
+
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:destroy()
@@ -870,6 +1469,11 @@ function DiagnosticsPanel:destroy()
     end
 
     self._destroyed = true
+
+    for _, connection in ipairs(self._connections or {}) do
+        connection:Disconnect()
+    end
+    self._connections = nil
 
     if self.frame then
         self.frame:Destroy()
