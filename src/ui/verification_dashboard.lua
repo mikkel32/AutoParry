@@ -1154,7 +1154,7 @@ function VerificationDashboard.new(options)
 
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Stretch
     layout.VerticalAlignment = Enum.VerticalAlignment.Top
     layout.SortOrder = Enum.SortOrder.LayoutOrder
     layout.Padding = UDim.new(0, 18)
