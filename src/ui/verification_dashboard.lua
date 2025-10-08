@@ -47,24 +47,24 @@ local STEP_DEFINITIONS = {
 }
 
 local DEFAULT_THEME = {
-    accentColor = Color3.fromRGB(82, 156, 255),
+    accentColor = Color3.fromRGB(112, 198, 255),
     backgroundTransparency = 1,
-    cardColor = Color3.fromRGB(28, 32, 40),
-    cardTransparency = 0.04,
-    cardStrokeColor = Color3.fromRGB(100, 126, 172),
-    cardStrokeTransparency = 0.4,
-    connectorColor = Color3.fromRGB(82, 156, 255),
-    connectorTransparency = 0.45,
-    pendingColor = Color3.fromRGB(150, 160, 184),
-    activeColor = Color3.fromRGB(82, 156, 255),
-    okColor = Color3.fromRGB(88, 206, 157),
-    warningColor = Color3.fromRGB(246, 178, 74),
-    failedColor = Color3.fromRGB(229, 96, 102),
-    tooltipBackground = Color3.fromRGB(26, 30, 40),
-    tooltipTransparency = 0.05,
-    tooltipTextColor = Color3.fromRGB(224, 232, 248),
+    cardColor = Color3.fromRGB(20, 24, 32),
+    cardTransparency = 0.02,
+    cardStrokeColor = Color3.fromRGB(76, 118, 190),
+    cardStrokeTransparency = 0.32,
+    connectorColor = Color3.fromRGB(112, 198, 255),
+    connectorTransparency = 0.35,
+    pendingColor = Color3.fromRGB(142, 152, 188),
+    activeColor = Color3.fromRGB(112, 198, 255),
+    okColor = Color3.fromRGB(118, 228, 182),
+    warningColor = Color3.fromRGB(255, 198, 110),
+    failedColor = Color3.fromRGB(248, 110, 128),
+    tooltipBackground = Color3.fromRGB(18, 22, 30),
+    tooltipTransparency = 0.12,
+    tooltipTextColor = Color3.fromRGB(220, 232, 252),
     titleFont = Enum.Font.GothamSemibold,
-    titleTextSize = 22,
+    titleTextSize = 24,
     subtitleFont = Enum.Font.Gotham,
     subtitleTextSize = 16,
     stepTitleFont = Enum.Font.GothamSemibold,
@@ -75,12 +75,31 @@ local DEFAULT_THEME = {
     tooltipTextSize = 14,
     actionFont = Enum.Font.GothamSemibold,
     actionTextSize = 16,
-    actionHeight = 38,
-    actionCorner = UDim.new(0, 8),
-    actionPrimaryColor = Color3.fromRGB(82, 156, 255),
+    actionHeight = 40,
+    actionCorner = UDim.new(0, 10),
+    actionPrimaryColor = Color3.fromRGB(112, 198, 255),
     actionPrimaryTextColor = Color3.fromRGB(12, 16, 26),
-    actionSecondaryColor = Color3.fromRGB(44, 50, 62),
-    actionSecondaryTextColor = Color3.fromRGB(224, 232, 248),
+    actionSecondaryColor = Color3.fromRGB(40, 46, 62),
+    actionSecondaryTextColor = Color3.fromRGB(226, 236, 252),
+    insights = {
+        backgroundColor = Color3.fromRGB(14, 18, 26),
+        backgroundTransparency = 0.07,
+        strokeColor = Color3.fromRGB(66, 102, 172),
+        strokeTransparency = 0.38,
+        gradient = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(24, 30, 44)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(12, 16, 26))
+        }),
+        gradientTransparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, 0.8),
+            NumberSequenceKeypoint.new(1, 0.25),
+        }),
+        gradientRotation = 120,
+        paddingTop = 18,
+        paddingBottom = 18,
+        paddingHorizontal = 20,
+        paddingBetween = 16,
+    },
     logo = {
         width = 240,
         text = "AutoParry",
@@ -128,7 +147,7 @@ local DEFAULT_THEME = {
         titleFont = Enum.Font.GothamSemibold,
         titleTextSize = 16,
         valueFont = Enum.Font.GothamBold,
-        valueTextSize = 24,
+        valueTextSize = 26,
         labelFont = Enum.Font.Gotham,
         labelTextSize = 13,
         cardColor = Color3.fromRGB(26, 30, 40),
@@ -136,6 +155,13 @@ local DEFAULT_THEME = {
         cardStrokeColor = Color3.fromRGB(94, 148, 214),
         cardStrokeTransparency = 0.45,
         accentColor = Color3.fromRGB(82, 156, 255),
+        valueColor = Color3.fromRGB(235, 245, 255),
+        hintColor = Color3.fromRGB(170, 192, 230),
+        sparkColor = Color3.fromRGB(112, 198, 255),
+        sparkTransparency = 0.25,
+        cellSize = UDim2.new(0.5, -12, 0, 104),
+        cellPadding = UDim2.new(0, 12, 0, 12),
+        maxColumns = 2,
     },
     controls = {
         headerFont = Enum.Font.GothamSemibold,
@@ -166,39 +192,54 @@ local DEFAULT_THEME = {
             NumberSequenceKeypoint.new(0, 0.9),
             NumberSequenceKeypoint.new(1, 0.35),
         }),
+        iconBackground = Color3.fromRGB(34, 40, 54),
+        iconTransparency = 0.15,
+        iconGradient = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, Color3.fromRGB(46, 58, 82)),
+            ColorSequenceKeypoint.new(1, Color3.fromRGB(24, 32, 52)),
+        }),
+        iconSize = UDim2.new(0, 34, 0, 34),
+        iconColor = Color3.fromRGB(210, 224, 255),
+        iconAccentColor = Color3.fromRGB(112, 198, 255),
     },
     summary = {
-        chipBackground = Color3.fromRGB(32, 38, 48),
-        chipTransparency = 0.08,
-        chipStrokeColor = Color3.fromRGB(82, 156, 255),
-        chipStrokeTransparency = 0.6,
+        chipBackground = Color3.fromRGB(30, 36, 48),
+        chipTransparency = 0.06,
+        chipStrokeColor = Color3.fromRGB(94, 148, 214),
+        chipStrokeTransparency = 0.5,
         labelFont = Enum.Font.Gotham,
         labelTextSize = 12,
-        labelColor = Color3.fromRGB(160, 174, 198),
+        labelColor = Color3.fromRGB(168, 182, 210),
         valueFont = Enum.Font.GothamSemibold,
-        valueTextSize = 16,
-        valueColor = Color3.fromRGB(235, 240, 248),
+        valueTextSize = 17,
+        valueColor = Color3.fromRGB(236, 244, 255),
     },
 }
 
 local DEFAULT_TELEMETRY = {
     {
         id = "latency",
-        label = "Network Latency",
+        label = "Round Trip",
         value = "-- ms",
-        hint = "Round-trip time to the Blade Ball server.",
+        hint = "Rolling network latency sample used for Δ.",
     },
     {
-        id = "uptime",
-        label = "Session Length",
-        value = "00:00",
-        hint = "Elapsed runtime since activation.",
+        id = "delta",
+        label = "Lead Δ",
+        value = "-- ms",
+        hint = "Forecasted pre-fire lead from ping and activation lag.",
     },
     {
-        id = "autotune",
-        label = "Assistance Model",
-        value = "Calibrating",
-        hint = "Status of AutoParry's adaptive timing engine.",
+        id = "inequality",
+        label = "μ + zσ",
+        value = "--",
+        hint = "Current PERFECT-PARRY margin; negative means ready to fire.",
+    },
+    {
+        id = "confidence",
+        label = "Confidence",
+        value = "z = 2.20",
+        hint = "Safety index applied to the μ + zσ trigger.",
     },
 }
 
@@ -206,59 +247,65 @@ local CONTROL_DEFINITIONS = {
     {
         id = "adaptive",
         title = "Adaptive Timing",
-        description = "Continuously adjusts parry timing from recent plays.",
+        description = "Learns activation latency and tunes μ forecasts in real time.",
         default = true,
         badge = "SMART",
+        icon = "rbxassetid://6031280882",
     },
     {
         id = "failsafe",
         title = "Safety Net",
-        description = "Returns control to you if abnormal behaviour is detected.",
+        description = "Hands control back if μ + zσ behaviour looks unsafe.",
         default = true,
         badge = "SAFE",
+        icon = "rbxassetid://6031280887",
     },
     {
         id = "edge",
-        title = "Advanced Prediction",
-        description = "Forecasts ricochet paths to prepare for handoffs.",
+        title = "Edge Solver",
+        description = "Extends forecasts to curve/ricochet chains for team handoffs.",
         default = false,
+        icon = "rbxassetid://6031229327",
     },
     {
         id = "audible",
         title = "Audio Alerts",
-        description = "Play positional pings for critical parry windows.",
+        description = "Play positional cues when μ + zσ crosses zero.",
         default = true,
+        icon = "rbxassetid://6031280883",
     },
     {
         id = "ghost",
-        title = "Trajectory Simulation",
-        description = "Pre-simulates trajectories to charge counter windows early.",
+        title = "Trajectory Ghosts",
+        description = "Pre-simulate probable ball paths to rehearse parries early.",
         default = false,
+        icon = "rbxassetid://6031075931",
     },
     {
         id = "autosync",
         title = "Team Sync",
-        description = "Broadcasts timing cues to linked teammates.",
+        description = "Broadcast timing cues and σ inflation notices to your squad.",
         default = true,
         badge = "TEAM",
+        icon = "rbxassetid://6035202002",
     },
 }
 
 local DEFAULT_HEADER_SUMMARY = {
     {
         id = "status",
-        label = "Status",
-        value = "Operational",
+        label = "System",
+        value = "Online",
     },
     {
-        id = "mode",
-        label = "Mode",
-        value = "Assist",
+        id = "delta",
+        label = "Δ Lead",
+        value = "-- ms",
     },
     {
-        id = "profile",
-        label = "Profile",
-        value = "Balanced",
+        id = "confidence",
+        label = "Confidence",
+        value = "z = 2.20",
     },
 }
 
@@ -772,7 +819,8 @@ local function createTelemetryCard(parent, theme, definition)
     card.BackgroundColor3 = telemetryTheme.cardColor
     card.BackgroundTransparency = telemetryTheme.cardTransparency
     card.BorderSizePixel = 0
-    card.Size = UDim2.new(0, 0, 0, 96)
+    card.AutomaticSize = Enum.AutomaticSize.Y
+    card.Size = UDim2.new(0, 0, 0, 104)
     card.Parent = parent
 
     local corner = Instance.new("UICorner")
@@ -785,12 +833,34 @@ local function createTelemetryCard(parent, theme, definition)
     stroke.Color = telemetryTheme.cardStrokeColor
     stroke.Parent = card
 
+    local spark = Instance.new("Frame")
+    spark.Name = "Spark"
+    spark.AnchorPoint = Vector2.new(0, 0.5)
+    spark.Position = UDim2.new(0, -3, 0.5, 0)
+    spark.Size = UDim2.new(0, 6, 1, -24)
+    spark.BackgroundColor3 = telemetryTheme.sparkColor or (theme.accentColor and theme.accentColor:Lerp(Color3.new(1, 1, 1), 0.2)) or theme.accentColor
+    spark.BackgroundTransparency = telemetryTheme.sparkTransparency or 0.2
+    spark.BorderSizePixel = 0
+    spark.Parent = card
+
+    local sparkCorner = Instance.new("UICorner")
+    sparkCorner.CornerRadius = UDim.new(1, 0)
+    sparkCorner.Parent = spark
+
     local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 10)
-    padding.PaddingBottom = UDim.new(0, 12)
-    padding.PaddingLeft = UDim.new(0, 12)
-    padding.PaddingRight = UDim.new(0, 12)
+    padding.PaddingTop = UDim.new(0, 12)
+    padding.PaddingBottom = UDim.new(0, 14)
+    padding.PaddingLeft = UDim.new(0, 16)
+    padding.PaddingRight = UDim.new(0, 14)
     padding.Parent = card
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.VerticalAlignment = Enum.VerticalAlignment.Top
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = card
 
     local label = Instance.new("TextLabel")
     label.Name = "Label"
@@ -800,33 +870,34 @@ local function createTelemetryCard(parent, theme, definition)
     label.TextSize = telemetryTheme.labelTextSize
     label.TextColor3 = (telemetryTheme.accentColor or theme.accentColor):Lerp(Color3.new(1, 1, 1), 0.35)
     label.TextXAlignment = Enum.TextXAlignment.Left
-    label.Text = definition.label or definition.id
+    label.Text = string.upper(definition.label or definition.id or "Telemetry")
+    label.LayoutOrder = 1
     label.Parent = card
 
     local value = Instance.new("TextLabel")
     value.Name = "Value"
     value.BackgroundTransparency = 1
     value.Size = UDim2.new(1, 0, 0, 32)
-    value.Position = UDim2.new(0, 0, 0, 20)
     value.Font = telemetryTheme.valueFont
     value.TextSize = telemetryTheme.valueTextSize
     value.TextXAlignment = Enum.TextXAlignment.Left
     value.TextColor3 = Color3.fromRGB(235, 245, 255)
     value.Text = tostring(definition.value or "--")
+    value.LayoutOrder = 2
     value.Parent = card
 
     local hint = Instance.new("TextLabel")
     hint.Name = "Hint"
     hint.BackgroundTransparency = 1
     hint.Size = UDim2.new(1, 0, 0, 22)
-    hint.Position = UDim2.new(0, 0, 0, 54)
     hint.Font = telemetryTheme.labelFont
-    hint.TextSize = telemetryTheme.labelTextSize - 1
-    hint.TextColor3 = Color3.fromRGB(176, 196, 230)
-    hint.TextXAlignment = Enum.TextXAlignment.Left
-    hint.TextTransparency = 0.15
+    hint.TextSize = math.max((telemetryTheme.labelTextSize or 13) - 1, 10)
+    hint.TextColor3 = telemetryTheme.hintColor or Color3.fromRGB(176, 196, 230)
+    hint.TextTransparency = 0.18
     hint.TextWrapped = true
+    hint.TextXAlignment = Enum.TextXAlignment.Left
     hint.Text = definition.hint or ""
+    hint.LayoutOrder = 3
     hint.Parent = card
 
     return {
@@ -835,6 +906,9 @@ local function createTelemetryCard(parent, theme, definition)
         label = label,
         value = value,
         hint = hint,
+        spark = spark,
+        defaultValueColor = value.TextColor3,
+        defaultHintColor = hint.TextColor3,
         definition = definition,
     }
 end
@@ -847,7 +921,7 @@ local function createControlToggle(parent, theme, definition)
     button.AutoButtonColor = false
     button.BackgroundColor3 = controlsTheme.toggleOffColor
     button.BorderSizePixel = 0
-    button.Size = UDim2.new(0, 240, 0, 96)
+    button.Size = UDim2.new(0, 260, 0, 112)
     button.Text = ""
     button.Parent = parent
 
@@ -864,8 +938,8 @@ local function createControlToggle(parent, theme, definition)
     local padding = Instance.new("UIPadding")
     padding.PaddingTop = UDim.new(0, 14)
     padding.PaddingBottom = UDim.new(0, 14)
-    padding.PaddingLeft = UDim.new(0, 16)
-    padding.PaddingRight = UDim.new(0, 16)
+    padding.PaddingLeft = UDim.new(0, 18)
+    padding.PaddingRight = UDim.new(0, 18)
     padding.Parent = button
 
     local indicator = Instance.new("Frame")
@@ -882,11 +956,48 @@ local function createControlToggle(parent, theme, definition)
     indicatorCorner.CornerRadius = UDim.new(1, 0)
     indicatorCorner.Parent = indicator
 
+    local iconFrame
+    local iconImage
+    local iconOffset = 0
+    local iconSize = controlsTheme.iconSize or DEFAULT_THEME.controls.iconSize or UDim2.new(0, 34, 0, 34)
+    if typeof(definition.icon) == "string" and definition.icon ~= "" then
+        iconFrame = Instance.new("Frame")
+        iconFrame.Name = "Icon"
+        iconFrame.BackgroundColor3 = controlsTheme.iconBackground or DEFAULT_THEME.controls.iconBackground
+        iconFrame.BackgroundTransparency = controlsTheme.iconTransparency or DEFAULT_THEME.controls.iconTransparency or 0.15
+        iconFrame.BorderSizePixel = 0
+        iconFrame.Size = iconSize
+        iconFrame.Position = UDim2.new(0, 0, 0, math.max(6, math.floor((button.Size.Y.Offset - iconSize.Y.Offset) * 0.5)))
+        iconFrame.ZIndex = 2
+        iconFrame.Parent = button
+
+        local iconCorner = Instance.new("UICorner")
+        iconCorner.CornerRadius = UDim.new(0, 12)
+        iconCorner.Parent = iconFrame
+
+        local iconGradient = Instance.new("UIGradient")
+        iconGradient.Color = controlsTheme.iconGradient or DEFAULT_THEME.controls.iconGradient
+        iconGradient.Rotation = 120
+        iconGradient.Parent = iconFrame
+
+        iconImage = Instance.new("ImageLabel")
+        iconImage.Name = "Glyph"
+        iconImage.AnchorPoint = Vector2.new(0.5, 0.5)
+        iconImage.Position = UDim2.new(0.5, 0, 0.5, 0)
+        iconImage.Size = UDim2.new(0, math.max(iconSize.X.Offset - 12, 20), 0, math.max(iconSize.Y.Offset - 12, 20))
+        iconImage.BackgroundTransparency = 1
+        iconImage.Image = definition.icon
+        iconImage.ImageColor3 = controlsTheme.iconColor or DEFAULT_THEME.controls.iconColor
+        iconImage.Parent = iconFrame
+
+        iconOffset = iconSize.X.Offset + 18
+    end
+
     local title = Instance.new("TextLabel")
     title.Name = "Title"
     title.BackgroundTransparency = 1
-    title.Size = UDim2.new(1, -8, 0, 24)
-    title.Position = UDim2.new(0, 0, 0, 0)
+    title.Size = UDim2.new(1, -iconOffset - 8, 0, 26)
+    title.Position = UDim2.new(0, iconOffset, 0, 0)
     title.Font = controlsTheme.headerFont or DEFAULT_THEME.controls.headerFont
     title.TextSize = controlsTheme.headerTextSize or DEFAULT_THEME.controls.headerTextSize
     title.TextColor3 = controlsTheme.headerColor or DEFAULT_THEME.controls.headerColor
@@ -899,9 +1010,9 @@ local function createControlToggle(parent, theme, definition)
         badge = Instance.new("TextLabel")
         badge.Name = "Badge"
         badge.AnchorPoint = Vector2.new(1, 0)
-        badge.Position = UDim2.new(1, 0, 0, 0)
-        badge.Size = UDim2.new(0, 52, 0, 22)
-        badge.BackgroundTransparency = 0.2
+        badge.Position = UDim2.new(1, -4, 0, 2)
+        badge.Size = UDim2.new(0, 58, 0, 22)
+        badge.BackgroundTransparency = 0.25
         badge.BackgroundColor3 = (controlsTheme.toggleStrokeColor or DEFAULT_THEME.controls.toggleStrokeColor):Lerp(Color3.new(1, 1, 1), 0.3)
         badge.Font = controlsTheme.toggleBadgeFont or DEFAULT_THEME.controls.toggleBadgeFont
         badge.TextSize = controlsTheme.toggleBadgeSize or DEFAULT_THEME.controls.toggleBadgeSize
@@ -918,8 +1029,8 @@ local function createControlToggle(parent, theme, definition)
     local description = Instance.new("TextLabel")
     description.Name = "Description"
     description.BackgroundTransparency = 1
-    description.Position = UDim2.new(0, 0, 0, 30)
-    description.Size = UDim2.new(1, -8, 0, 38)
+    description.Position = UDim2.new(0, iconOffset, 0, 32)
+    description.Size = UDim2.new(1, -iconOffset - 8, 0, 46)
     description.TextWrapped = true
     description.TextXAlignment = Enum.TextXAlignment.Left
     description.Font = controlsTheme.descriptionFont or DEFAULT_THEME.controls.descriptionFont
@@ -931,11 +1042,11 @@ local function createControlToggle(parent, theme, definition)
     local status = Instance.new("TextLabel")
     status.Name = "Status"
     status.AnchorPoint = Vector2.new(1, 1)
-    status.Position = UDim2.new(1, 0, 1, -2)
-    status.Size = UDim2.new(0, 70, 0, 18)
+    status.Position = UDim2.new(1, -6, 1, -6)
+    status.Size = UDim2.new(0, 74, 0, 20)
     status.BackgroundTransparency = 1
     status.Font = controlsTheme.descriptionFont or DEFAULT_THEME.controls.descriptionFont
-    status.TextSize = (controlsTheme.descriptionTextSize or DEFAULT_THEME.controls.descriptionTextSize) - 1
+    status.TextSize = math.max((controlsTheme.descriptionTextSize or DEFAULT_THEME.controls.descriptionTextSize) - 1, 11)
     status.TextColor3 = controlsTheme.descriptionColor or DEFAULT_THEME.controls.descriptionColor
     status.TextXAlignment = Enum.TextXAlignment.Right
     status.Text = "OFF"
@@ -949,6 +1060,8 @@ local function createControlToggle(parent, theme, definition)
         badge = badge,
         status = status,
         stroke = stroke,
+        icon = iconImage,
+        iconFrame = iconFrame,
         definition = definition,
         enabled = false,
     }
@@ -985,7 +1098,13 @@ local function styleControlToggle(toggle, theme, enabled)
     end
     if toggle.badge then
         toggle.badge.TextColor3 = controlsTheme.toggleBadgeColor or DEFAULT_THEME.controls.toggleBadgeColor
-        toggle.badge.BackgroundTransparency = enabled and 0.1 or 0.35
+        toggle.badge.BackgroundTransparency = enabled and 0.12 or 0.4
+    end
+    if toggle.icon then
+        toggle.icon.ImageColor3 = enabled and (controlsTheme.iconAccentColor or onColor) or (controlsTheme.iconColor or DEFAULT_THEME.controls.iconColor)
+    end
+    if toggle.iconFrame then
+        toggle.iconFrame.BackgroundTransparency = enabled and 0.08 or (controlsTheme.iconTransparency or DEFAULT_THEME.controls.iconTransparency or 0.15)
     end
 
     toggle.enabled = enabled
@@ -1088,7 +1207,7 @@ function VerificationDashboard.new(options)
     title.TextSize = theme.titleTextSize
     title.TextColor3 = Color3.fromRGB(235, 245, 255)
     title.TextXAlignment = Enum.TextXAlignment.Left
-    title.Text = "Verification Timeline"
+    title.Text = "PERFECT-PARRY Orchestrator"
     title.LayoutOrder = 1
     title.Parent = textContainer
 
@@ -1100,7 +1219,7 @@ function VerificationDashboard.new(options)
     subtitle.TextSize = theme.subtitleTextSize
     subtitle.TextColor3 = Color3.fromRGB(170, 184, 220)
     subtitle.TextXAlignment = Enum.TextXAlignment.Left
-    subtitle.Text = "Initialising AutoParry suite…"
+    subtitle.Text = "Calibrating μ + zσ forecast pipeline…"
     subtitle.LayoutOrder = 2
     subtitle.Parent = textContainer
 
@@ -1150,26 +1269,74 @@ function VerificationDashboard.new(options)
         end)
     end
 
+    local insightsTheme = mergeTable(DEFAULT_THEME.insights or {}, theme.insights or {})
+
+    local insightsCard = Instance.new("Frame")
+    insightsCard.Name = "InsightsCard"
+    insightsCard.BackgroundColor3 = insightsTheme.backgroundColor or theme.cardColor
+    insightsCard.BackgroundTransparency = insightsTheme.backgroundTransparency or theme.cardTransparency
+    insightsCard.BorderSizePixel = 0
+    insightsCard.LayoutOrder = 2
+    insightsCard.AutomaticSize = Enum.AutomaticSize.Y
+    insightsCard.Size = UDim2.new(1, 0, 0, 0)
+    insightsCard.Parent = root
+
+    local insightsCorner = Instance.new("UICorner")
+    insightsCorner.CornerRadius = UDim.new(0, 16)
+    insightsCorner.Parent = insightsCard
+
+    local insightsStroke = Instance.new("UIStroke")
+    insightsStroke.Thickness = 1.15
+    insightsStroke.Color = insightsTheme.strokeColor or theme.cardStrokeColor
+    insightsStroke.Transparency = insightsTheme.strokeTransparency or theme.cardStrokeTransparency
+    insightsStroke.Parent = insightsCard
+
+    local insightsGradient
+    if insightsTheme.gradient then
+        insightsGradient = Instance.new("UIGradient")
+        insightsGradient.Color = insightsTheme.gradient
+        insightsGradient.Transparency = insightsTheme.gradientTransparency or DEFAULT_THEME.insights.gradientTransparency
+        insightsGradient.Rotation = insightsTheme.gradientRotation or 120
+        insightsGradient.Parent = insightsCard
+    end
+
+    local insightsPadding = Instance.new("UIPadding")
+    insightsPadding.PaddingTop = UDim.new(0, insightsTheme.paddingTop or 18)
+    insightsPadding.PaddingBottom = UDim.new(0, insightsTheme.paddingBottom or 18)
+    insightsPadding.PaddingLeft = UDim.new(0, insightsTheme.paddingHorizontal or 20)
+    insightsPadding.PaddingRight = UDim.new(0, insightsTheme.paddingHorizontal or 20)
+    insightsPadding.Parent = insightsCard
+
+    local insightsLayout = Instance.new("UIListLayout")
+    insightsLayout.FillDirection = Enum.FillDirection.Vertical
+    insightsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    insightsLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    insightsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    insightsLayout.Padding = UDim.new(0, insightsTheme.paddingBetween or 16)
+    insightsLayout.Parent = insightsCard
+
     local summaryRow
     if #summaryDefinitions > 0 then
-        summaryRow = createSummaryRow(textContainer, theme, summaryDefinitions)
-        summaryRow.frame.LayoutOrder = 3
+        summaryRow = createSummaryRow(insightsCard, theme, summaryDefinitions)
+        summaryRow.frame.LayoutOrder = 1
     end
 
     local telemetryFrame = Instance.new("Frame")
     telemetryFrame.Name = "Telemetry"
     telemetryFrame.BackgroundTransparency = 1
-    telemetryFrame.Size = UDim2.new(1, 0, 0, 110)
-    telemetryFrame.LayoutOrder = 2
-    telemetryFrame.Parent = root
+    telemetryFrame.AutomaticSize = Enum.AutomaticSize.Y
+    telemetryFrame.Size = UDim2.new(1, 0, 0, 0)
+    telemetryFrame.LayoutOrder = summaryRow and 2 or 1
+    telemetryFrame.Parent = insightsCard
 
     local telemetryGrid = Instance.new("UIGridLayout")
     telemetryGrid.FillDirection = Enum.FillDirection.Horizontal
     telemetryGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
     telemetryGrid.VerticalAlignment = Enum.VerticalAlignment.Top
     telemetryGrid.SortOrder = Enum.SortOrder.LayoutOrder
-    telemetryGrid.CellPadding = UDim2.new(0, 12, 0, 12)
-    telemetryGrid.CellSize = UDim2.new(0.333, -12, 0, 96)
+    telemetryGrid.CellPadding = (theme.telemetry and theme.telemetry.cellPadding) or DEFAULT_THEME.telemetry.cellPadding
+    telemetryGrid.CellSize = (theme.telemetry and theme.telemetry.cellSize) or DEFAULT_THEME.telemetry.cellSize
+    telemetryGrid.FillDirectionMaxCells = (theme.telemetry and theme.telemetry.maxColumns) or DEFAULT_THEME.telemetry.maxColumns or 2
     telemetryGrid.Parent = telemetryFrame
 
     local telemetryCards = {}
@@ -1184,10 +1351,10 @@ function VerificationDashboard.new(options)
     controlPanel.BackgroundColor3 = theme.controls.sectionBackground or DEFAULT_THEME.controls.sectionBackground
     controlPanel.BackgroundTransparency = theme.controls.sectionTransparency or DEFAULT_THEME.controls.sectionTransparency
     controlPanel.BorderSizePixel = 0
-    controlPanel.LayoutOrder = 3
     controlPanel.AutomaticSize = Enum.AutomaticSize.Y
-    controlPanel.Size = UDim2.new(1, 0, 0, 200)
-    controlPanel.Parent = root
+    controlPanel.Size = UDim2.new(1, 0, 0, 0)
+    controlPanel.LayoutOrder = telemetryFrame.LayoutOrder + 1
+    controlPanel.Parent = insightsCard
 
     local controlCorner = Instance.new("UICorner")
     controlCorner.CornerRadius = DEFAULT_THEME.controls.toggleCorner
@@ -1235,7 +1402,7 @@ function VerificationDashboard.new(options)
     controlHeader.TextSize = theme.controls.headerTextSize or DEFAULT_THEME.controls.headerTextSize
     controlHeader.TextColor3 = theme.controls.headerColor or DEFAULT_THEME.controls.headerColor
     controlHeader.TextXAlignment = Enum.TextXAlignment.Left
-    controlHeader.Text = "Command matrix"
+    controlHeader.Text = "System toggles"
     controlHeader.LayoutOrder = 1
     controlHeader.Parent = controlStack
 
@@ -1253,7 +1420,7 @@ function VerificationDashboard.new(options)
     controlGrid.VerticalAlignment = Enum.VerticalAlignment.Top
     controlGrid.SortOrder = Enum.SortOrder.LayoutOrder
     controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
-    controlGrid.CellSize = UDim2.new(0.5, -12, 0, 96)
+    controlGrid.CellSize = UDim2.new(0.5, -12, 0, 112)
     controlGrid.FillDirectionMaxCells = 2
     controlGrid.Parent = controlGridContainer
 
@@ -1266,7 +1433,7 @@ function VerificationDashboard.new(options)
     timelineCard.BorderSizePixel = 0
     timelineCard.AutomaticSize = Enum.AutomaticSize.Y
     timelineCard.Size = UDim2.new(1, 0, 0, 200)
-    timelineCard.LayoutOrder = 4
+    timelineCard.LayoutOrder = 3
     timelineCard.Parent = root
 
     local timelineCorner = Instance.new("UICorner")
@@ -1357,7 +1524,7 @@ function VerificationDashboard.new(options)
     local actionsFrame = Instance.new("Frame")
     actionsFrame.Name = "Actions"
     actionsFrame.BackgroundTransparency = 1
-    actionsFrame.LayoutOrder = 5
+    actionsFrame.LayoutOrder = 4
     actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
     actionsFrame.Parent = root
@@ -1376,6 +1543,11 @@ function VerificationDashboard.new(options)
         _header = header,
         _title = title,
         _subtitle = subtitle,
+        _insightsCard = insightsCard,
+        _insightsStroke = insightsStroke,
+        _insightsGradient = insightsGradient,
+        _insightsLayout = insightsLayout,
+        _insightsPadding = insightsPadding,
         _summaryFrame = summaryRow and summaryRow.frame or nil,
         _summaryLayout = summaryRow and summaryRow.layout or nil,
         _summaryChips = summaryRow and summaryRow.chips or nil,
@@ -1424,6 +1596,7 @@ function VerificationDashboard.new(options)
     end
 
     self:_applyLogoTheme()
+    self:_applyInsightsTheme()
     self:_applySummaryTheme()
     self:_startLogoShimmer()
     self:setHeaderSummary(summaryDefinitions)
@@ -1521,6 +1694,42 @@ function VerificationDashboard:_applyLogoTheme()
         self._logoTagline.TextColor3 = config.taglineColor or DEFAULT_THEME.logo.taglineColor
         self._logoTagline.TextTransparency = config.taglineTransparency or DEFAULT_THEME.logo.taglineTransparency or 0
         self._logoTagline.Text = config.tagline or DEFAULT_THEME.logo.tagline
+    end
+end
+
+function VerificationDashboard:_applyInsightsTheme()
+    if self._destroyed then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local insightsTheme = mergeTable(DEFAULT_THEME.insights or {}, theme.insights or {})
+
+    if self._insightsCard then
+        self._insightsCard.BackgroundColor3 = insightsTheme.backgroundColor or theme.cardColor
+        self._insightsCard.BackgroundTransparency = insightsTheme.backgroundTransparency or theme.cardTransparency
+    end
+
+    if self._insightsStroke then
+        self._insightsStroke.Color = insightsTheme.strokeColor or theme.cardStrokeColor
+        self._insightsStroke.Transparency = insightsTheme.strokeTransparency or theme.cardStrokeTransparency
+    end
+
+    if self._insightsGradient then
+        self._insightsGradient.Color = insightsTheme.gradient or DEFAULT_THEME.insights.gradient
+        self._insightsGradient.Transparency = insightsTheme.gradientTransparency or DEFAULT_THEME.insights.gradientTransparency
+        self._insightsGradient.Rotation = insightsTheme.gradientRotation or 120
+    end
+
+    if self._insightsPadding then
+        self._insightsPadding.PaddingTop = UDim.new(0, insightsTheme.paddingTop or DEFAULT_THEME.insights.paddingTop or 16)
+        self._insightsPadding.PaddingBottom = UDim.new(0, insightsTheme.paddingBottom or DEFAULT_THEME.insights.paddingBottom or 16)
+        self._insightsPadding.PaddingLeft = UDim.new(0, insightsTheme.paddingHorizontal or DEFAULT_THEME.insights.paddingHorizontal or 18)
+        self._insightsPadding.PaddingRight = UDim.new(0, insightsTheme.paddingHorizontal or DEFAULT_THEME.insights.paddingHorizontal or 18)
+    end
+
+    if self._insightsLayout then
+        self._insightsLayout.Padding = UDim.new(0, insightsTheme.paddingBetween or DEFAULT_THEME.insights.paddingBetween or 16)
     end
 end
 
@@ -1678,6 +1887,7 @@ function VerificationDashboard:applyTheme(theme)
 
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
+    self:_applyInsightsTheme()
     self:_applySummaryTheme()
 
     if self._title then
@@ -1702,31 +1912,47 @@ function VerificationDashboard:applyTheme(theme)
         self._progressFill.BackgroundColor3 = currentTheme.accentColor
     end
 
-    if self._telemetryCards then
+    if self._telemetryGrid or self._telemetryCards then
         local telemetryTheme = currentTheme.telemetry or DEFAULT_THEME.telemetry
-        for _, card in pairs(self._telemetryCards) do
-            if card.frame then
-                card.frame.BackgroundColor3 = telemetryTheme.cardColor
-                card.frame.BackgroundTransparency = telemetryTheme.cardTransparency
-            end
-            if card.stroke then
-                card.stroke.Color = telemetryTheme.cardStrokeColor
-                card.stroke.Transparency = telemetryTheme.cardStrokeTransparency
-            end
-            if card.label then
-                card.label.Font = telemetryTheme.labelFont
-                card.label.TextSize = telemetryTheme.labelTextSize
-                card.label.TextColor3 = (telemetryTheme.accentColor or currentTheme.accentColor):Lerp(Color3.new(1, 1, 1), 0.35)
-            end
-            if card.value then
-                card.value.Font = telemetryTheme.valueFont
-                card.value.TextSize = telemetryTheme.valueTextSize
-                card.value.TextColor3 = Color3.fromRGB(235, 245, 255)
-            end
-            if card.hint then
-                card.hint.Font = telemetryTheme.labelFont
-                card.hint.TextSize = math.max((telemetryTheme.labelTextSize or DEFAULT_THEME.telemetry.labelTextSize) - 1, 10)
-                card.hint.TextColor3 = Color3.fromRGB(176, 196, 230)
+        if self._telemetryGrid then
+            self._telemetryGrid.CellPadding = telemetryTheme.cellPadding or DEFAULT_THEME.telemetry.cellPadding
+            self._telemetryGrid.CellSize = telemetryTheme.cellSize or DEFAULT_THEME.telemetry.cellSize
+            self._telemetryGrid.FillDirectionMaxCells = telemetryTheme.maxColumns or DEFAULT_THEME.telemetry.maxColumns or 2
+        end
+
+        if self._telemetryCards then
+            for _, card in pairs(self._telemetryCards) do
+                if card.frame then
+                    card.frame.BackgroundColor3 = telemetryTheme.cardColor
+                    card.frame.BackgroundTransparency = telemetryTheme.cardTransparency
+                end
+                if card.stroke then
+                    card.stroke.Color = telemetryTheme.cardStrokeColor
+                    card.stroke.Transparency = telemetryTheme.cardStrokeTransparency
+                end
+                if card.spark then
+                    card.spark.BackgroundColor3 = telemetryTheme.sparkColor or currentTheme.accentColor
+                    card.spark.BackgroundTransparency = telemetryTheme.sparkTransparency or 0.2
+                end
+                if card.label then
+                    card.label.Font = telemetryTheme.labelFont
+                    card.label.TextSize = telemetryTheme.labelTextSize
+                    card.label.TextColor3 = (telemetryTheme.accentColor or currentTheme.accentColor):Lerp(Color3.new(1, 1, 1), 0.35)
+                end
+                if card.value then
+                    local valueColor = telemetryTheme.valueColor or Color3.fromRGB(235, 245, 255)
+                    card.value.Font = telemetryTheme.valueFont
+                    card.value.TextSize = telemetryTheme.valueTextSize
+                    card.value.TextColor3 = valueColor
+                    card.defaultValueColor = valueColor
+                end
+                if card.hint then
+                    local hintColor = telemetryTheme.hintColor or Color3.fromRGB(176, 196, 230)
+                    card.hint.Font = telemetryTheme.labelFont
+                    card.hint.TextSize = math.max((telemetryTheme.labelTextSize or DEFAULT_THEME.telemetry.labelTextSize) - 1, 10)
+                    card.hint.TextColor3 = hintColor
+                    card.defaultHintColor = hintColor
+                end
             end
         end
     end
@@ -1857,10 +2083,33 @@ function VerificationDashboard:setTelemetry(telemetry)
 
         local valueText = payload
         local hintText
+        local valueColor
+        local hintColor
+        local sparkColor
+        local sparkTransparency
 
         if typeof(payload) == "table" then
             valueText = payload.value or payload.text or payload.display or payload[1]
             hintText = payload.hint or payload.description or payload.label
+            if payload.color and typeof(payload.color) == "Color3" then
+                valueColor = payload.color
+                sparkColor = payload.color
+            elseif payload.state then
+                local statusColor = self:_resolveStatusColor(payload.state)
+                if statusColor then
+                    valueColor = statusColor
+                    sparkColor = statusColor
+                end
+            end
+            if payload.hintColor and typeof(payload.hintColor) == "Color3" then
+                hintColor = payload.hintColor
+            end
+            if payload.sparkColor and typeof(payload.sparkColor) == "Color3" then
+                sparkColor = payload.sparkColor
+            end
+            if payload.sparkTransparency ~= nil then
+                sparkTransparency = payload.sparkTransparency
+            end
         end
 
         if valueText ~= nil and card.value then
@@ -1869,11 +2118,28 @@ function VerificationDashboard:setTelemetry(telemetry)
             card.value.Text = tostring(card.definition.value)
         end
 
+        if card.value then
+            card.value.TextColor3 = valueColor or card.defaultValueColor or card.value.TextColor3
+        end
+
         if card.hint then
             if hintText ~= nil then
                 card.hint.Text = tostring(hintText)
             elseif card.definition then
                 card.hint.Text = card.definition.hint or ""
+            end
+
+            card.hint.TextColor3 = hintColor or card.defaultHintColor or card.hint.TextColor3
+        end
+
+        if card.spark then
+            local theme = self._theme or DEFAULT_THEME
+            local telemetryTheme = theme.telemetry or DEFAULT_THEME.telemetry
+            card.spark.BackgroundColor3 = sparkColor or telemetryTheme.sparkColor or theme.accentColor
+            if sparkTransparency ~= nil then
+                card.spark.BackgroundTransparency = sparkTransparency
+            else
+                card.spark.BackgroundTransparency = telemetryTheme.sparkTransparency or 0.2
             end
         end
     end
@@ -1946,6 +2212,21 @@ local function resolveStyle(theme, status)
         return resolver(theme)
     end
     return STATUS_STYLE.pending(theme)
+end
+
+function VerificationDashboard:_resolveStatusColor(status)
+    if not status then
+        return nil
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local styleResolver = STATUS_STYLE[status]
+    if styleResolver then
+        local style = styleResolver(theme)
+        return style and style.color or nil
+    end
+
+    return nil
 end
 
 function VerificationDashboard:_applyStepState(id, status, message, tooltip)
