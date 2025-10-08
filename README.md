@@ -157,8 +157,8 @@ events with the neon verification dashboard above so players can follow each
 stage:
 
 - **Player Sync** — waits for `Players.LocalPlayer` and the character rig.
-- **Parry Input** — prepares the local `F` key via `VirtualInputManager` so
-  AutoParry can trigger parries without relying on replicated remotes.
+- **Remotes** — locates `ReplicatedStorage.Remotes` and validates the
+  `ParryButtonPress.parryButtonPress` bindable used to trigger parries.
 - **Success Events** — wires listeners for `ParrySuccess` / `ParrySuccessAll`
   so the core can reset cooldowns as soon as Blade Ball confirms a parry.
 - **Ball Telemetry** — verifies the configured workspace folder (defaults to
@@ -166,9 +166,9 @@ stage:
 
 Every stage reports a status ladder (`pending`/`waiting`, `ok`, `warning`, or
 `failed`). If any resource disappears after AutoParry is ready (for example, the
-virtual F-key bridge is disrupted or the balls folder is deleted) the
-orchestrator emits a `restarting` update, tears down listeners, and re-runs the
-verification flow before allowing parries again.
+parry remote is removed or the balls folder is deleted) the orchestrator emits a
+`restarting` update, tears down listeners, and re-runs the verification flow
+before allowing parries again.
 
 ### Verification configuration
 
@@ -179,6 +179,7 @@ sub-table passed to the loader):
 | --- | ---- | ------- | ----------- |
 | `playerTimeout` | `number` | `10` | Seconds to wait for `Players.LocalPlayer` |
 | `remotesTimeout` | `number` | `10` | Seconds to wait for `ReplicatedStorage.Remotes` |
+| `parryRemoteTimeout` | `number` | `10` | Seconds to wait for the parry remote candidate list |
 | `ballsFolderTimeout` | `number` | `5` | Seconds to wait for the configured balls folder (`nil` disables the wait) |
 | `verificationRetryInterval` | `number` | `0` | Delay between verification retries (set >0 to pace polling) |
 | `ballsFolderName` | `string` | `"Balls"` | Workspace folder searched during ball telemetry verification |
@@ -191,15 +192,15 @@ setups or point `ballsFolderName` at custom projectile folders.
 
 - **Timeout** — if a stage reports `timeout` the dashboard and loader emit a
   blocking error with the offending resource (`local-player`, `remotes-folder`,
-  `parry-input`, or `balls-folder`). Ensure Roblox is focused so VirtualInputManager
-  can deliver the F key, or increase the corresponding timeout.
+  `parry-remote`, or `balls-folder`). Check that Blade Ball finished loading or
+  increase the corresponding timeout.
 - **Warning on Ball Telemetry** — a `warning` status means AutoParry could not
   locate the balls folder before the timeout. AutoParry will keep running but
   cannot pre-emptively analyse projectiles; verify the folder name or increase
   the timeout.
-- **Restarting** — if the dashboard flashes `restarting` mid-match, the F-key
-  bridge or balls folder went missing. AutoParry will automatically rescan and
-  re-arm the virtual input once the resource returns.
+- **Restarting** — if the dashboard flashes `restarting` mid-match, Blade Ball
+  removed a required remote. AutoParry will automatically rescan and re-arm the
+  parry remote once the resource returns.
 
 ## Runtime API
 
