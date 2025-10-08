@@ -805,26 +805,7 @@ local function enterRespawnWaitState()
     updateStatusLabel({ "Auto-Parry F", "Status: waiting for respawn" })
 end
 
-local function clearBallVisualsInternal()
-    if BallHighlight then
-        BallHighlight.Enabled = false
-        BallHighlight.Adornee = nil
-    end
-    if BallBillboard then
-        BallBillboard.Enabled = false
-        BallBillboard.Adornee = nil
-    end
-    trackedBall = nil
-end
-
-local function safeClearBallVisuals()
-    -- Some exploit environments aggressively nil out locals when reloading the
-    -- module; guard the call so we gracefully fall back instead of throwing.
-    if typeof(clearBallVisualsInternal) == "function" then
-        clearBallVisualsInternal()
-        return
-    end
-
+local function clearBallVisuals()
     if BallHighlight then
         BallHighlight.Enabled = false
         BallHighlight.Adornee = nil
@@ -1007,7 +988,7 @@ local function ensureUi()
 end
 
 local function destroyUi()
-    safeClearBallVisuals()
+    clearBallVisuals()
     if UiRoot then
         UiRoot:Destroy()
     end
@@ -1315,7 +1296,7 @@ end
 
 local function handleHumanoidDied()
     releaseParry()
-    safeClearBallVisuals()
+    clearBallVisuals()
     enterRespawnWaitState()
     updateCharacter(nil)
     if immortalController then
@@ -1377,7 +1358,7 @@ end
 
 local function handleCharacterRemoving()
     releaseParry()
-    safeClearBallVisuals()
+    clearBallVisuals()
     enterRespawnWaitState()
     updateCharacter(nil)
 end
@@ -1577,7 +1558,7 @@ local function renderLoop()
 
     if not Character or not RootPart then
         updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
-        safeClearBallVisuals()
+        clearBallVisuals()
         releaseParry()
         return
     end
@@ -1586,7 +1567,7 @@ local function renderLoop()
     local folder = BallsFolder
     if not folder then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
-        safeClearBallVisuals()
+        clearBallVisuals()
         releaseParry()
         return
     end
@@ -1594,7 +1575,7 @@ local function renderLoop()
     if not state.enabled then
         releaseParry()
         updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
-        safeClearBallVisuals()
+        clearBallVisuals()
         updateToggleButton()
         return
     end
@@ -1605,7 +1586,7 @@ local function renderLoop()
     local ball = findRealBall(folder)
     if not ball or not ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
-        safeClearBallVisuals()
+        clearBallVisuals()
         releaseParry()
         return
     end
@@ -1613,7 +1594,7 @@ local function renderLoop()
     local ballId = getBallIdentifier(ball)
     if not ballId then
         updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
-        safeClearBallVisuals()
+        clearBallVisuals()
         releaseParry()
         return
     end
@@ -2173,7 +2154,7 @@ function AutoParry.destroy()
     initialization.token += 1
 
     destroyUi()
-    safeClearBallVisuals()
+    clearBallVisuals()
 
     initialization.started = false
     initialization.completed = false
