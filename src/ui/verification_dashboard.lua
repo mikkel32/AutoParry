@@ -1723,7 +1723,6 @@ function VerificationDashboard:_resolveBoundsFromRoot()
     local last = self._lastLayoutBounds
 
     return {
-        mode = last and last.mode or nil,
         containerWidth = width,
         containerHeight = (last and last.containerHeight) or height,
         dashboardWidth = width,
