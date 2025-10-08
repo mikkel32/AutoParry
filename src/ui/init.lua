@@ -167,6 +167,53 @@ local DEFAULT_CONTROL_SWITCHES = {
 
 local DEFAULT_VIEWPORT_SIZE = Vector2.new(DASHBOARD_THEME.widths.medium, 720)
 
+local function getLoaderProgressAndSignals()
+    local loaderState = rawget(_G, "AutoParryLoader")
+    if typeof(loaderState) ~= "table" then
+        return nil, nil
+    end
+
+    local context = loaderState.context
+    local progress = (typeof(context) == "table" and context.progress) or loaderState.progress
+    local signals = (typeof(context) == "table" and context.signals) or loaderState.signals
+
+    if typeof(progress) ~= "table" then
+        progress = nil
+    end
+    if typeof(signals) ~= "table" then
+        signals = nil
+    end
+
+    return progress, signals
+end
+
+local function isLoaderInProgress(progress)
+    if typeof(progress) ~= "table" then
+        return false
+    end
+
+    local started = tonumber(progress.started) or 0
+    local finished = tonumber(progress.finished) or 0
+    local failed = tonumber(progress.failed) or 0
+
+    if started <= 0 then
+        return false
+    end
+
+    return finished + failed < started
+end
+
+local function getActiveOverlay()
+    if typeof(LoadingOverlay) == "table" and typeof(LoadingOverlay.getActive) == "function" then
+        local ok, overlayInstance = pcall(LoadingOverlay.getActive)
+        if ok then
+            return overlayInstance
+        end
+    end
+
+    return nil
+end
+
 local function getBreakpointForViewport(viewportSize)
     local width = viewportSize and viewportSize.X or DEFAULT_VIEWPORT_SIZE.X
     if DASHBOARD_THEME.breakpoints and DASHBOARD_THEME.breakpoints.large and width >= DASHBOARD_THEME.breakpoints.large then
@@ -1815,6 +1862,13 @@ function UI.mount(options)
     local gui = ensureGuiRoot("AutoParryUI")
     local dashboard, shell = createDashboardFrame(gui)
 
+    if dashboard then
+        dashboard.Visible = false
+    end
+    if gui then
+        gui.Enabled = false
+    end
+
     local camera = Workspace.CurrentCamera
     if camera then
         shell:applyMetrics(resolveLayoutMetrics(camera.ViewportSize))
@@ -1873,6 +1927,7 @@ function UI.mount(options)
         _layoutMetrics = shell:getMetrics(),
         _diagnosticsSection = diagnostics,
         _diagnostics = diagnostics and diagnostics.panel,
+        _loaderPending = false,
     }, Controller)
 
     controller:setHotkeyDisplay(hotkeyDisplay)
@@ -1954,29 +2009,106 @@ function UI.mount(options)
     controller:_applyVisualState({ forceStatusRefresh = true })
     controller:setTooltip(options.tooltip)
 
-    local overlay = LoadingOverlay.getActive and LoadingOverlay.getActive()
-    if overlay and not overlay:isComplete() then
-        dashboard.Visible = false
-        gui.Enabled = false
-    else
-        gui.Enabled = true
+    local function trackConnection(connection)
+        if connection ~= nil then
+            table.insert(controller._connections, connection)
+        end
     end
 
-    if overlay and not overlay:isComplete() then
-        local connection
-        connection = overlay:onCompleted(function()
-            if controller._destroyed then
-                return
-            end
-            dashboard.Visible = true
-            gui.Enabled = true
-            if connection then
-                connection:Disconnect()
-                connection = nil
-            end
-        end)
-        table.insert(controller._connections, connection)
+    local function updateVisibility()
+        if controller._destroyed then
+            return
+        end
+
+        local overlayInstance = getActiveOverlay()
+        local overlayBlocking = overlayInstance and not overlayInstance:isComplete()
+        local shouldShow = not overlayBlocking and not controller._loaderPending
+
+        if dashboard then
+            dashboard.Visible = shouldShow
+        end
+        if gui then
+            gui.Enabled = shouldShow
+        end
     end
+
+    local overlayInstance = getActiveOverlay()
+    if overlayInstance and not overlayInstance:isComplete() then
+        trackConnection(overlayInstance:onCompleted(function()
+            updateVisibility()
+        end))
+    end
+
+    local refreshLoaderPending
+
+    local function attachLoaderSignals(signals)
+        if typeof(signals) ~= "table" then
+            return
+        end
+
+        local function attach(signal)
+            if typeof(signal) == "table" and typeof(signal.Connect) == "function" then
+                local ok, connection = pcall(function()
+                    return signal:Connect(function()
+                        refreshLoaderPending()
+                    end)
+                end)
+                if ok and connection then
+                    trackConnection(connection)
+                end
+            end
+        end
+
+        attach(signals.onFetchStarted)
+        attach(signals.onFetchCompleted)
+        attach(signals.onFetchFailed)
+        attach(signals.onAllComplete)
+    end
+
+    local loaderProgress, loaderSignals = getLoaderProgressAndSignals()
+    controller._loaderPending = isLoaderInProgress(loaderProgress)
+
+    refreshLoaderPending = function()
+        local progress, signals = getLoaderProgressAndSignals()
+        controller._loaderPending = isLoaderInProgress(progress)
+        if signals and signals ~= loaderSignals then
+            loaderSignals = signals
+            attachLoaderSignals(signals)
+        end
+        updateVisibility()
+    end
+
+    if loaderSignals then
+        attachLoaderSignals(loaderSignals)
+    end
+
+    updateVisibility()
+
+    task.spawn(function()
+        local observedOverlay = overlayInstance
+        while not controller._destroyed do
+            refreshLoaderPending()
+
+            local currentOverlay = getActiveOverlay()
+            if currentOverlay ~= observedOverlay then
+                observedOverlay = currentOverlay
+                if currentOverlay and not currentOverlay:isComplete() then
+                    trackConnection(currentOverlay:onCompleted(function()
+                        updateVisibility()
+                    end))
+                end
+                updateVisibility()
+            elseif currentOverlay and not currentOverlay:isComplete() and controller._loaderPending then
+                updateVisibility()
+            end
+
+            if not controller._loaderPending and (not currentOverlay or currentOverlay:isComplete()) then
+                task.wait(0.5)
+            else
+                task.wait(0.15)
+            end
+        end
+    end)
 
     controller:setEnabled(options.initialState == true, { silent = true, forceStatusRefresh = true })
 
