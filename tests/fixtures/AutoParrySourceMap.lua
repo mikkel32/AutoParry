@@ -15,6 +15,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:FindService("Stats")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require and Require("src/shared/util.lua") or require(script.Parent.Parent.shared.util)
@@ -115,6 +116,7 @@ local ballsFolderStatusSnapshot: { [string]: any }?
 local ballsFolderConnections: { RBXScriptConnection? }?
 local restartPending = false
 local scheduleRestart
+local syncImmortalContext = function() end
 
 local UiRoot: ScreenGui?
 local ToggleButton: TextButton?
@@ -456,7 +458,9 @@ local function clearRemoteState()
     watchedBallsFolder = nil
     pendingBallsFolderSearch = false
     ballsFolderStatusSnapshot = nil
-    syncImmortalContext()
+    if syncImmortalContext then
+        syncImmortalContext()
+    end
 end
 
 local function configureSuccessListeners(successRemotes)
@@ -773,7 +777,7 @@ local function updateStatusLabel(lines)
     end
 end
 
-local function syncImmortalContext()
+local function syncImmortalContextImpl()
     if not immortalController then
         return
     end
@@ -789,6 +793,8 @@ local function syncImmortalContext()
     immortalController:setBallsFolder(BallsFolder)
     immortalController:setEnabled(state.immortalEnabled)
 end
+
+syncImmortalContext = syncImmortalContextImpl
 
 local function enterRespawnWaitState()
     if LocalPlayer then
@@ -810,6 +816,57 @@ local function clearBallVisuals()
         BallBillboard.Adornee = nil
     end
     trackedBall = nil
+end
+
+local function destroyDashboardUi()
+    if not CoreGui then
+        return
+    end
+
+    for _, name in ipairs({ "AutoParryUI", "AutoParryLoadingOverlay" }) do
+        local screen = CoreGui:FindFirstChild(name)
+        if screen then
+            screen:Destroy()
+        end
+    end
+end
+
+local function removePlayerGuiUi()
+    local player = Players.LocalPlayer
+    if not player then
+        return
+    end
+
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then
+        return
+    end
+
+    local legacyScreen = playerGui:FindFirstChild("AutoParryF_UI")
+    if legacyScreen then
+        legacyScreen:Destroy()
+    end
+end
+
+local function removeAutoParryExperience()
+    local destroyOk, destroyErr = pcall(function()
+        if typeof(AutoParry) == "table" and typeof(AutoParry.destroy) == "function" then
+            AutoParry.destroy()
+        end
+    end)
+    if not destroyOk then
+        warn("AutoParry: failed to destroy core:", destroyErr)
+    end
+
+    GlobalEnv.Paws = nil
+
+    local cleanupOk, cleanupErr = pcall(function()
+        removePlayerGuiUi()
+        destroyDashboardUi()
+    end)
+    if not cleanupOk then
+        warn("AutoParry: failed to clear UI:", cleanupErr)
+    end
 end
 
 local function ensureUi()
@@ -872,8 +929,7 @@ local function ensureUi()
     removeBtn.Text = "REMOVE Auto-Parry"
     removeBtn.Parent = gui
     removeBtn.MouseButton1Click:Connect(function()
-        AutoParry.destroy()
-        GlobalEnv.Paws = nil
+        removeAutoParryExperience()
     end)
 
     local status = Instance.new("TextLabel")
@@ -2033,6 +2089,8 @@ function AutoParry.destroy()
 
     initProgress = { stage = "waiting-player" }
     applyInitStatus(cloneTable(initProgress))
+
+    GlobalEnv.Paws = nil
 
     initialization.destroyed = false
 end
@@ -5073,6 +5131,11 @@ local DEFAULT_THEME = {
     eventStrokeColor = Color3.fromRGB(70, 106, 170),
     eventStrokeTransparency = 0.65,
     eventCorner = UDim.new(0, 10),
+    eventListHeight = 240,
+    eventListPadding = Vector2.new(10, 8),
+    eventScrollBarThickness = 6,
+    eventScrollBarColor = Color3.fromRGB(82, 156, 255),
+    eventScrollBarTransparency = 0.25,
     eventMessageFont = Enum.Font.Gotham,
     eventMessageSize = 14,
     eventDetailSize = 13,
@@ -5142,6 +5205,17 @@ local function mergeTheme(theme)
         merged[key] = value
     end
     return merged
+end
+
+local function computeGridCellSize(columns, padding, height)
+    columns = math.max(1, math.floor(columns + 0.5))
+    padding = math.max(0, math.floor(padding + 0.5))
+    local scale = 1 / columns
+    local offset = 0
+    if columns > 1 then
+        offset = -math.floor(((columns - 1) * padding) / columns + 0.5)
+    end
+    return UDim2.new(scale, offset, 0, math.max(0, math.floor(height + 0.5)))
 end
 
 local function createSection(theme, parent, name, layoutOrder)
@@ -5492,6 +5566,31 @@ function DiagnosticsPanel.new(options)
         stageOrder[index] = definition.id
     end
 
+    if stagesSection.layout then
+        stagesSection.layout:Destroy()
+    end
+
+    local stageGrid = Instance.new("UIGridLayout")
+    stageGrid.Name = "StageGrid"
+    stageGrid.FillDirection = Enum.FillDirection.Horizontal
+    stageGrid.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    stageGrid.VerticalAlignment = Enum.VerticalAlignment.Top
+    stageGrid.SortOrder = Enum.SortOrder.LayoutOrder
+    stageGrid.CellPadding = UDim2.new(0, theme.sectionSpacing, 0, theme.sectionSpacing)
+    stageGrid.CellSize = computeGridCellSize(2, theme.sectionSpacing, 76)
+    stageGrid.Parent = stagesSection.body
+    stagesSection.layout = stageGrid
+
+    local stageGridDefaults = {
+        cellPadding = stageGrid.CellPadding,
+        cellSize = stageGrid.CellSize,
+        maxColumns = 2,
+        padding = theme.sectionSpacing,
+        defaultHeight = 76,
+        singleHeight = 84,
+    }
+    local stageSingleCellSize = computeGridCellSize(1, theme.sectionSpacing, stageGridDefaults.singleHeight)
+
     local filterRow = Instance.new("Frame")
     filterRow.Name = "Filters"
     filterRow.BackgroundTransparency = 1
@@ -5507,12 +5606,75 @@ function DiagnosticsPanel.new(options)
 
     local filterButtons = {}
 
-    local eventList = Instance.new("Frame")
+    local eventBase = theme.eventBackground or DEFAULT_THEME.eventBackground
+    local accentColor = (theme.filterButton and theme.filterButton.activeColor)
+        or (theme.statusColors and theme.statusColors.active)
+        or (DEFAULT_THEME.statusColors and DEFAULT_THEME.statusColors.active)
+        or Color3.fromRGB(112, 198, 255)
+
+    local eventViewport = Instance.new("Frame")
+    eventViewport.Name = "EventViewport"
+    eventViewport.BackgroundColor3 = eventBase
+    eventViewport.BackgroundTransparency = theme.eventTransparency or DEFAULT_THEME.eventTransparency or 0.04
+    eventViewport.BorderSizePixel = 0
+    eventViewport.AutomaticSize = Enum.AutomaticSize.None
+    eventViewport.Size = UDim2.new(1, 0, 0, theme.eventListHeight or DEFAULT_THEME.eventListHeight)
+    eventViewport.ClipsDescendants = true
+    eventViewport.Parent = eventsSection.body
+
+    local eventViewportCorner = Instance.new("UICorner")
+    eventViewportCorner.CornerRadius = theme.eventCorner or DEFAULT_THEME.eventCorner or UDim.new(0, 10)
+    eventViewportCorner.Parent = eventViewport
+
+    local eventViewportStroke = Instance.new("UIStroke")
+    eventViewportStroke.Color = theme.eventStrokeColor or DEFAULT_THEME.eventStrokeColor
+    eventViewportStroke.Transparency = theme.eventStrokeTransparency or DEFAULT_THEME.eventStrokeTransparency or 0.4
+    eventViewportStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    eventViewportStroke.Parent = eventViewport
+
+    local viewportGradient = Instance.new("UIGradient")
+    viewportGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, eventBase:Lerp(accentColor, 0.08)),
+        ColorSequenceKeypoint.new(1, eventBase),
+    })
+    viewportGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, math.clamp((theme.eventTransparency or 0.04) + 0.05, 0, 1)),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    viewportGradient.Rotation = 90
+    viewportGradient.Parent = eventViewport
+
+    local viewportPadding = Instance.new("UIPadding")
+    viewportPadding.PaddingTop = UDim.new(0, 6)
+    viewportPadding.PaddingBottom = UDim.new(0, 6)
+    viewportPadding.PaddingLeft = UDim.new(0, 6)
+    viewportPadding.PaddingRight = UDim.new(0, 6)
+    viewportPadding.Parent = eventViewport
+
+    local eventList = Instance.new("ScrollingFrame")
     eventList.Name = "Events"
+    eventList.Active = true
     eventList.BackgroundTransparency = 1
-    eventList.Size = UDim2.new(1, 0, 0, 0)
-    eventList.AutomaticSize = Enum.AutomaticSize.Y
-    eventList.Parent = eventsSection.body
+    eventList.BorderSizePixel = 0
+    eventList.AutomaticSize = Enum.AutomaticSize.None
+    eventList.Size = UDim2.new(1, 0, 1, 0)
+    eventList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    eventList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    eventList.ScrollBarThickness = theme.eventScrollBarThickness or DEFAULT_THEME.eventScrollBarThickness or 6
+    eventList.ScrollBarImageColor3 = theme.eventScrollBarColor or DEFAULT_THEME.eventScrollBarColor
+    eventList.ScrollBarImageTransparency = theme.eventScrollBarTransparency or DEFAULT_THEME.eventScrollBarTransparency or 0.2
+    eventList.ScrollingDirection = Enum.ScrollingDirection.Y
+    eventList.ElasticBehavior = Enum.ElasticBehavior.Never
+    eventList.Parent = eventViewport
+    eventsSection.list = eventList
+
+    local eventPadding = theme.eventListPadding or DEFAULT_THEME.eventListPadding or Vector2.new(10, 8)
+    local eventListPadding = Instance.new("UIPadding")
+    eventListPadding.PaddingTop = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingBottom = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingLeft = UDim.new(0, eventPadding.X)
+    eventListPadding.PaddingRight = UDim.new(0, eventPadding.X)
+    eventListPadding.Parent = eventList
 
     local eventLayout = Instance.new("UIListLayout")
     eventLayout.FillDirection = Enum.FillDirection.Vertical
@@ -5543,13 +5705,19 @@ function DiagnosticsPanel.new(options)
         },
         _stageRows = stageRows,
         _stageOrder = stageOrder,
+        _stageGrid = stageGrid,
+        _stageGridDefaults = stageGridDefaults,
+        _stageSingleCellSize = stageSingleCellSize,
         _events = {},
         _eventRows = {},
+        _eventsList = eventList,
         _filters = {},
         _filterButtons = filterButtons,
+        _filterLayout = filterLayout,
         _activeFilter = nil,
         _badges = {},
         _startClock = os.clock(),
+        _connections = {},
     }, DiagnosticsPanel)
 
     for _, filter in ipairs(DEFAULT_FILTERS) do
@@ -5579,6 +5747,14 @@ function DiagnosticsPanel.new(options)
 
     self:setFilter("all")
 
+    local resizeConnection = frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        self:_updateLayout()
+    end)
+    table.insert(self._connections, resizeConnection)
+    task.defer(function()
+        self:_updateLayout()
+    end)
+
     return self
 end
 
@@ -5603,6 +5779,43 @@ function DiagnosticsPanel:_styleStageRow(row, stage)
     row.title.TextColor3 = color
     row.message.TextColor3 = theme.statusTextColor
     row.detail.TextColor3 = theme.statusDetailColor
+end
+
+function DiagnosticsPanel:_updateLayout(width)
+    if self._destroyed then
+        return
+    end
+
+    local frame = self.frame
+    if not frame then
+        return
+    end
+
+    width = tonumber(width) or frame.AbsoluteSize.X or 0
+
+    local grid = self._stageGrid
+    if grid and self._stageGridDefaults then
+        local defaults = self._stageGridDefaults
+        local padding = defaults.cellPadding or UDim2.new(0, defaults.padding or 0, 0, defaults.padding or 0)
+        local paddingX = (padding and padding.X and padding.X.Offset) or defaults.padding or 0
+        local defaultHeight = defaults.defaultHeight or 76
+        local singleHeight = defaults.singleHeight or (defaultHeight + 6)
+        if width <= 380 then
+            grid.FillDirectionMaxCells = 1
+            grid.CellSize = self._stageSingleCellSize or computeGridCellSize(1, paddingX, singleHeight)
+        else
+            grid.FillDirectionMaxCells = defaults.maxColumns or 2
+            grid.CellSize = defaults.cellSize or computeGridCellSize(2, paddingX, defaultHeight)
+        end
+    end
+
+    if self._filterLayout then
+        if width <= 420 then
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        else
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+    end
 end
 
 function DiagnosticsPanel:_updateEventRow(entry, event)
@@ -5718,7 +5931,17 @@ function DiagnosticsPanel:pushEvent(event)
 
     table.insert(self._events, copied)
 
-    local entry = createEventRow(self._theme, self._sections.events.body.Events, copied, self._startClock)
+    local eventsList = self._eventsList
+    if not eventsList and self._sections and self._sections.events then
+        eventsList = self._sections.events.list
+        self._eventsList = eventsList
+    end
+
+    if not eventsList then
+        return
+    end
+
+    local entry = createEventRow(self._theme, eventsList, copied, self._startClock)
     entry.event = copied
     table.insert(self._eventRows, entry)
 
@@ -5792,6 +6015,17 @@ function DiagnosticsPanel:destroy()
 
     self._destroyed = true
 
+    if self._connections then
+        for _, connection in ipairs(self._connections) do
+            if connection and connection.Disconnect then
+                connection:Disconnect()
+            elseif connection and connection.disconnect then
+                connection:disconnect()
+            end
+        end
+        self._connections = nil
+    end
+
     if self.frame then
         self.frame:Destroy()
         self.frame = nil
@@ -5800,6 +6034,7 @@ function DiagnosticsPanel:destroy()
     self._sections = nil
     self._stageRows = nil
     self._eventRows = nil
+    self._eventsList = nil
     self._badges = nil
 end
 
@@ -9320,7 +9555,7 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
         infoSize = infoSize,
         dashboardSize = dashboardSize,
         viewportWidth = math.floor(viewportWidth + 0.5),
-        viewportHeight = (viewportSize and math.floor(viewportHeight + 0.5)) or scaledHeight,
+        viewportHeight = math.floor(viewportHeight + 0.5),
     }
 
     if contentLayout then
@@ -9402,7 +9637,7 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
         infoHeight = math.floor(target.infoHeight * scale + 0.5),
         contentHeight = math.floor(target.contentHeight * scale + 0.5),
         viewportWidth = viewportWidth and math.floor(viewportWidth + 0.5) or scaledWidth,
-        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or nil,
+        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or scaledHeight,
         scale = scale,
         raw = target,
         rawWidth = target.width,
@@ -10860,10 +11095,40 @@ local DEFAULT_THEME = {
         glyphTransparency = 0.15,
     },
     layout = {
-        widthScale = 0.96,
-        maxWidth = 720,
-        minWidth = 420,
-        horizontalPadding = 16,
+        widthScale = 1,
+        maxWidth = 1100,
+        minWidth = 560,
+        horizontalPadding = 24,
+        contentSpacing = 20,
+        contentColumnPadding = 24,
+        primaryColumnRatio = 0.64,
+        primaryColumnMinWidth = 420,
+        secondaryColumnMinWidth = 320,
+    },
+    timeline = {
+        headerFont = Enum.Font.GothamSemibold,
+        headerTextSize = 18,
+        headerColor = Color3.fromRGB(226, 236, 252),
+        subtitleFont = Enum.Font.Gotham,
+        subtitleTextSize = 15,
+        subtitleColor = Color3.fromRGB(176, 192, 224),
+        subtitleTintMix = 0.22,
+        badgeFont = Enum.Font.GothamSemibold,
+        badgeTextSize = 13,
+        badgeTextColor = Color3.fromRGB(226, 236, 252),
+        badgeBackground = Color3.fromRGB(30, 36, 48),
+        badgeBackgroundTransparency = 0.18,
+        badgeBackgroundHighlight = 0.16,
+        badgeStrokeColor = Color3.fromRGB(88, 142, 218),
+        badgeStrokeTransparency = 0.28,
+        badgeStrokeMix = 0.18,
+        badgeAccentColor = Color3.fromRGB(112, 198, 255),
+        badgeAccentTransparency = 0,
+        badgeDefaultColor = Color3.fromRGB(112, 198, 255),
+        badgeActiveColor = Color3.fromRGB(112, 198, 255),
+        badgeSuccessColor = Color3.fromRGB(118, 228, 182),
+        badgeWarningColor = Color3.fromRGB(255, 198, 110),
+        badgeDangerColor = Color3.fromRGB(248, 110, 128),
     },
     iconography = {
         pending = "rbxassetid://6031071050",
@@ -10890,7 +11155,9 @@ local DEFAULT_THEME = {
         sparkTransparency = 0.25,
         cellSize = UDim2.new(0.5, -12, 0, 104),
         cellPadding = UDim2.new(0, 12, 0, 12),
-        maxColumns = 2,
+        maxColumns = 3,
+        compactHeight = 92,
+        singleColumnHeight = 116,
     },
     controls = {
         headerFont = Enum.Font.GothamSemibold,
@@ -10930,6 +11197,9 @@ local DEFAULT_THEME = {
         iconSize = UDim2.new(0, 34, 0, 34),
         iconColor = Color3.fromRGB(210, 224, 255),
         iconAccentColor = Color3.fromRGB(112, 198, 255),
+        maxColumns = 3,
+        compactHeight = 96,
+        singleColumnHeight = 120,
     },
     summary = {
         chipBackground = Color3.fromRGB(30, 36, 48),
@@ -11025,6 +11295,7 @@ local DEFAULT_HEADER_SUMMARY = {
         id = "status",
         label = "System",
         value = "Online",
+        dynamic = true,
     },
     {
         id = "delta",
@@ -11095,6 +11366,17 @@ local function mergeTable(base, overrides)
         end
     end
     return merged
+end
+
+local function computeGridCellSize(columns, padding, height)
+    columns = math.max(1, math.floor(columns + 0.5))
+    padding = math.max(0, math.floor(padding + 0.5))
+    local scale = 1 / columns
+    local offset = 0
+    if columns > 1 then
+        offset = -math.floor(((columns - 1) * padding) / columns + 0.5)
+    end
+    return UDim2.new(scale, offset, 0, math.max(0, math.floor(height + 0.5)))
 end
 
 local function createLogoBadge(parent, theme)
@@ -11261,6 +11543,7 @@ local function createSummaryChip(parent, theme, definition, index)
         id = identifier,
         defaultLabel = defaultLabel,
         defaultValue = defaultValue,
+        dynamic = definition.dynamic,
     }
 end
 
@@ -11650,7 +11933,8 @@ local function createControlToggle(parent, theme, definition)
     button.AutoButtonColor = false
     button.BackgroundColor3 = controlsTheme.toggleOffColor
     button.BorderSizePixel = 0
-    button.Size = UDim2.new(0, 260, 0, 112)
+    button.Size = UDim2.new(1, -4, 1, -4)
+    button.SizeConstraint = Enum.SizeConstraint.RelativeXY
     button.Text = ""
     button.Parent = parent
 
@@ -11923,6 +12207,54 @@ function VerificationDashboard.new(options)
     header.LayoutOrder = 1
     header.Parent = canvas
 
+    local contentRow = Instance.new("Frame")
+    contentRow.Name = "ContentRow"
+    contentRow.BackgroundTransparency = 1
+    contentRow.AutomaticSize = Enum.AutomaticSize.Y
+    contentRow.Size = UDim2.new(1, 0, 0, 0)
+    contentRow.LayoutOrder = 2
+    contentRow.Parent = canvas
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Vertical
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    contentLayout.Parent = contentRow
+
+    local primaryColumn = Instance.new("Frame")
+    primaryColumn.Name = "PrimaryColumn"
+    primaryColumn.BackgroundTransparency = 1
+    primaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    primaryColumn.LayoutOrder = 1
+    primaryColumn.Parent = contentRow
+
+    local primaryLayout = Instance.new("UIListLayout")
+    primaryLayout.FillDirection = Enum.FillDirection.Vertical
+    primaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    primaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    primaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    primaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    primaryLayout.Parent = primaryColumn
+
+    local secondaryColumn = Instance.new("Frame")
+    secondaryColumn.Name = "SecondaryColumn"
+    secondaryColumn.BackgroundTransparency = 1
+    secondaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    secondaryColumn.LayoutOrder = 2
+    secondaryColumn.Parent = contentRow
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Vertical
+    secondaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    secondaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    secondaryLayout.Parent = secondaryColumn
+
     local headerLayout = Instance.new("UIListLayout")
     headerLayout.FillDirection = Enum.FillDirection.Horizontal
     headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -12032,10 +12364,10 @@ function VerificationDashboard.new(options)
     insightsCard.BackgroundColor3 = insightsTheme.backgroundColor or theme.cardColor
     insightsCard.BackgroundTransparency = insightsTheme.backgroundTransparency or theme.cardTransparency
     insightsCard.BorderSizePixel = 0
-    insightsCard.LayoutOrder = 2
+    insightsCard.LayoutOrder = 1
     insightsCard.AutomaticSize = Enum.AutomaticSize.Y
     insightsCard.Size = UDim2.new(1, 0, 0, 0)
-    insightsCard.Parent = canvas
+    insightsCard.Parent = primaryColumn
 
     local insightsCorner = Instance.new("UICorner")
     insightsCorner.CornerRadius = UDim.new(0, 16)
@@ -12094,6 +12426,22 @@ function VerificationDashboard.new(options)
     telemetryGrid.CellSize = (theme.telemetry and theme.telemetry.cellSize) or DEFAULT_THEME.telemetry.cellSize
     telemetryGrid.FillDirectionMaxCells = (theme.telemetry and theme.telemetry.maxColumns) or DEFAULT_THEME.telemetry.maxColumns or 2
     telemetryGrid.Parent = telemetryFrame
+
+    local telemetryPaddingX = telemetryGrid.CellPadding.X.Offset or 0
+    local telemetryDefaultHeight = telemetryGrid.CellSize.Y.Offset
+    if telemetryDefaultHeight <= 0 then
+        telemetryDefaultHeight = (theme.telemetry and theme.telemetry.cellSize and theme.telemetry.cellSize.Y.Offset)
+            or DEFAULT_THEME.telemetry.cellSize.Y.Offset
+    end
+    local telemetryCompactHeight = (theme.telemetry and theme.telemetry.compactHeight)
+        or DEFAULT_THEME.telemetry.compactHeight
+        or math.max(telemetryDefaultHeight - 12, 84)
+    local telemetrySingleHeight = (theme.telemetry and theme.telemetry.singleColumnHeight)
+        or DEFAULT_THEME.telemetry.singleColumnHeight
+        or math.max(telemetryDefaultHeight + 12, telemetryDefaultHeight)
+    local telemetryMaxColumns = telemetryGrid.FillDirectionMaxCells
+    local telemetryLargeCellSize = computeGridCellSize(3, telemetryPaddingX, telemetryCompactHeight)
+    local telemetrySingleCellSize = computeGridCellSize(1, telemetryPaddingX, telemetrySingleHeight)
 
     local telemetryCards = {}
     for index, definition in ipairs(DEFAULT_TELEMETRY) do
@@ -12177,10 +12525,28 @@ function VerificationDashboard.new(options)
     controlGrid.SortOrder = Enum.SortOrder.LayoutOrder
     controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
     controlGrid.CellSize = UDim2.new(0.5, -12, 0, 112)
-    controlGrid.FillDirectionMaxCells = 2
+    controlGrid.FillDirectionMaxCells = (theme.controls and theme.controls.maxColumns)
+        or DEFAULT_THEME.controls.maxColumns
+        or 2
     controlGrid.Parent = controlGridContainer
 
+    local controlPaddingX = controlGrid.CellPadding.X.Offset or 0
+    local controlDefaultHeight = controlGrid.CellSize.Y.Offset
+    if controlDefaultHeight <= 0 then
+        controlDefaultHeight = DEFAULT_THEME.controls.toggleHeight or 112
+    end
+    local controlCompactHeight = (theme.controls and theme.controls.compactHeight)
+        or DEFAULT_THEME.controls.compactHeight
+        or math.max(controlDefaultHeight - 12, 92)
+    local controlSingleHeight = (theme.controls and theme.controls.singleColumnHeight)
+        or DEFAULT_THEME.controls.singleColumnHeight
+        or math.max(controlDefaultHeight + 12, controlDefaultHeight)
+    local controlLargeCellSize = computeGridCellSize(3, controlPaddingX, controlCompactHeight)
+    local controlSingleCellSize = computeGridCellSize(1, controlPaddingX, controlSingleHeight)
+
     local controlButtons = {}
+
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
 
     local timelineCard = Instance.new("Frame")
     timelineCard.Name = "TimelineCard"
@@ -12189,8 +12555,8 @@ function VerificationDashboard.new(options)
     timelineCard.BorderSizePixel = 0
     timelineCard.AutomaticSize = Enum.AutomaticSize.Y
     timelineCard.Size = UDim2.new(1, 0, 0, 200)
-    timelineCard.LayoutOrder = 3
-    timelineCard.Parent = canvas
+    timelineCard.LayoutOrder = 2
+    timelineCard.Parent = secondaryColumn
 
     local timelineCorner = Instance.new("UICorner")
     timelineCorner.CornerRadius = UDim.new(0, 14)
@@ -12223,6 +12589,101 @@ function VerificationDashboard.new(options)
     timelineGradient.Rotation = 125
     timelineGradient.Parent = timelineCard
 
+    local timelineHeader = Instance.new("Frame")
+    timelineHeader.Name = "TimelineHeader"
+    timelineHeader.BackgroundTransparency = 1
+    timelineHeader.AutomaticSize = Enum.AutomaticSize.Y
+    timelineHeader.Size = UDim2.new(1, 0, 0, 0)
+    timelineHeader.LayoutOrder = 1
+    timelineHeader.Parent = timelineCard
+
+    local timelineHeaderLayout = Instance.new("UIListLayout")
+    timelineHeaderLayout.FillDirection = Enum.FillDirection.Vertical
+    timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    timelineHeaderLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    timelineHeaderLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    timelineHeaderLayout.Padding = UDim.new(0, 6)
+    timelineHeaderLayout.Parent = timelineHeader
+
+    local headerRow = Instance.new("Frame")
+    headerRow.Name = "HeaderRow"
+    headerRow.BackgroundTransparency = 1
+    headerRow.Size = UDim2.new(1, 0, 0, 32)
+    headerRow.LayoutOrder = 1
+    headerRow.Parent = timelineHeader
+
+    local timelineTitle = Instance.new("TextLabel")
+    timelineTitle.Name = "Title"
+    timelineTitle.BackgroundTransparency = 1
+    timelineTitle.AnchorPoint = Vector2.new(0, 0.5)
+    timelineTitle.Position = UDim2.new(0, 0, 0.5, 0)
+    timelineTitle.Size = UDim2.new(1, -150, 0, 26)
+    timelineTitle.Text = "Verification timeline"
+    timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+    timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+    timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+    timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    timelineTitle.Parent = headerRow
+
+    local badgeContainer = Instance.new("Frame")
+    badgeContainer.Name = "StatusBadge"
+    badgeContainer.AnchorPoint = Vector2.new(1, 0.5)
+    badgeContainer.Position = UDim2.new(1, 0, 0.5, 0)
+    badgeContainer.AutomaticSize = Enum.AutomaticSize.XY
+    badgeContainer.Size = UDim2.new(0, 144, 0, 28)
+    badgeContainer.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+    badgeContainer.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    badgeContainer.BorderSizePixel = 0
+    badgeContainer.Parent = headerRow
+
+    local badgeCorner = Instance.new("UICorner")
+    badgeCorner.CornerRadius = UDim.new(0, 12)
+    badgeCorner.Parent = badgeContainer
+
+    local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.Thickness = 1
+    badgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+    badgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    badgeStroke.Parent = badgeContainer
+
+    local badgeAccent = Instance.new("Frame")
+    badgeAccent.Name = "Accent"
+    badgeAccent.AnchorPoint = Vector2.new(0, 0.5)
+    badgeAccent.Position = UDim2.new(0, 0, 0.5, 0)
+    badgeAccent.Size = UDim2.new(0, 4, 1, 0)
+    badgeAccent.BorderSizePixel = 0
+    badgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+    badgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    badgeAccent.Parent = badgeContainer
+
+    local badgeLabel = Instance.new("TextLabel")
+    badgeLabel.Name = "Label"
+    badgeLabel.BackgroundTransparency = 1
+    badgeLabel.AnchorPoint = Vector2.new(0, 0.5)
+    badgeLabel.Position = UDim2.new(0, 8, 0.5, 0)
+    badgeLabel.Size = UDim2.new(1, -16, 0, 0)
+    badgeLabel.AutomaticSize = Enum.AutomaticSize.Y
+    badgeLabel.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+    badgeLabel.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    badgeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    badgeLabel.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    badgeLabel.Text = "Preparing checks"
+    badgeLabel.Parent = badgeContainer
+
+    local timelineStatus = Instance.new("TextLabel")
+    timelineStatus.Name = "Status"
+    timelineStatus.BackgroundTransparency = 1
+    timelineStatus.AutomaticSize = Enum.AutomaticSize.Y
+    timelineStatus.Size = UDim2.new(1, 0, 0, 0)
+    timelineStatus.TextXAlignment = Enum.TextXAlignment.Left
+    timelineStatus.TextWrapped = true
+    timelineStatus.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+    timelineStatus.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    timelineStatus.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    timelineStatus.Text = "Awaiting verification updates."
+    timelineStatus.LayoutOrder = 2
+    timelineStatus.Parent = timelineHeader
+
     local timelineLayout = Instance.new("UIListLayout")
     timelineLayout.FillDirection = Enum.FillDirection.Vertical
     timelineLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -12238,7 +12699,7 @@ function VerificationDashboard.new(options)
     progressTrack.BackgroundTransparency = math.clamp((theme.cardTransparency or 0) + 0.12, 0, 1)
     progressTrack.BorderSizePixel = 0
     progressTrack.ZIndex = 2
-    progressTrack.LayoutOrder = 1
+    progressTrack.LayoutOrder = 2
     progressTrack.Parent = timelineCard
 
     local trackCorner = Instance.new("UICorner")
@@ -12279,7 +12740,7 @@ function VerificationDashboard.new(options)
     listFrame.BackgroundTransparency = 1
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.Size = UDim2.new(1, 0, 0, 0)
-    listFrame.LayoutOrder = 2
+    listFrame.LayoutOrder = 3
     listFrame.Parent = timelineCard
 
     local listLayout = Instance.new("UIListLayout")
@@ -12302,7 +12763,7 @@ function VerificationDashboard.new(options)
     local actionsFrame = Instance.new("Frame")
     actionsFrame.Name = "Actions"
     actionsFrame.BackgroundTransparency = 1
-    actionsFrame.LayoutOrder = 4
+    actionsFrame.LayoutOrder = 3
     actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
     actionsFrame.Parent = canvas
@@ -12313,6 +12774,44 @@ function VerificationDashboard.new(options)
     actionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
     actionsLayout.Padding = UDim.new(0, 12)
     actionsLayout.Parent = actionsFrame
+
+    local contentDefaults = {
+        fillDirection = contentLayout.FillDirection,
+        horizontalAlignment = contentLayout.HorizontalAlignment,
+        verticalAlignment = contentLayout.VerticalAlignment,
+        padding = contentLayout.Padding,
+    }
+
+    local columnDefaults = {
+        primarySize = primaryColumn.Size,
+        primaryOrder = primaryColumn.LayoutOrder,
+        secondarySize = secondaryColumn.Size,
+        secondaryOrder = secondaryColumn.LayoutOrder,
+    }
+
+    local primaryLayoutDefaults = {
+        padding = primaryLayout.Padding,
+        horizontalAlignment = primaryLayout.HorizontalAlignment,
+    }
+
+    local secondaryLayoutDefaults = {
+        padding = secondaryLayout.Padding,
+        horizontalAlignment = secondaryLayout.HorizontalAlignment,
+    }
+
+    local timelineHeaderDefaults = {
+        horizontalAlignment = timelineHeaderLayout.HorizontalAlignment,
+        titleAlignment = timelineTitle.TextXAlignment,
+        statusAlignment = timelineStatus.TextXAlignment,
+    }
+
+    local timelineBadgeDefaults = {
+        anchorPoint = badgeContainer.AnchorPoint,
+        position = badgeContainer.Position,
+    }
+
+    local insightsCardSizeDefault = insightsCard.Size
+    local timelineCardSizeDefault = timelineCard.Size
 
     local headerDefaults = {
         fillDirection = headerLayout.FillDirection,
@@ -12337,10 +12836,21 @@ function VerificationDashboard.new(options)
     } or nil
     local telemetryDefaults = {
         cellSize = telemetryGrid.CellSize,
-        maxColumns = telemetryGrid.FillDirectionMaxCells,
+        cellPadding = telemetryGrid.CellPadding,
+        maxColumns = telemetryMaxColumns,
+        defaultHeight = telemetryDefaultHeight,
+        compactHeight = telemetryCompactHeight,
+        singleHeight = telemetrySingleHeight,
+        paddingX = telemetryPaddingX,
     }
     local controlGridDefaults = {
+        cellSize = controlGrid.CellSize,
+        cellPadding = controlGrid.CellPadding,
         maxColumns = controlGrid.FillDirectionMaxCells,
+        defaultHeight = controlDefaultHeight,
+        compactHeight = controlCompactHeight,
+        singleHeight = controlSingleHeight,
+        paddingX = controlPaddingX,
     }
     local actionsDefaults = {
         fillDirection = actionsLayout.FillDirection,
@@ -12385,23 +12895,40 @@ function VerificationDashboard.new(options)
         _headerLayout = headerLayout,
         _title = title,
         _subtitle = subtitle,
+        _contentRow = contentRow,
+        _contentLayout = contentLayout,
+        _contentDefaults = contentDefaults,
+        _primaryColumn = primaryColumn,
+        _secondaryColumn = secondaryColumn,
+        _primaryLayout = primaryLayout,
+        _secondaryLayout = secondaryLayout,
+        _columnDefaults = columnDefaults,
+        _primaryLayoutDefaults = primaryLayoutDefaults,
+        _secondaryLayoutDefaults = secondaryLayoutDefaults,
         _insightsCard = insightsCard,
         _insightsStroke = insightsStroke,
         _insightsGradient = insightsGradient,
         _insightsLayout = insightsLayout,
         _insightsPadding = insightsPadding,
+        _insightsSizeDefaults = insightsCardSizeDefault,
         _summaryFrame = summaryRow and summaryRow.frame or nil,
         _summaryLayout = summaryRow and summaryRow.layout or nil,
         _summaryChips = summaryRow and summaryRow.chips or nil,
         _summaryDefinitions = Util.deepCopy(summaryDefinitions),
         _telemetryFrame = telemetryFrame,
         _telemetryGrid = telemetryGrid,
+        _telemetryDefaults = telemetryDefaults,
+        _telemetryLargeCellSize = telemetryLargeCellSize,
+        _telemetrySingleCellSize = telemetrySingleCellSize,
         _telemetryCards = telemetryCards,
         _controlPanel = controlPanel,
         _controlStroke = controlStroke,
         _controlGradient = controlGradient,
         _controlHeader = controlHeader,
         _controlGrid = controlGrid,
+        _controlGridDefaults = controlGridDefaults,
+        _controlLargeCellSize = controlLargeCellSize,
+        _controlSingleCellSize = controlSingleCellSize,
         _controlButtons = controlButtons,
         _controlConnections = {},
         _controlState = {},
@@ -12410,6 +12937,16 @@ function VerificationDashboard.new(options)
         _timelineCard = timelineCard,
         _timelineStroke = timelineStroke,
         _timelineGradient = timelineGradient,
+        _timelineHeader = timelineHeader,
+        _timelineHeaderLayout = timelineHeaderLayout,
+        _timelineHeaderDefaults = timelineHeaderDefaults,
+        _timelineTitle = timelineTitle,
+        _timelineStatusLabel = timelineStatus,
+        _timelineBadgeFrame = badgeContainer,
+        _timelineBadge = badgeLabel,
+        _timelineBadgeAccent = badgeAccent,
+        _timelineBadgeStroke = badgeStroke,
+        _timelineBadgeDefaults = timelineBadgeDefaults,
         _progressTrack = progressTrack,
         _progressFill = progressFill,
         _progressTrackStroke = trackStroke,
@@ -12417,6 +12954,7 @@ function VerificationDashboard.new(options)
         _stepsFrame = listFrame,
         _steps = steps,
         _stepStates = {},
+        _timelineSizeDefaults = timelineCardSizeDefault,
         _actionsFrame = actionsFrame,
         _actionsLayout = actionsLayout,
         _actionButtons = {},
@@ -12440,10 +12978,9 @@ function VerificationDashboard.new(options)
         _titleDefaults = titleDefaults,
         _subtitleDefaults = subtitleDefaults,
         _summaryDefaults = summaryDefaults,
-        _telemetryDefaults = telemetryDefaults,
-        _controlGridDefaults = controlGridDefaults,
         _actionsDefaults = actionsDefaults,
         _actionsFrameDefaults = actionsFrameDefaults,
+        _subtitleDefaultText = subtitle.Text,
         _logoShimmerTween = nil,
         _connections = {},
         _responsiveState = {},
@@ -12463,6 +13000,8 @@ function VerificationDashboard.new(options)
     self:setControls(options.controls)
     self:setTelemetry(options.telemetry)
     self:setProgress(0)
+
+    self:_updateTimelineBadge()
 
     self:_installResponsiveHandlers()
     self:updateLayout()
@@ -12591,6 +13130,58 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         self._actionsFrame.Size = self._actionsFrameDefaults.size or self._actionsFrame.Size
     end
 
+    if self._contentLayout and self._contentDefaults then
+        self._contentLayout.FillDirection = self._contentDefaults.fillDirection
+        self._contentLayout.HorizontalAlignment = self._contentDefaults.horizontalAlignment
+        self._contentLayout.VerticalAlignment = self._contentDefaults.verticalAlignment
+        self._contentLayout.Padding = self._contentDefaults.padding or self._contentLayout.Padding
+    end
+
+    if self._primaryLayout and self._primaryLayoutDefaults then
+        self._primaryLayout.Padding = self._primaryLayoutDefaults.padding or self._primaryLayout.Padding
+        self._primaryLayout.HorizontalAlignment = self._primaryLayoutDefaults.horizontalAlignment or self._primaryLayout.HorizontalAlignment
+    end
+
+    if self._secondaryLayout and self._secondaryLayoutDefaults then
+        self._secondaryLayout.Padding = self._secondaryLayoutDefaults.padding or self._secondaryLayout.Padding
+        self._secondaryLayout.HorizontalAlignment = self._secondaryLayoutDefaults.horizontalAlignment or self._secondaryLayout.HorizontalAlignment
+    end
+
+    if self._primaryColumn and self._columnDefaults then
+        self._primaryColumn.Size = self._columnDefaults.primarySize
+        self._primaryColumn.LayoutOrder = self._columnDefaults.primaryOrder or self._primaryColumn.LayoutOrder
+    end
+
+    if self._secondaryColumn and self._columnDefaults then
+        self._secondaryColumn.Size = self._columnDefaults.secondarySize
+        self._secondaryColumn.LayoutOrder = self._columnDefaults.secondaryOrder or self._secondaryColumn.LayoutOrder
+    end
+
+    if self._timelineHeaderLayout and self._timelineHeaderDefaults then
+        self._timelineHeaderLayout.HorizontalAlignment = self._timelineHeaderDefaults.horizontalAlignment or self._timelineHeaderLayout.HorizontalAlignment
+    end
+
+    if self._timelineTitle and self._timelineHeaderDefaults then
+        self._timelineTitle.TextXAlignment = self._timelineHeaderDefaults.titleAlignment or self._timelineTitle.TextXAlignment
+    end
+
+    if self._timelineStatusLabel and self._timelineHeaderDefaults then
+        self._timelineStatusLabel.TextXAlignment = self._timelineHeaderDefaults.statusAlignment or self._timelineStatusLabel.TextXAlignment
+    end
+
+    if self._timelineBadgeFrame and self._timelineBadgeDefaults then
+        self._timelineBadgeFrame.AnchorPoint = self._timelineBadgeDefaults.anchorPoint or self._timelineBadgeFrame.AnchorPoint
+        self._timelineBadgeFrame.Position = self._timelineBadgeDefaults.position or self._timelineBadgeFrame.Position
+    end
+
+    if self._insightsCard and self._insightsSizeDefaults then
+        self._insightsCard.Size = self._insightsSizeDefaults
+    end
+
+    if self._timelineCard and self._timelineSizeDefaults then
+        self._timelineCard.Size = self._timelineSizeDefaults
+    end
+
     local logoDefaults = self._logoDefaults
     if logoDefaults then
         if self._logoContainer then
@@ -12649,6 +13240,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
             headerLayout.Padding = UDim.new(0, 12)
+        end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
         end
         if self._logoContainer then
             self._logoContainer.Size = UDim2.new(1, 0, 0, 112)
@@ -12720,6 +13343,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
         end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
+        end
         if self._textLayout then
             self._textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
         end
@@ -12731,17 +13386,27 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             self._summaryLayout.HorizontalAlignment = width <= 700 and Enum.HorizontalAlignment.Center
                 or Enum.HorizontalAlignment.Left
         end
-        if self._telemetryGrid then
+        if self._telemetryGrid and self._telemetryDefaults then
             if width <= 700 then
                 self._telemetryGrid.FillDirectionMaxCells = 1
-                self._telemetryGrid.CellSize = UDim2.new(1, -12, 0, 112)
+                self._telemetryGrid.CellSize = self._telemetrySingleCellSize
+                    or computeGridCellSize(1, self._telemetryDefaults.paddingX or 0, self._telemetryDefaults.singleHeight or self._telemetryDefaults.defaultHeight)
             else
-                self._telemetryGrid.FillDirectionMaxCells = math.min(2, self._telemetryDefaults.maxColumns or 2)
+                local maxColumns = math.max(1, math.min(2, self._telemetryDefaults.maxColumns or 2))
+                self._telemetryGrid.FillDirectionMaxCells = maxColumns
                 self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
             end
         end
-        if self._controlGrid then
-            self._controlGrid.FillDirectionMaxCells = width <= 700 and 1 or (self._controlGridDefaults.maxColumns or 2)
+        if self._controlGrid and self._controlGridDefaults then
+            if width <= 700 then
+                self._controlGrid.FillDirectionMaxCells = 1
+                self._controlGrid.CellSize = self._controlSingleCellSize
+                    or computeGridCellSize(1, self._controlGridDefaults.paddingX or 0, self._controlGridDefaults.singleHeight or self._controlGridDefaults.defaultHeight)
+            else
+                local maxColumns = math.max(1, math.min(2, self._controlGridDefaults.maxColumns or 2))
+                self._controlGrid.FillDirectionMaxCells = maxColumns
+                self._controlGrid.CellSize = self._controlGridDefaults.cellSize or self._controlGrid.CellSize
+            end
         end
         if self._actionsLayout then
             self._actionsLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -12764,16 +13429,100 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         if self._headerText then
             self._headerText.Size = UDim2.new(1, -logoWidth, 1, 0)
         end
+
+        local columnPadding = (layoutTheme and layoutTheme.contentColumnPadding) or 24
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+            self._contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+            self._contentLayout.Padding = UDim.new(0, columnPadding)
+        end
+
+        local horizontalPadding = (layoutTheme and layoutTheme.horizontalPadding) or 0
+        local estimatedWidth = dashboardWidth - (horizontalPadding * 2)
+        if bounds and bounds.contentWidth then
+            estimatedWidth = bounds.contentWidth
+        elseif self._contentRow and self._contentRow.AbsoluteSize.X > 0 then
+            estimatedWidth = self._contentRow.AbsoluteSize.X
+        end
+
+        local minPrimary = (layoutTheme and layoutTheme.primaryColumnMinWidth) or 420
+        local minSecondary = (layoutTheme and layoutTheme.secondaryColumnMinWidth) or 320
+        estimatedWidth = math.max(estimatedWidth, minPrimary + minSecondary + columnPadding)
+        local availableWidth = math.max(estimatedWidth - columnPadding, minPrimary + minSecondary)
+        local ratio = (layoutTheme and layoutTheme.primaryColumnRatio) or 0.64
+        ratio = math.clamp(ratio, 0.48, 0.75)
+        local desiredPrimary = math.floor(availableWidth * ratio + 0.5)
+        local maxPrimary = math.max(minPrimary, availableWidth - minSecondary)
+        local primaryWidth = math.clamp(desiredPrimary, minPrimary, maxPrimary)
+        local secondaryWidth = availableWidth - primaryWidth
+        if secondaryWidth < minSecondary then
+            secondaryWidth = minSecondary
+            primaryWidth = math.max(minPrimary, availableWidth - secondaryWidth)
+        end
+        primaryWidth = math.floor(primaryWidth + 0.5)
+        secondaryWidth = math.floor(secondaryWidth + 0.5)
+        if primaryWidth + secondaryWidth > availableWidth then
+            primaryWidth = math.max(minPrimary, availableWidth - minSecondary)
+            secondaryWidth = math.max(minSecondary, availableWidth - primaryWidth)
+        end
+
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(0, primaryWidth, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(0, secondaryWidth, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        state.primaryWidth = primaryWidth
+        state.secondaryWidth = secondaryWidth
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
+        end
         if self._summaryLayout then
             self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
             self._summaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
         end
-        if self._telemetryGrid then
-            self._telemetryGrid.FillDirectionMaxCells = self._telemetryDefaults.maxColumns or 2
-            self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
+        if self._telemetryGrid and self._telemetryDefaults then
+            local maxColumns = math.max(1, self._telemetryDefaults.maxColumns or 2)
+            if maxColumns >= 3 then
+                self._telemetryGrid.FillDirectionMaxCells = 3
+                self._telemetryGrid.CellSize = self._telemetryLargeCellSize
+                    or computeGridCellSize(3, self._telemetryDefaults.paddingX or 0, self._telemetryDefaults.compactHeight or self._telemetryDefaults.defaultHeight)
+            else
+                local mediumColumns = math.max(2, maxColumns)
+                self._telemetryGrid.FillDirectionMaxCells = mediumColumns
+                self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
+            end
         end
         if self._controlGrid and self._controlGridDefaults then
-            self._controlGrid.FillDirectionMaxCells = self._controlGridDefaults.maxColumns or self._controlGrid.FillDirectionMaxCells
+            local maxColumns = math.max(1, self._controlGridDefaults.maxColumns or 2)
+            if maxColumns >= 3 then
+                self._controlGrid.FillDirectionMaxCells = 3
+                self._controlGrid.CellSize = self._controlLargeCellSize
+                    or computeGridCellSize(3, self._controlGridDefaults.paddingX or 0, self._controlGridDefaults.compactHeight or self._controlGridDefaults.defaultHeight)
+            else
+                local mediumColumns = math.max(2, maxColumns)
+                self._controlGrid.FillDirectionMaxCells = mediumColumns
+                self._controlGrid.CellSize = self._controlGridDefaults.cellSize or self._controlGrid.CellSize
+            end
         end
     end
 end
@@ -13005,6 +13754,9 @@ function VerificationDashboard:setHeaderSummary(summary)
             if payload.value ~= nil then
                 valueText = payload.value
             end
+            if payload.dynamic ~= nil then
+                chip.dynamic = payload.dynamic
+            end
         end
 
         if chip.label then
@@ -13100,6 +13852,14 @@ function VerificationDashboard:applyTheme(theme)
     local currentTheme = self._theme
     self._layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, currentTheme.layout or {})
 
+    if self._contentLayout then
+        local contentPadding = self._layoutTheme.contentSpacing or 18
+        self._contentLayout.Padding = UDim.new(0, contentPadding)
+        if self._contentDefaults then
+            self._contentDefaults.padding = UDim.new(0, contentPadding)
+        end
+    end
+
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
     self:_applyInsightsTheme()
@@ -13132,12 +13892,58 @@ function VerificationDashboard:applyTheme(theme)
         self._progressFill.BackgroundColor3 = currentTheme.accentColor
     end
 
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, currentTheme.timeline or {})
+    if self._timelineTitle then
+        self._timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+        self._timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+        self._timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    end
+    if self._timelineStatusLabel then
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+        self._timelineStatusLabel.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    end
+    if self._timelineBadge then
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    end
+    if self._timelineBadgeFrame then
+        self._timelineBadgeFrame.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+    if self._timelineBadgeStroke then
+        self._timelineBadgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    end
+
     if self._telemetryGrid or self._telemetryCards then
         local telemetryTheme = currentTheme.telemetry or DEFAULT_THEME.telemetry
         if self._telemetryGrid then
             self._telemetryGrid.CellPadding = telemetryTheme.cellPadding or DEFAULT_THEME.telemetry.cellPadding
             self._telemetryGrid.CellSize = telemetryTheme.cellSize or DEFAULT_THEME.telemetry.cellSize
             self._telemetryGrid.FillDirectionMaxCells = telemetryTheme.maxColumns or DEFAULT_THEME.telemetry.maxColumns or 2
+            if self._telemetryDefaults then
+                local padding = self._telemetryGrid.CellPadding or DEFAULT_THEME.telemetry.cellPadding
+                local paddingX = padding and padding.X and padding.X.Offset or 0
+                local baseSize = self._telemetryGrid.CellSize or DEFAULT_THEME.telemetry.cellSize
+                local baseHeight = baseSize and baseSize.Y and baseSize.Y.Offset or DEFAULT_THEME.telemetry.cellSize.Y.Offset
+                local compactHeight = telemetryTheme.compactHeight or DEFAULT_THEME.telemetry.compactHeight or math.max(baseHeight - 12, 84)
+                local singleHeight = telemetryTheme.singleColumnHeight or DEFAULT_THEME.telemetry.singleColumnHeight or math.max(baseHeight + 12, baseHeight)
+                self._telemetryDefaults.cellPadding = padding
+                self._telemetryDefaults.cellSize = baseSize
+                self._telemetryDefaults.maxColumns = self._telemetryGrid.FillDirectionMaxCells
+                self._telemetryDefaults.defaultHeight = baseHeight
+                self._telemetryDefaults.compactHeight = compactHeight
+                self._telemetryDefaults.singleHeight = singleHeight
+                self._telemetryDefaults.paddingX = paddingX
+                self._telemetryLargeCellSize = computeGridCellSize(3, paddingX, compactHeight)
+                self._telemetrySingleCellSize = computeGridCellSize(1, paddingX, singleHeight)
+            end
         end
 
         if self._telemetryCards then
@@ -13174,6 +13980,30 @@ function VerificationDashboard:applyTheme(theme)
                     card.defaultHintColor = hintColor
                 end
             end
+        end
+    end
+
+    if self._controlGrid then
+        local controlsTheme = currentTheme.controls or DEFAULT_THEME.controls
+        self._controlGrid.CellPadding = UDim2.new(0, 12, 0, 12)
+        self._controlGrid.CellSize = UDim2.new(0.5, -12, 0, controlsTheme.toggleHeight or 112)
+        self._controlGrid.FillDirectionMaxCells = controlsTheme.maxColumns or DEFAULT_THEME.controls.maxColumns or 2
+        if self._controlGridDefaults then
+            local padding = self._controlGrid.CellPadding or UDim2.new(0, 12, 0, 12)
+            local paddingX = padding and padding.X and padding.X.Offset or 0
+            local baseSize = self._controlGrid.CellSize or UDim2.new(0.5, -12, 0, controlsTheme.toggleHeight or 112)
+            local baseHeight = baseSize and baseSize.Y and baseSize.Y.Offset or controlsTheme.toggleHeight or 112
+            local compactHeight = controlsTheme.compactHeight or DEFAULT_THEME.controls.compactHeight or math.max(baseHeight - 12, 92)
+            local singleHeight = controlsTheme.singleColumnHeight or DEFAULT_THEME.controls.singleColumnHeight or math.max(baseHeight + 12, baseHeight)
+            self._controlGridDefaults.cellPadding = padding
+            self._controlGridDefaults.cellSize = baseSize
+            self._controlGridDefaults.maxColumns = self._controlGrid.FillDirectionMaxCells
+            self._controlGridDefaults.defaultHeight = baseHeight
+            self._controlGridDefaults.compactHeight = compactHeight
+            self._controlGridDefaults.singleHeight = singleHeight
+            self._controlGridDefaults.paddingX = paddingX
+            self._controlLargeCellSize = computeGridCellSize(3, paddingX, compactHeight)
+            self._controlSingleCellSize = computeGridCellSize(1, paddingX, singleHeight)
         end
     end
 
@@ -13282,6 +14112,8 @@ function VerificationDashboard:applyTheme(theme)
     if self._actions then
         self:setActions(self._actions)
     end
+
+    self:_updateTimelineBadge()
 
     self:updateLayout(self._lastLayoutBounds)
     self:_startLogoShimmer()
@@ -13462,6 +14294,8 @@ function VerificationDashboard:reset()
     self:setProgress(0)
     self:setHeaderSummary(nil)
     self:setStatusText("Initialising AutoParry suite…")
+
+    self:_updateTimelineBadge()
 end
 
 local function resolveStyle(theme, status)
@@ -13485,6 +14319,135 @@ function VerificationDashboard:_resolveStatusColor(status)
     end
 
     return nil
+end
+
+function VerificationDashboard:_updateTimelineBadge()
+    if self._destroyed then
+        return
+    end
+
+    if not (self._timelineBadge and self._timelineStatusLabel) then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
+
+    local states = self._stepStates or {}
+    local worstStatus = "pending"
+    local worstPriority = -math.huge
+    local worstDefinition
+    local activeDefinition
+    local nextPending
+    local allOk = true
+
+    for _, definition in ipairs(STEP_DEFINITIONS) do
+        local state = states[definition.id]
+        local status = state and state.status or "pending"
+        local priority = STATUS_PRIORITY[status] or 0
+
+        if status ~= "ok" then
+            allOk = false
+        end
+
+        if status == "active" and not activeDefinition then
+            activeDefinition = definition
+        end
+
+        if status == "pending" and not nextPending then
+            nextPending = definition
+        end
+
+        if priority > worstPriority then
+            worstPriority = priority
+            worstStatus = status
+            worstDefinition = definition
+        end
+    end
+
+    local badgeColor
+    local badgeText
+    local statusText
+
+    if worstStatus == "failed" then
+        badgeText = "Failure detected"
+        badgeColor = timelineTheme.badgeDangerColor or theme.failedColor
+        statusText = string.format("%s needs attention immediately.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif worstStatus == "warning" then
+        badgeText = "Warnings active"
+        badgeColor = timelineTheme.badgeWarningColor or theme.warningColor
+        statusText = string.format("%s reported unusual data.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif allOk and worstPriority >= (STATUS_PRIORITY.ok or 2) then
+        badgeText = "All systems ready"
+        badgeColor = timelineTheme.badgeSuccessColor or theme.okColor
+        statusText = "Every verification check has passed."
+    elseif worstStatus == "active" then
+        local focus = activeDefinition or worstDefinition or nextPending or STEP_DEFINITIONS[1]
+        badgeText = "Verification running"
+        badgeColor = timelineTheme.badgeActiveColor or theme.accentColor
+        statusText = focus and string.format("Currently checking %s.", focus.title) or "Verification checks are in progress."
+    else
+        local upcoming = nextPending or worstDefinition or STEP_DEFINITIONS[1]
+        badgeText = "Preparing checks"
+        badgeColor = timelineTheme.badgeDefaultColor or theme.accentColor
+        statusText = upcoming and string.format("Next up: %s.", upcoming.title) or "Awaiting verification updates."
+    end
+
+    if self._timelineBadge then
+        self._timelineBadge.Text = badgeText
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or self._timelineBadge.TextColor3
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    end
+
+    if self._timelineBadgeFrame then
+        local baseBackground = timelineTheme.badgeBackground or theme.cardColor
+        local highlight = timelineTheme.badgeBackgroundHighlight or 0.16
+        self._timelineBadgeFrame.BackgroundColor3 = baseBackground:Lerp(badgeColor, highlight)
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = badgeColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    end
+
+    if self._timelineBadgeStroke then
+        local mix = timelineTheme.badgeStrokeMix or 0.18
+        local strokeBase = timelineTheme.badgeStrokeColor or theme.cardStrokeColor or badgeColor
+        self._timelineBadgeStroke.Color = badgeColor:Lerp(strokeBase, mix)
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+
+    if self._timelineStatusLabel then
+        local baseStatusColor = timelineTheme.subtitleColor or self._timelineStatusLabel.TextColor3
+        local tintMix = timelineTheme.subtitleTintMix or 0.22
+        self._timelineStatusLabel.Text = statusText
+        if typeof(baseStatusColor) == "Color3" then
+            self._timelineStatusLabel.TextColor3 = baseStatusColor:Lerp(badgeColor, tintMix)
+        else
+            self._timelineStatusLabel.TextColor3 = badgeColor
+        end
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    end
+
+    if self._subtitle then
+        self._subtitle.Text = statusText
+    end
+
+    if self._summaryChips then
+        local statusChip = self._summaryChips.status or self._summaryChips.system or self._summaryChips["system"]
+        if statusChip and statusChip.value then
+            local allowDynamic = statusChip.dynamic
+            if allowDynamic == nil then
+                allowDynamic = statusChip.definition == nil or statusChip.definition.dynamic ~= false
+            end
+            if allowDynamic then
+                statusChip.value.Text = badgeText
+            end
+        end
+    end
 end
 
 function VerificationDashboard:_applyStepState(id, status, message, tooltip)
@@ -13553,6 +14516,8 @@ function VerificationDashboard:_applyStepState(id, status, message, tooltip)
     end
 
     step.state = status
+
+    self:_updateTimelineBadge()
 end
 
 local function formatElapsed(seconds)
