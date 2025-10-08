@@ -86,6 +86,7 @@ local state = {
     lastSuccess = 0,
     lastBroadcast = 0,
     immortalEnabled = false,
+    remoteEstimatorActive = false,
 }
 
 local initialization = {
@@ -101,6 +102,7 @@ local initProgress = { stage = "waiting-player" }
 local stateChanged = Signal.new()
 local parryEvent = Signal.new()
 local parrySuccessSignal = Signal.new()
+parrySuccessSignal:connect(handleParrySuccessLatency)
 local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 
@@ -333,6 +335,100 @@ local function emaVector(previous: Vector3?, sample: Vector3, alpha: number)
     return previous + (sample - previous) * alpha
 end
 
+local MAX_LATENCY_SAMPLE_SECONDS = 2
+local PENDING_LATENCY_MAX_AGE = 5
+
+local latencySamples = {
+    lastSample = nil,
+    lastLocalSample = nil,
+    lastRemoteSample = nil,
+}
+
+local pendingLatencyPresses = {}
+
+local function publishLatencyTelemetry()
+    local settings = GlobalEnv.Paws
+    if typeof(settings) ~= "table" then
+        settings = {}
+        GlobalEnv.Paws = settings
+    end
+
+    settings.ActivationLatency = activationLatencyEstimate
+    settings.LatencySamples = latencySamples
+    settings.RemoteLatencyActive = state.remoteEstimatorActive
+end
+
+local function recordLatencySample(
+    sample: number?,
+    source: string?,
+    ballId: string?,
+    telemetry: TelemetryState?,
+    now: number?
+)
+    if not isFiniteNumber(sample) or not sample or sample <= 0 or sample > MAX_LATENCY_SAMPLE_SECONDS then
+        return false
+    end
+
+    activationLatencyEstimate = emaScalar(activationLatencyEstimate, sample, ACTIVATION_LATENCY_ALPHA)
+    if activationLatencyEstimate < 0 then
+        activationLatencyEstimate = 0
+    end
+
+    if telemetry then
+        telemetry.latencySampled = true
+    end
+
+    local timestamp = now or os.clock()
+    local entry = {
+        value = sample,
+        source = source or "unknown",
+        ballId = ballId,
+        time = timestamp,
+    }
+
+    latencySamples.lastSample = entry
+    if source == "remote" then
+        latencySamples.lastRemoteSample = entry
+    elseif source == "local" then
+        latencySamples.lastLocalSample = entry
+    end
+
+    publishLatencyTelemetry()
+    return true
+end
+
+local function prunePendingLatencyPresses(now: number)
+    if #pendingLatencyPresses == 0 then
+        return
+    end
+
+    for index = #pendingLatencyPresses, 1, -1 do
+        local entry = pendingLatencyPresses[index]
+        if not entry or not entry.time or now - entry.time > PENDING_LATENCY_MAX_AGE then
+            table.remove(pendingLatencyPresses, index)
+        end
+    end
+end
+
+local function handleParrySuccessLatency(...)
+    local now = os.clock()
+    if #pendingLatencyPresses == 0 then
+        return
+    end
+
+    for index = #pendingLatencyPresses, 1, -1 do
+        local entry = pendingLatencyPresses[index]
+        table.remove(pendingLatencyPresses, index)
+        if entry and entry.time then
+            local elapsed = now - entry.time
+            local telemetry = entry.ballId and telemetryStates[entry.ballId] or nil
+            if recordLatencySample(elapsed, "remote", entry.ballId, telemetry, now) then
+                return
+            end
+        end
+    end
+end
+
 local function clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
         return value, 0
@@ -410,6 +506,11 @@ local function resetActivationLatency()
     perfectParrySnapshot.sigma = 0
     perfectParrySnapshot.delta = 0
     perfectParrySnapshot.z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ or perfectParrySnapshot.z
+    latencySamples.lastSample = nil
+    latencySamples.lastLocalSample = nil
+    latencySamples.lastRemoteSample = nil
+    pendingLatencyPresses = {}
+    publishLatencyTelemetry()
 end
 
 resetActivationLatency()
@@ -720,6 +821,10 @@ end
 local function disconnectSuccessListeners()
     disconnectConnections(successConnections)
     successStatusSnapshot = nil
+    if state.remoteEstimatorActive then
+        state.remoteEstimatorActive = false
+        publishLatencyTelemetry()
+    end
 end
 
 local function clearRemoteState()
@@ -736,6 +841,7 @@ local function clearRemoteState()
     watchedBallsFolder = nil
     pendingBallsFolderSearch = false
     ballsFolderStatusSnapshot = nil
+    pendingLatencyPresses = {}
     if syncImmortalContext then
         syncImmortalContext()
     end
@@ -787,6 +893,9 @@ local function configureSuccessListeners(successRemotes)
         state.lastBroadcast = now
         parryBroadcastSignal:fire(...)
     end)
+
+    state.remoteEstimatorActive = status.ParrySuccess == true
+    publishLatencyTelemetry()
 
     successStatusSnapshot = status
     return status
@@ -1021,6 +1130,8 @@ local function syncGlobalSettings()
     settings.SafeRadius = config.safeRadius
     settings.ConfidenceZ = config.confidenceZ
     settings.ActivationLatency = activationLatencyEstimate
+    settings.LatencySamples = latencySamples
+    settings.RemoteLatencyActive = state.remoteEstimatorActive
     settings.PerfectParry = perfectParrySnapshot
     settings.Immortal = state.immortalEnabled
 end
@@ -1603,6 +1714,8 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
 
     local now = os.clock()
     state.lastParry = now
+    prunePendingLatencyPresses(now)
+    pendingLatencyPresses[#pendingLatencyPresses + 1] = { time = now, ballId = ballId }
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1924,6 +2037,7 @@ local function renderLoop()
 
     local now = os.clock()
     cleanupTelemetry(now)
+    prunePendingLatencyPresses(now)
 
     local ball = findRealBall(folder)
     if not ball or not ball:IsDescendantOf(Workspace) then
@@ -2304,17 +2418,12 @@ local function renderLoop()
 
     if parryHeld and parryHeldBallId == ballId then
         local triggerTime = telemetry and telemetry.triggerTime
-        if triggerTime and telemetry and not telemetry.latencySampled and d0 <= 0 then
+        if triggerTime and telemetry and not telemetry.latencySampled then
             local sample = now - triggerTime
-            if sample > 0 and sample < 2 then
-                activationLatencyEstimate = emaScalar(activationLatencyEstimate, sample, ACTIVATION_LATENCY_ALPHA)
-                if activationLatencyEstimate < 0 then
-                    activationLatencyEstimate = 0
-                end
+            if sample > 0 and sample <= MAX_LATENCY_SAMPLE_SECONDS then
+                recordLatencySample(sample, "local", ballId, telemetry, now)
+            elseif sample > PENDING_LATENCY_MAX_AGE then
                 telemetry.latencySampled = true
-                if GlobalEnv and GlobalEnv.Paws then
-                    GlobalEnv.Paws.ActivationLatency = activationLatencyEstimate
-                end
             end
         end
     end
@@ -2326,6 +2435,21 @@ local function renderLoop()
         end
     end
 
+    local latencyEntry = latencySamples.lastSample
+    local latencyText = "none"
+    if latencyEntry and isFiniteNumber(latencyEntry.value) then
+        local ageMs = 0
+        if latencyEntry.time then
+            ageMs = math.max((now - latencyEntry.time) * 1000, 0)
+        end
+        latencyText = string.format(
+            "%s %.3f (%dms)",
+            latencyEntry.source or "?",
+            latencyEntry.value,
+            math.floor(ageMs + 0.5)
+        )
+    end
+
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
@@ -2334,6 +2458,7 @@ local function renderLoop()
         string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
+        string.format("Latency sample: %s | remoteActive: %s", latencyText, tostring(state.remoteEstimatorActive)),
         string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
         string.format(
             "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
