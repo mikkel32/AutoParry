@@ -53,15 +53,35 @@ end
 
 Util.Signal = Signal
 
-function Util.deepCopy(value)
+function Util.deepCopy(value, seen)
     if typeof(value) ~= "table" then
         return value
     end
 
-    local copy = {}
-    for key, val in pairs(value) do
-        copy[Util.deepCopy(key)] = Util.deepCopy(val)
+    seen = seen or {}
+    local existing = seen[value]
+    if existing ~= nil then
+        return existing
     end
+
+    local copy = {}
+    seen[value] = copy
+
+    for key, val in pairs(value) do
+        local copiedKey = Util.deepCopy(key, seen)
+        local copiedValue = Util.deepCopy(val, seen)
+        copy[copiedKey] = copiedValue
+    end
+
+    local metatable = getmetatable(value)
+    if metatable ~= nil then
+        if typeof(metatable) == "table" then
+            setmetatable(copy, Util.deepCopy(metatable, seen))
+        else
+            setmetatable(copy, metatable)
+        end
+    end
+
     return copy
 end
 
