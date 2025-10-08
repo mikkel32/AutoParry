@@ -39,6 +39,7 @@
 -- call `overlay:applyTheme` at runtime to adjust colors, fonts, and layout metrics.
 
 local CoreGui = game:GetService("CoreGui")
+local Players = game:GetService("Players")
 local TweenService = game:GetService("TweenService")
 local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
@@ -210,14 +211,62 @@ local function mergeTheme(overrides)
     return theme
 end
 
+local function isValidScreenGuiContainer(instance)
+    if not instance then
+        return false
+    end
+
+    if instance:IsA("ScreenGui") then
+        return false
+    end
+
+    if instance:IsA("CoreGui") or instance:IsA("BasePlayerGui") or instance:IsA("PluginGui") then
+        return true
+    end
+
+    local ok, isLayerCollector = pcall(function()
+        return instance:IsA("LayerCollector")
+    end)
+    if ok and isLayerCollector then
+        return true
+    end
+
+    return false
+end
+
+local function resolveScreenGuiParent(requestedParent)
+    if typeof(requestedParent) == "Instance" then
+        local current = requestedParent
+        while current do
+            if isValidScreenGuiContainer(current) then
+                return current
+            end
+
+            current = current.Parent
+        end
+    end
+
+    local localPlayer = Players.LocalPlayer
+    if localPlayer then
+        local playerGui = localPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui and isValidScreenGuiContainer(playerGui) then
+            return playerGui
+        end
+    end
+
+    return CoreGui
+end
+
 local function createScreenGui(options)
+    local parent = resolveScreenGuiParent(options.parent)
+
     local gui = Instance.new("ScreenGui")
     gui.Name = options.name or "AutoParryLoadingOverlay"
     gui.DisplayOrder = 10_000
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.IgnoreGuiInset = true
-    gui.Parent = options.parent or CoreGui
+    gui.Parent = parent
     return gui
 end
 
