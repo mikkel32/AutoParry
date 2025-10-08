@@ -10,9 +10,238 @@ local Util = Require("src/shared/util.lua")
 local LoadingOverlay = Require("src/ui/loading_overlay.lua")
 local VerificationDashboard = Require("src/ui/verification_dashboard.lua")
 
+local HttpService = game:GetService("HttpService")
+
 local VERSION = "1.1.0"
 local UI_MODULE_PATH = "src/ui/init.lua"
 local PARRY_MODULE_PATH = "src/core/autoparry.lua"
+local ERROR_DOCS_URL = "https://github.com/mikkel32/AutoParry#troubleshooting"
+local REASON_STAGE_MAP = {
+    ["local-player"] = "player",
+    ["player"] = "player",
+    ["waiting-player"] = "player",
+    ["remotes"] = "remotes",
+    ["waiting-remotes"] = "remotes",
+    ["remotes-folder"] = "remotes",
+    ["remote"] = "remotes",
+    ["parry-remote"] = "remotes",
+    ["success"] = "success",
+    ["success-events"] = "success",
+    ["balls"] = "balls",
+    ["balls-folder"] = "balls",
+}
+
+local function formatSeconds(seconds)
+    if not seconds or seconds <= 0 then
+        return nil
+    end
+    if seconds < 1 then
+        return string.format("%.2f s", seconds)
+    end
+    return string.format("%.1f s", seconds)
+end
+
+local function resolveStageId(value)
+    if value == nil then
+        return nil
+    end
+    local text = string.lower(tostring(value))
+    return REASON_STAGE_MAP[text]
+end
+
+local function buildErrorDetail(state)
+    local errorState = state.error or {}
+    local detail = {
+        kind = "error",
+        title = errorState.title or errorState.message or "AutoParry encountered an error",
+        summary = errorState.message or "AutoParry failed to start.",
+        message = errorState.message or "AutoParry failed to start.",
+        reason = errorState.reason,
+        docsLink = errorState.docsLink or ERROR_DOCS_URL,
+        entries = {},
+        tips = {},
+        timeline = {},
+        meta = {},
+    }
+
+    local copyLines = {}
+    local function pushCopy(line)
+        if typeof(line) == "string" and line ~= "" then
+            table.insert(copyLines, line)
+        end
+    end
+
+    pushCopy(detail.title)
+    if detail.summary and detail.summary ~= detail.title then
+        pushCopy(detail.summary)
+    end
+
+    local function addEntry(label, value, kind)
+        if value == nil then
+            return
+        end
+        if typeof(value) ~= "string" then
+            value = tostring(value)
+        end
+        if value == "" then
+            return
+        end
+        table.insert(detail.entries, { label = label, value = value, kind = kind })
+        pushCopy(string.format("%s: %s", label, value))
+    end
+
+    local function addTips(tips)
+        if tips == nil then
+            return
+        end
+        if typeof(tips) == "table" then
+            for _, tip in ipairs(tips) do
+                if tip ~= nil then
+                    local text = typeof(tip) == "string" and tip or tostring(tip)
+                    table.insert(detail.tips, text)
+                    pushCopy("Tip: " .. text)
+                end
+            end
+        else
+            local text = typeof(tips) == "string" and tips or tostring(tips)
+            table.insert(detail.tips, text)
+            pushCopy("Tip: " .. text)
+        end
+    end
+
+    local payload = errorState.payload
+    if typeof(payload) == "table" then
+        if detail.reason == nil and payload.reason ~= nil then
+            detail.reason = payload.reason
+        end
+    end
+
+    if errorState.kind == "loader" then
+        detail.title = errorState.message or "Module download failed"
+        detail.summary = errorState.message or "AutoParry could not download required modules."
+        detail.message = detail.summary
+
+        local last = state.loader and state.loader.last
+        local path = payload and payload.path or (last and last.path)
+        addEntry("Module", path, "path")
+
+        local errMsg = payload and (payload.error or payload.message)
+        addEntry("Loader error", errMsg)
+
+        if payload and (payload.stackTrace or payload.stack) then
+            local stack = payload.stackTrace or payload.stack
+            detail.logs = detail.logs or {}
+            table.insert(detail.logs, { label = "Stack trace", value = stack, kind = "stack" })
+            pushCopy("Stack trace:\n" .. stack)
+        end
+
+        addTips(payload and payload.remediation)
+
+        if #detail.tips == 0 then
+            addTips({
+                "Check your network connection and retry the AutoParry download.",
+                "Ensure your executor allows HttpGet/HttpPost for AutoParry modules.",
+            })
+        end
+
+        local stage = resolveStageId("remotes") or "remotes"
+        table.insert(detail.timeline, {
+            id = stage,
+            status = "failed",
+            message = detail.summary,
+            tooltip = path and string.format("Failed to fetch %s", path) or detail.summary,
+        })
+        detail.meta[stage] = "Download failure"
+        detail.failingStage = stage
+        detail.timelineStatus = "failed"
+    elseif errorState.kind == "parry" then
+        detail.title = errorState.message or "AutoParry verification failed"
+        detail.summary = errorState.message or "AutoParry failed during verification."
+        detail.message = detail.summary
+
+        if payload and payload.stage then
+            addEntry("Verification stage", payload.stage)
+        end
+        if payload and payload.step then
+            addEntry("Step", payload.step)
+        end
+        if payload and payload.target then
+            addEntry("Target", payload.target)
+        end
+        if payload and payload.remoteName then
+            addEntry("Remote", payload.remoteName)
+        end
+        if payload and payload.remoteVariant then
+            addEntry("Variant", payload.remoteVariant)
+        end
+        if payload and payload.remoteClass then
+            addEntry("Remote class", payload.remoteClass)
+        end
+        if payload and payload.elapsed then
+            addEntry("Elapsed", formatSeconds(payload.elapsed))
+        end
+
+        local stage = resolveStageId(detail.reason)
+            or (payload and (resolveStageId(payload.step) or resolveStageId(payload.stage)))
+            or "success"
+        detail.failingStage = stage
+
+        local status = "failed"
+        local reasonLower = detail.reason and string.lower(tostring(detail.reason)) or nil
+        if reasonLower == "balls" or reasonLower == "balls-folder" or (payload and payload.step == "balls") then
+            status = "warning"
+        end
+
+        table.insert(detail.timeline, {
+            id = stage,
+            status = status,
+            message = detail.summary,
+            tooltip = detail.summary,
+        })
+        detail.timelineStatus = status
+        detail.meta[stage] = payload and (payload.reason or payload.step or payload.stage) or detail.reason
+
+        if payload and payload.stackTrace then
+            detail.logs = detail.logs or {}
+            table.insert(detail.logs, { label = "Stack trace", value = payload.stackTrace, kind = "stack" })
+            pushCopy("Stack trace:\n" .. payload.stackTrace)
+        end
+
+        if payload and payload.tip then
+            addTips(payload.tip)
+        end
+
+        if reasonLower == "local-player" then
+            addTips("Wait for your avatar to spawn in before retrying AutoParry.")
+        elseif reasonLower == "remotes-folder" or reasonLower == "parry-remote" or reasonLower == "remote" then
+            addTips("Join or rejoin a Blade Ball match so the parry remotes replicate.")
+        elseif reasonLower == "balls" or reasonLower == "balls-folder" then
+            addTips("Ensure a match is active with balls in play before enabling AutoParry.")
+        end
+    end
+
+    if detail.reason then
+        addEntry("Reason", detail.reason)
+    end
+
+    if payload and typeof(payload) == "table" then
+        local ok, encoded = pcall(HttpService.JSONEncode, HttpService, payload)
+        if ok then
+            detail.payloadText = encoded
+            pushCopy("Payload: " .. encoded)
+        end
+    elseif payload ~= nil then
+        addEntry("Payload", tostring(payload))
+    end
+
+    if #detail.tips == 0 and errorState.kind ~= "loader" then
+        addTips("Retry the bootstrap from the overlay controls when the issue is resolved.")
+    end
+
+    detail.copyText = table.concat(copyLines, "\n")
+
+    return detail
+end
 
 local function disconnect(connection)
     if not connection then
@@ -27,7 +256,14 @@ end
 
 local function defaultStatusFormatter(state)
     if state.error then
-        return state.error.message or "AutoParry failed to start."
+        local detail = buildErrorDetail(state)
+        if typeof(state.error) == "table" then
+            state.error.detail = detail
+        end
+        return {
+            text = detail.summary or detail.message or "AutoParry failed to start.",
+            detail = detail,
+        }
     end
 
     local loader = state.loader or {}
@@ -40,36 +276,42 @@ local function defaultStatusFormatter(state)
 
         if lastPath then
             if total > 0 then
-                return ("Downloading %s (%d/%d)"):format(lastPath, finished + failed, total)
+                return {
+                    text = ("Downloading %s (%d/%d)"):format(lastPath, finished + failed, total),
+                }
             else
-                return ("Downloading %s…"):format(lastPath)
+                return {
+                    text = ("Downloading %s…"):format(lastPath),
+                }
             end
         end
 
         if total > 0 then
-            return ("Downloading AutoParry modules (%d/%d)"):format(finished + failed, total)
+            return {
+                text = ("Downloading AutoParry modules (%d/%d)"):format(finished + failed, total),
+            }
         end
 
-        return "Preparing AutoParry download…"
+        return { text = "Preparing AutoParry download…" }
     end
 
     local parry = state.parry or {}
     local stage = parry.stage
 
     if stage == "ready" then
-        return "AutoParry ready!"
+        return { text = "AutoParry ready!" }
     elseif stage == "waiting-remotes" then
         if parry.target == "remote" then
-            return "Waiting for parry remote…"
+            return { text = "Waiting for parry remote…" }
         end
-        return "Waiting for Blade Ball remotes…"
+        return { text = "Waiting for Blade Ball remotes…" }
     elseif stage == "waiting-player" then
-        return "Waiting for your player…"
+        return { text = "Waiting for your player…" }
     elseif stage == "timeout" then
-        return "AutoParry initialization timed out."
+        return { text = "AutoParry initialization timed out." }
     end
 
-    return "Preparing AutoParry…"
+    return { text = "Preparing AutoParry…" }
 end
 
 local function defaultProgressFormatter(state)
@@ -845,11 +1087,29 @@ return function(options, loaderContext)
             return
         end
 
-        local okStatus, statusText = pcall(statusFormatter, overlayState, overlayOpts, opts)
-        if okStatus and typeof(statusText) == "string" then
-            overlay:setStatus(statusText, { force = overlayState.error ~= nil })
-        elseif not okStatus then
-            warn("AutoParry loading overlay status formatter error:", statusText)
+        local okStatus, statusResult = pcall(statusFormatter, overlayState, overlayOpts, opts)
+        if okStatus then
+            local statusPayload
+            if typeof(statusResult) == "table" then
+                statusPayload = statusResult
+            elseif typeof(statusResult) == "string" then
+                statusPayload = { text = statusResult }
+            elseif statusResult ~= nil then
+                statusPayload = { text = tostring(statusResult) }
+            else
+                statusPayload = { text = "" }
+            end
+
+            overlay:setStatus(statusPayload, { force = overlayState.error ~= nil })
+            if overlay.setErrorDetails then
+                overlay:setErrorDetails(statusPayload.detail)
+            end
+            if overlayState.error and statusPayload.detail then
+                overlayState.error.detail = statusPayload.detail
+                applyDiagnosticsError(overlayState.error)
+            end
+        else
+            warn("AutoParry loading overlay status formatter error:", statusResult)
         end
 
         local okProgress, progressValue = pcall(progressFormatter, overlayState, overlayOpts, opts)

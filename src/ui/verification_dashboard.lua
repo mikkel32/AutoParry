@@ -2450,12 +2450,33 @@ function VerificationDashboard:applyTheme(theme)
     self:_startLogoShimmer()
 end
 
-function VerificationDashboard:setStatusText(text)
+function VerificationDashboard:setStatusText(status)
     if self._destroyed then
         return
     end
+    local text = status
+    local detail
+    local telemetry
+
+    if typeof(status) == "table" then
+        detail = status.detail or status.details
+        telemetry = status.telemetry
+        text = status.text or status.message or ""
+    end
+
     if self._subtitle then
+        if typeof(text) ~= "string" then
+            text = tostring(text or "")
+        end
         self._subtitle.Text = text or ""
+    end
+
+    if telemetry then
+        self:setTelemetry(telemetry)
+    end
+
+    if detail then
+        self:_applyErrorDetail(detail)
     end
 end
 
@@ -2537,6 +2558,11 @@ function VerificationDashboard:setTelemetry(telemetry)
                 card.spark.BackgroundTransparency = telemetryTheme.sparkTransparency or 0.2
             end
         end
+    end
+
+    local errorDetail = telemetry and telemetry.errorDetail
+    if errorDetail then
+        self:_applyErrorDetail(errorDetail)
     end
 end
 
@@ -2815,6 +2841,51 @@ local function extractErrorReason(errorState)
     return reason, payload
 end
 
+function VerificationDashboard:_applyErrorDetail(detail)
+    if not detail or self._destroyed then
+        return
+    end
+
+    local function applyEntry(entry)
+        if typeof(entry) == "table" then
+            local id = entry.id or entry.stage or entry.step or entry.target
+            if id then
+                local status = entry.status or entry.state or "failed"
+                local message = entry.message or entry.text or detail.summary or detail.message
+                local tooltip = entry.tooltip or entry.hint
+                self:_applyStepState(id, status, message, tooltip)
+            end
+        elseif typeof(entry) == "string" then
+            local message = detail.summary or detail.message
+            self:_applyStepState(entry, detail.timelineStatus or detail.status or "failed", message)
+        end
+    end
+
+    local timeline = detail.timeline or detail.steps or detail.failingStages
+    if typeof(timeline) == "table" then
+        if timeline[1] ~= nil then
+            for _, entry in ipairs(timeline) do
+                applyEntry(entry)
+            end
+        else
+            for _, entry in pairs(timeline) do
+                applyEntry(entry)
+            end
+        end
+    elseif typeof(detail.failingStage) == "string" then
+        applyEntry({ id = detail.failingStage, status = detail.status or "failed", message = detail.summary or detail.message })
+    end
+
+    if detail.meta and self._steps then
+        for id, text in pairs(detail.meta) do
+            local step = self._steps[id]
+            if step and step.meta then
+                step.meta.Text = tostring(text)
+            end
+        end
+    end
+end
+
 function VerificationDashboard:_applyError(errorState)
     if not errorState then
         return
@@ -2834,9 +2905,16 @@ function VerificationDashboard:_applyError(errorState)
     end
 
     if payload and payload.elapsed then
-        self:setStatusText(string.format("Failed after %s", formatElapsed(payload.elapsed) or "0 s"))
+        self:setStatusText({
+            text = string.format("Failed after %s", formatElapsed(payload.elapsed) or "0 s"),
+            detail = errorState.detail,
+        })
     else
-        self:setStatusText(message)
+        self:setStatusText({ text = message, detail = errorState.detail })
+    end
+
+    if errorState.detail then
+        self:_applyErrorDetail(errorState.detail)
     end
 end
 

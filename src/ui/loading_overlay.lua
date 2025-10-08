@@ -42,6 +42,7 @@ local CoreGui = game:GetService("CoreGui")
 local TweenService = game:GetService("TweenService")
 local ContentProvider = game:GetService("ContentProvider")
 local Workspace = game:GetService("Workspace")
+local GuiService = game:GetService("GuiService")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
@@ -137,6 +138,45 @@ local DEFAULT_THEME = {
             NumberSequenceKeypoint.new(0, 0.8),
             NumberSequenceKeypoint.new(1, 0.3),
         }),
+    },
+    errorPanel = {
+        backgroundColor = Color3.fromRGB(44, 18, 32),
+        backgroundTransparency = 0.12,
+        strokeColor = Color3.fromRGB(255, 128, 164),
+        strokeTransparency = 0.35,
+        cornerRadius = UDim.new(0, 12),
+        titleFont = Enum.Font.GothamBold,
+        titleTextSize = 20,
+        titleColor = Color3.fromRGB(255, 214, 228),
+        summaryFont = Enum.Font.Gotham,
+        summaryTextSize = 16,
+        summaryColor = Color3.fromRGB(255, 226, 236),
+        entryLabelFont = Enum.Font.GothamSemibold,
+        entryLabelTextSize = 14,
+        entryLabelColor = Color3.fromRGB(255, 174, 196),
+        entryFont = Enum.Font.Code,
+        entryTextSize = 14,
+        entryTextColor = Color3.fromRGB(255, 236, 240),
+        entryBackgroundColor = Color3.fromRGB(32, 16, 26),
+        entryBackgroundTransparency = 0.2,
+        entryCornerRadius = UDim.new(0, 8),
+        sectionPadding = 10,
+        sectionSpacing = 8,
+        listSpacing = 8,
+        tipFont = Enum.Font.Gotham,
+        tipTextSize = 14,
+        tipTextColor = Color3.fromRGB(255, 220, 232),
+        badgeColor = Color3.fromRGB(255, 110, 150),
+        badgeTransparency = 0.65,
+        actionFont = Enum.Font.GothamSemibold,
+        actionTextSize = 14,
+        actionPrimaryColor = Color3.fromRGB(255, 128, 168),
+        actionPrimaryTextColor = Color3.fromRGB(32, 16, 26),
+        actionSecondaryColor = Color3.fromRGB(60, 30, 48),
+        actionSecondaryTextColor = Color3.fromRGB(255, 226, 236),
+        scrollBarColor = Color3.fromRGB(255, 156, 196),
+        scrollBarTransparency = 0.55,
+        icon = "rbxassetid://6031071051",
     },
     iconography = {
         spinner = SPINNER_ASSET,
@@ -640,13 +680,194 @@ function LoadingOverlay.new(options)
     local statusLabel = createStatusLabel(infoColumn, theme)
     statusLabel.LayoutOrder = 3
 
+    local errorPanel = Instance.new("Frame")
+    errorPanel.Name = "ErrorPanel"
+    errorPanel.BackgroundTransparency = (theme.errorPanel and theme.errorPanel.backgroundTransparency)
+        or DEFAULT_THEME.errorPanel.backgroundTransparency
+    errorPanel.BackgroundColor3 = (theme.errorPanel and theme.errorPanel.backgroundColor)
+        or DEFAULT_THEME.errorPanel.backgroundColor
+    errorPanel.BorderSizePixel = 0
+    errorPanel.Visible = false
+    errorPanel.AutomaticSize = Enum.AutomaticSize.Y
+    errorPanel.Size = UDim2.new(1, 0, 0, 0)
+    errorPanel.LayoutOrder = 4
+    errorPanel.Parent = infoColumn
+
+    local errorCorner = Instance.new("UICorner")
+    errorCorner.CornerRadius = (theme.errorPanel and theme.errorPanel.cornerRadius)
+        or DEFAULT_THEME.errorPanel.cornerRadius
+    errorCorner.Parent = errorPanel
+
+    local errorStroke = Instance.new("UIStroke")
+    errorStroke.Thickness = 1.25
+    errorStroke.Color = (theme.errorPanel and theme.errorPanel.strokeColor) or DEFAULT_THEME.errorPanel.strokeColor
+    errorStroke.Transparency = (theme.errorPanel and theme.errorPanel.strokeTransparency)
+        or DEFAULT_THEME.errorPanel.strokeTransparency
+    errorStroke.Parent = errorPanel
+
+    local errorPaddingValue = (theme.errorPanel and theme.errorPanel.sectionPadding)
+        or DEFAULT_THEME.errorPanel.sectionPadding
+        or 10
+    local errorPadding = Instance.new("UIPadding")
+    errorPadding.PaddingTop = UDim.new(0, errorPaddingValue)
+    errorPadding.PaddingBottom = UDim.new(0, errorPaddingValue)
+    errorPadding.PaddingLeft = UDim.new(0, errorPaddingValue)
+    errorPadding.PaddingRight = UDim.new(0, errorPaddingValue)
+    errorPadding.Parent = errorPanel
+
+    local errorLayout = Instance.new("UIListLayout")
+    errorLayout.FillDirection = Enum.FillDirection.Vertical
+    errorLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    errorLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    errorLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    errorLayout.Padding = UDim.new(0, (theme.errorPanel and theme.errorPanel.sectionSpacing)
+        or DEFAULT_THEME.errorPanel.sectionSpacing
+        or 8)
+    errorLayout.Parent = errorPanel
+
+    local errorTitle = Instance.new("TextLabel")
+    errorTitle.Name = "Title"
+    errorTitle.BackgroundTransparency = 1
+    errorTitle.AutomaticSize = Enum.AutomaticSize.Y
+    errorTitle.Size = UDim2.new(1, 0, 0, 0)
+    errorTitle.TextWrapped = true
+    errorTitle.TextXAlignment = Enum.TextXAlignment.Left
+    errorTitle.TextYAlignment = Enum.TextYAlignment.Top
+    errorTitle.Font = (theme.errorPanel and theme.errorPanel.titleFont) or DEFAULT_THEME.errorPanel.titleFont
+    errorTitle.TextSize = (theme.errorPanel and theme.errorPanel.titleTextSize) or DEFAULT_THEME.errorPanel.titleTextSize
+    errorTitle.TextColor3 = (theme.errorPanel and theme.errorPanel.titleColor) or DEFAULT_THEME.errorPanel.titleColor
+    errorTitle.Text = ""
+    errorTitle.Visible = false
+    errorTitle.LayoutOrder = 1
+    errorTitle.Parent = errorPanel
+
+    local errorSummary = Instance.new("TextLabel")
+    errorSummary.Name = "Summary"
+    errorSummary.BackgroundTransparency = 1
+    errorSummary.AutomaticSize = Enum.AutomaticSize.Y
+    errorSummary.Size = UDim2.new(1, 0, 0, 0)
+    errorSummary.TextWrapped = true
+    errorSummary.TextXAlignment = Enum.TextXAlignment.Left
+    errorSummary.TextYAlignment = Enum.TextYAlignment.Top
+    errorSummary.Font = (theme.errorPanel and theme.errorPanel.summaryFont) or DEFAULT_THEME.errorPanel.summaryFont
+    errorSummary.TextSize = (theme.errorPanel and theme.errorPanel.summaryTextSize) or DEFAULT_THEME.errorPanel.summaryTextSize
+    errorSummary.TextColor3 = (theme.errorPanel and theme.errorPanel.summaryColor) or DEFAULT_THEME.errorPanel.summaryColor
+    errorSummary.Text = ""
+    errorSummary.Visible = false
+    errorSummary.LayoutOrder = 2
+    errorSummary.Parent = errorPanel
+
+    local errorLogScroll = Instance.new("ScrollingFrame")
+    errorLogScroll.Name = "Details"
+    errorLogScroll.BackgroundTransparency = 1
+    errorLogScroll.BorderSizePixel = 0
+    errorLogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    errorLogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
+    errorLogScroll.Size = UDim2.new(1, 0, 0, 140)
+    errorLogScroll.Visible = false
+    errorLogScroll.ScrollingDirection = Enum.ScrollingDirection.Y
+    errorLogScroll.ScrollBarThickness = 6
+    errorLogScroll.VerticalScrollBarInset = Enum.ScrollBarInset.Always
+    errorLogScroll.ScrollBarImageColor3 = (theme.errorPanel and theme.errorPanel.scrollBarColor)
+        or DEFAULT_THEME.errorPanel.scrollBarColor
+    errorLogScroll.ScrollBarImageTransparency = (theme.errorPanel and theme.errorPanel.scrollBarTransparency)
+        or DEFAULT_THEME.errorPanel.scrollBarTransparency
+    errorLogScroll.LayoutOrder = 3
+    errorLogScroll.Parent = errorPanel
+
+    local errorLogPadding = Instance.new("UIPadding")
+    errorLogPadding.PaddingLeft = UDim.new(0, 4)
+    errorLogPadding.PaddingRight = UDim.new(0, 4)
+    errorLogPadding.PaddingTop = UDim.new(0, 4)
+    errorLogPadding.PaddingBottom = UDim.new(0, 4)
+    errorLogPadding.Parent = errorLogScroll
+
+    local errorLogList = Instance.new("Frame")
+    errorLogList.Name = "List"
+    errorLogList.BackgroundTransparency = 1
+    errorLogList.AutomaticSize = Enum.AutomaticSize.Y
+    errorLogList.Size = UDim2.new(1, -4, 0, 0)
+    errorLogList.Parent = errorLogScroll
+
+    local errorLogLayout = Instance.new("UIListLayout")
+    errorLogLayout.FillDirection = Enum.FillDirection.Vertical
+    errorLogLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    errorLogLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    errorLogLayout.Padding = UDim.new(0, (theme.errorPanel and theme.errorPanel.listSpacing)
+        or DEFAULT_THEME.errorPanel.listSpacing
+        or 8)
+    errorLogLayout.Parent = errorLogList
+
+    local errorActions = Instance.new("Frame")
+    errorActions.Name = "ErrorActions"
+    errorActions.BackgroundTransparency = 1
+    errorActions.AutomaticSize = Enum.AutomaticSize.Y
+    errorActions.Size = UDim2.new(1, 0, 0, 0)
+    errorActions.Visible = false
+    errorActions.LayoutOrder = 4
+    errorActions.Parent = errorPanel
+
+    local errorActionsLayout = Instance.new("UIListLayout")
+    errorActionsLayout.FillDirection = Enum.FillDirection.Horizontal
+    errorActionsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Right
+    errorActionsLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+    errorActionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    errorActionsLayout.Padding = UDim.new(0, (theme.errorPanel and theme.errorPanel.sectionSpacing)
+        or DEFAULT_THEME.errorPanel.sectionSpacing
+        or 8)
+    errorActionsLayout.Parent = errorActions
+
+    local copyButton = Instance.new("TextButton")
+    copyButton.Name = "CopyButton"
+    copyButton.Text = "Copy error"
+    copyButton.Font = (theme.errorPanel and theme.errorPanel.actionFont) or DEFAULT_THEME.errorPanel.actionFont
+    copyButton.TextSize = (theme.errorPanel and theme.errorPanel.actionTextSize) or DEFAULT_THEME.errorPanel.actionTextSize
+    copyButton.TextColor3 = (theme.errorPanel and theme.errorPanel.actionPrimaryTextColor)
+        or DEFAULT_THEME.errorPanel.actionPrimaryTextColor
+    copyButton.BackgroundColor3 = (theme.errorPanel and theme.errorPanel.actionPrimaryColor)
+        or DEFAULT_THEME.errorPanel.actionPrimaryColor
+    copyButton.AutoButtonColor = true
+    copyButton.BackgroundTransparency = 0
+    copyButton.Visible = false
+    copyButton.Size = UDim2.new(0, 156, 0, 34)
+    copyButton.LayoutOrder = 1
+    copyButton.Parent = errorActions
+
+    local copyCorner = Instance.new("UICorner")
+    copyCorner.CornerRadius = (theme.errorPanel and theme.errorPanel.entryCornerRadius)
+        or DEFAULT_THEME.errorPanel.entryCornerRadius
+        or UDim.new(0, 8)
+    copyCorner.Parent = copyButton
+
+    local docsButton = Instance.new("TextButton")
+    docsButton.Name = "DocsButton"
+    docsButton.Text = "Open docs"
+    docsButton.Font = (theme.errorPanel and theme.errorPanel.actionFont) or DEFAULT_THEME.errorPanel.actionFont
+    docsButton.TextSize = (theme.errorPanel and theme.errorPanel.actionTextSize) or DEFAULT_THEME.errorPanel.actionTextSize
+    docsButton.TextColor3 = (theme.errorPanel and theme.errorPanel.actionSecondaryTextColor)
+        or DEFAULT_THEME.errorPanel.actionSecondaryTextColor
+    docsButton.BackgroundColor3 = (theme.errorPanel and theme.errorPanel.actionSecondaryColor)
+        or DEFAULT_THEME.errorPanel.actionSecondaryColor
+    docsButton.AutoButtonColor = true
+    docsButton.BackgroundTransparency = 0
+    docsButton.Visible = false
+    docsButton.Size = UDim2.new(0, 156, 0, 34)
+    docsButton.LayoutOrder = 2
+    docsButton.Parent = errorActions
+
+    local docsCorner = Instance.new("UICorner")
+    docsCorner.CornerRadius = (theme.errorPanel and theme.errorPanel.entryCornerRadius)
+        or DEFAULT_THEME.errorPanel.entryCornerRadius
+        or UDim.new(0, 8)
+    docsCorner.Parent = docsButton
+
     local tipLabel = createTipLabel(infoColumn, theme)
-    tipLabel.LayoutOrder = 4
+    tipLabel.LayoutOrder = 5
 
     local actionsRow, actionsLayout = createActionsRow(infoColumn, theme)
     actionsRow.AnchorPoint = Vector2.new(0.5, 0)
     actionsRow.Position = UDim2.new(0.5, 0, 0, 0)
-    actionsRow.LayoutOrder = 5
+    actionsRow.LayoutOrder = 6
 
     local dashboardColumn = Instance.new("Frame")
     dashboardColumn.Name = "DashboardColumn"
@@ -711,6 +932,26 @@ function LoadingOverlay.new(options)
         _progressFill = progressFill,
         _statusLabel = statusLabel,
         _tipLabel = tipLabel,
+        _errorPanel = errorPanel,
+        _errorPanelCorner = errorCorner,
+        _errorPanelStroke = errorStroke,
+        _errorTitle = errorTitle,
+        _errorSummary = errorSummary,
+        _errorLogScroll = errorLogScroll,
+        _errorLogList = errorLogList,
+        _errorLogLayout = errorLogLayout,
+        _errorLogPadding = errorLogPadding,
+        _errorActionsFrame = errorActions,
+        _errorActionsLayout = errorActionsLayout,
+        _errorCopyButton = copyButton,
+        _errorDocsButton = docsButton,
+        _errorCopyCorner = copyCorner,
+        _errorDocsCorner = docsCorner,
+        _errorEntryInstances = {},
+        _errorActionConnections = {},
+        _currentErrorDetails = nil,
+        _errorCopyText = nil,
+        _errorDocsLink = nil,
         _actionsRow = actionsRow,
         _actionsLayout = actionsLayout,
         _dashboardMount = dashboardMount,
@@ -764,6 +1005,18 @@ function LoadingOverlay.new(options)
         _defaultDashboardSize = dashboardColumn.Size,
         _layoutState = nil,
     }, LoadingOverlay)
+
+    local function updateErrorCanvas()
+        self:_updateErrorCanvasSize()
+    end
+
+    if self._errorLogLayout then
+        local errorLayoutConnection = self._errorLogLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(updateErrorCanvas)
+        table.insert(self._connections, errorLayoutConnection)
+        updateErrorCanvas()
+    end
+
+    self:_restyleErrorButtons()
 
     local spinnerTween = TweenService:Create(spinner, TweenInfo.new(1.2, Enum.EasingStyle.Linear, Enum.EasingDirection.In, -1), {
         Rotation = 360,
@@ -1293,6 +1546,437 @@ local function disconnectConnections(connections)
     end
 end
 
+function LoadingOverlay:_updateErrorCanvasSize()
+    if not self._errorLogLayout or not self._errorLogScroll then
+        return
+    end
+
+    local paddingBottom = 0
+    if self._errorLogPadding and self._errorLogPadding.PaddingBottom then
+        paddingBottom = self._errorLogPadding.PaddingBottom.Offset
+    end
+
+    self._errorLogScroll.CanvasSize = UDim2.new(0, 0, 0, self._errorLogLayout.AbsoluteContentSize.Y + paddingBottom)
+end
+
+function LoadingOverlay:_restyleErrorButtons()
+    local copyButton = self._errorCopyButton
+    local docsButton = self._errorDocsButton
+    if not copyButton and not docsButton then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local errorTheme = theme.errorPanel or DEFAULT_THEME.errorPanel
+    local cornerRadius = errorTheme.entryCornerRadius or DEFAULT_THEME.errorPanel.entryCornerRadius or UDim.new(0, 8)
+
+    local function applyStyle(button, corner, variant)
+        if not button then
+            return
+        end
+        button.Font = errorTheme.actionFont or DEFAULT_THEME.errorPanel.actionFont
+        button.TextSize = errorTheme.actionTextSize or DEFAULT_THEME.errorPanel.actionTextSize
+        if variant == "secondary" then
+            button.BackgroundColor3 = errorTheme.actionSecondaryColor or DEFAULT_THEME.errorPanel.actionSecondaryColor
+            button.TextColor3 = errorTheme.actionSecondaryTextColor or DEFAULT_THEME.errorPanel.actionSecondaryTextColor
+        else
+            button.BackgroundColor3 = errorTheme.actionPrimaryColor or DEFAULT_THEME.errorPanel.actionPrimaryColor
+            button.TextColor3 = errorTheme.actionPrimaryTextColor or DEFAULT_THEME.errorPanel.actionPrimaryTextColor
+        end
+        if corner then
+            corner.CornerRadius = cornerRadius
+        end
+    end
+
+    applyStyle(copyButton, self._errorCopyCorner, "primary")
+    applyStyle(docsButton, self._errorDocsCorner, "secondary")
+
+    if self._errorActionsLayout then
+        self._errorActionsLayout.Padding = UDim.new(0, errorTheme.sectionSpacing or DEFAULT_THEME.errorPanel.sectionSpacing or 8)
+    end
+end
+
+function LoadingOverlay:_clearErrorDetails()
+    disconnectConnections(self._errorActionConnections)
+    self._errorActionConnections = {}
+
+    if self._errorEntryInstances then
+        for _, item in ipairs(self._errorEntryInstances) do
+            if item and item.Destroy then
+                item:Destroy()
+            end
+        end
+    end
+    self._errorEntryInstances = {}
+
+    if self._errorLogList then
+        for _, child in ipairs(self._errorLogList:GetChildren()) do
+            if child:IsA("GuiObject") then
+                child:Destroy()
+            end
+        end
+    end
+
+    if self._errorTitle then
+        self._errorTitle.Text = ""
+        self._errorTitle.Visible = false
+    end
+
+    if self._errorSummary then
+        self._errorSummary.Text = ""
+        self._errorSummary.Visible = false
+    end
+
+    if self._errorLogScroll then
+        self._errorLogScroll.Visible = false
+    end
+
+    if self._errorActionsFrame then
+        self._errorActionsFrame.Visible = false
+    end
+
+    if self._errorPanel then
+        self._errorPanel.Visible = false
+    end
+
+    self._errorCopyText = nil
+    self._errorDocsLink = nil
+
+    self:_updateErrorCanvasSize()
+end
+
+function LoadingOverlay:_updateErrorActions(detail)
+    if not self._errorActionsFrame then
+        return
+    end
+
+    disconnectConnections(self._errorActionConnections)
+    self._errorActionConnections = {}
+
+    local copyButton = self._errorCopyButton
+    local docsButton = self._errorDocsButton
+
+    local hasCopy = detail and typeof(detail.copyText) == "string" and detail.copyText ~= ""
+    local copyAllowed = hasCopy and typeof(setclipboard) == "function"
+    self._errorCopyText = hasCopy and detail.copyText or nil
+
+    if copyButton then
+        copyButton.Visible = hasCopy
+        copyButton.Active = copyAllowed
+        copyButton.AutoButtonColor = copyAllowed
+        copyButton.TextTransparency = (hasCopy and not copyAllowed) and 0.35 or 0
+        local copyLabel = detail and detail.copyLabel or "Copy error"
+        if not copyLabel or copyLabel == "" then
+            copyLabel = "Copy error"
+        end
+        copyButton.Text = copyLabel
+
+        if hasCopy and copyAllowed then
+            local connection = copyButton.MouseButton1Click:Connect(function()
+                if self._destroyed or not self._errorCopyText then
+                    return
+                end
+
+                local ok, err = pcall(setclipboard, self._errorCopyText)
+                if not ok then
+                    warn("AutoParry: failed to copy error payload", err)
+                    return
+                end
+
+                local successLabel = (detail and detail.copySuccessLabel) or "Copied!"
+                copyButton.Text = successLabel
+
+                task.delay(2.5, function()
+                    if self._destroyed or self._errorCopyButton ~= copyButton or not copyButton.Visible then
+                        return
+                    end
+                    local resetLabel = (detail and detail.copyLabel) or "Copy error"
+                    if not resetLabel or resetLabel == "" then
+                        resetLabel = "Copy error"
+                    end
+                    copyButton.Text = resetLabel
+                end)
+            end)
+            table.insert(self._errorActionConnections, connection)
+        end
+    end
+
+    local hasDocs = detail and typeof(detail.docsLink) == "string" and detail.docsLink ~= ""
+    self._errorDocsLink = hasDocs and detail.docsLink or nil
+
+    if docsButton then
+        docsButton.Visible = hasDocs
+        docsButton.Active = hasDocs
+        docsButton.AutoButtonColor = hasDocs
+        docsButton.TextTransparency = hasDocs and 0 or 0.35
+        local docsLabel = detail and detail.docsLabel or "Open docs"
+        if not docsLabel or docsLabel == "" then
+            docsLabel = "Open docs"
+        end
+        docsButton.Text = docsLabel
+
+        if hasDocs then
+            local connection = docsButton.MouseButton1Click:Connect(function()
+                if self._destroyed or not self._errorDocsLink then
+                    return
+                end
+
+                local ok, err = pcall(function()
+                    if GuiService and GuiService.OpenBrowserWindow then
+                        GuiService:OpenBrowserWindow(self._errorDocsLink)
+                    else
+                        warn("AutoParry: GuiService.OpenBrowserWindow unavailable")
+                    end
+                end)
+                if not ok then
+                    warn("AutoParry: failed to open documentation link", err)
+                end
+            end)
+            table.insert(self._errorActionConnections, connection)
+        end
+    end
+
+    local hasActions = false
+    if copyButton and copyButton.Visible then
+        hasActions = true
+    end
+    if docsButton and docsButton.Visible then
+        hasActions = true
+    end
+
+    self._errorActionsFrame.Visible = hasActions
+
+    self:_restyleErrorButtons()
+end
+
+local function ensureArray(value)
+    if typeof(value) ~= "table" then
+        return {}
+    end
+    local result = {}
+    for index, item in ipairs(value) do
+        result[index] = item
+    end
+    return result
+end
+
+local function coerceEntry(value)
+    if value == nil then
+        return nil
+    end
+    if typeof(value) ~= "table" then
+        return { value = value }
+    end
+    return value
+end
+
+function LoadingOverlay:_renderErrorDetails(detail)
+    if not self._errorPanel then
+        return
+    end
+
+    local visible = detail.visible ~= false
+    if detail.kind and detail.kind ~= "error" and detail.force ~= true then
+        visible = false
+    end
+
+    if not visible then
+        self:_clearErrorDetails()
+        return
+    end
+
+    self._errorPanel.Visible = true
+
+    if self._errorTitle then
+        local title = detail.title or detail.name or detail.message or "AutoParry error"
+        self._errorTitle.Text = title
+        self._errorTitle.Visible = title ~= nil and title ~= ""
+    end
+
+    if self._errorSummary then
+        local summary = detail.summary or detail.description or detail.message or ""
+        self._errorSummary.Text = summary
+        self._errorSummary.Visible = summary ~= nil and summary ~= ""
+    end
+
+    if not self._errorLogList or not self._errorLogScroll then
+        self:_updateErrorActions(detail)
+        return
+    end
+
+    for _, child in ipairs(self._errorLogList:GetChildren()) do
+        if child:IsA("GuiObject") then
+            child:Destroy()
+        end
+    end
+
+    self._errorEntryInstances = {}
+
+    local aggregated = {}
+
+    for _, entry in ipairs(ensureArray(detail.entries)) do
+        table.insert(aggregated, coerceEntry(entry))
+    end
+
+    if typeof(detail.logs) == "table" then
+        for _, entry in ipairs(detail.logs) do
+            if typeof(entry) == "table" then
+                table.insert(aggregated, coerceEntry(entry))
+            elseif entry ~= nil then
+                table.insert(aggregated, { label = "Log", value = entry })
+            end
+        end
+    elseif detail.log ~= nil then
+        if typeof(detail.log) == "table" then
+            table.insert(aggregated, coerceEntry(detail.log))
+        else
+            table.insert(aggregated, { label = "Log", value = detail.log })
+        end
+    end
+
+    if typeof(detail.tips) == "table" then
+        for _, tip in ipairs(detail.tips) do
+            table.insert(aggregated, { label = "Tip", value = tip, kind = "tip" })
+        end
+    elseif detail.tip ~= nil then
+        table.insert(aggregated, { label = "Tip", value = detail.tip, kind = "tip" })
+    end
+
+    if detail.stack or detail.stackTrace then
+        table.insert(aggregated, { label = "Stack trace", value = detail.stackTrace or detail.stack, kind = "stack" })
+    end
+
+    if detail.reason and detail.includeReason ~= false then
+        table.insert(aggregated, { label = "Reason", value = detail.reason })
+    end
+
+    if detail.payloadText then
+        table.insert(aggregated, { label = "Payload", value = detail.payloadText, kind = "stack" })
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local errorTheme = theme.errorPanel or DEFAULT_THEME.errorPanel
+
+    local visibleEntries = 0
+
+    for index, entry in ipairs(aggregated) do
+        entry = coerceEntry(entry)
+        if entry then
+            local value = entry.value or entry.text or entry.message or entry[1]
+            if value ~= nil then
+                if typeof(value) ~= "string" then
+                    value = tostring(value)
+                end
+                value = value:gsub("%s+$", "")
+                if value ~= "" then
+                    local frame = Instance.new("Frame")
+                    frame.Name = string.format("Entry%d", index)
+                    frame.BackgroundTransparency = errorTheme.entryBackgroundTransparency or DEFAULT_THEME.errorPanel.entryBackgroundTransparency
+                    frame.BackgroundColor3 = errorTheme.entryBackgroundColor or DEFAULT_THEME.errorPanel.entryBackgroundColor
+                    frame.BorderSizePixel = 0
+                    frame.AutomaticSize = Enum.AutomaticSize.Y
+                    frame.Size = UDim2.new(1, 0, 0, 0)
+                    frame.LayoutOrder = index
+                    frame.Parent = self._errorLogList
+
+                    local corner = Instance.new("UICorner")
+                    corner.CornerRadius = errorTheme.entryCornerRadius or DEFAULT_THEME.errorPanel.entryCornerRadius or UDim.new(0, 8)
+                    corner.Parent = frame
+
+                    local padding = Instance.new("UIPadding")
+                    padding.PaddingTop = UDim.new(0, 8)
+                    padding.PaddingBottom = UDim.new(0, 8)
+                    padding.PaddingLeft = UDim.new(0, 10)
+                    padding.PaddingRight = UDim.new(0, 10)
+                    padding.Parent = frame
+
+                    local layout = Instance.new("UIListLayout")
+                    layout.FillDirection = Enum.FillDirection.Vertical
+                    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+                    layout.SortOrder = Enum.SortOrder.LayoutOrder
+                    layout.Padding = UDim.new(0, entry.label and entry.label ~= "" and 4 or 0)
+                    layout.Parent = frame
+
+                    if entry.label and entry.label ~= "" then
+                        local labelText = Instance.new("TextLabel")
+                        labelText.Name = "Label"
+                        labelText.BackgroundTransparency = 1
+                        labelText.AutomaticSize = Enum.AutomaticSize.Y
+                        labelText.Size = UDim2.new(1, 0, 0, 0)
+                        labelText.Font = errorTheme.entryLabelFont or DEFAULT_THEME.errorPanel.entryLabelFont
+                        labelText.TextSize = errorTheme.entryLabelTextSize or DEFAULT_THEME.errorPanel.entryLabelTextSize
+                        labelText.TextColor3 = errorTheme.entryLabelColor or DEFAULT_THEME.errorPanel.entryLabelColor
+                        labelText.TextXAlignment = Enum.TextXAlignment.Left
+                        labelText.TextYAlignment = Enum.TextYAlignment.Top
+                        labelText.TextWrapped = true
+                        labelText.Text = string.upper(entry.label)
+                        labelText.LayoutOrder = 1
+                        labelText.Parent = frame
+                    end
+
+                    local body = Instance.new("TextLabel")
+                    body.Name = "Body"
+                    body.BackgroundTransparency = 1
+                    body.AutomaticSize = Enum.AutomaticSize.Y
+                    body.Size = UDim2.new(1, 0, 0, 0)
+                    body.Font = (entry.kind == "stack" and Enum.Font.Code)
+                        or errorTheme.entryFont
+                        or DEFAULT_THEME.errorPanel.entryFont
+                    body.TextSize = errorTheme.entryTextSize or DEFAULT_THEME.errorPanel.entryTextSize
+                    body.TextColor3 = errorTheme.entryTextColor or DEFAULT_THEME.errorPanel.entryTextColor
+                    body.TextXAlignment = Enum.TextXAlignment.Left
+                    body.TextYAlignment = Enum.TextYAlignment.Top
+                    body.TextWrapped = true
+                    body.RichText = entry.richText == true
+                    body.Text = value
+                    body.LayoutOrder = 2
+                    body.Parent = frame
+
+                    table.insert(self._errorEntryInstances, frame)
+                    visibleEntries += 1
+                end
+            end
+        end
+    end
+
+    self._errorLogScroll.Visible = visibleEntries > 0
+
+    self:_updateErrorActions(detail)
+    self:_updateErrorCanvasSize()
+
+    local camera = Workspace.CurrentCamera
+    if camera then
+        self:_applyResponsiveLayout(camera.ViewportSize)
+    else
+        self:_applyResponsiveLayout(nil)
+    end
+end
+
+function LoadingOverlay:setErrorDetails(detail)
+    if self._destroyed then
+        return
+    end
+
+    if detail == nil then
+        self._currentErrorDetails = nil
+        self:_clearErrorDetails()
+        local camera = Workspace.CurrentCamera
+        if camera or self._layoutState then
+            self:_applyResponsiveLayout(camera and camera.ViewportSize or nil)
+        end
+        return
+    end
+
+    if typeof(detail) ~= "table" then
+        self._currentErrorDetails = nil
+        self:_clearErrorDetails()
+        return
+    end
+
+    self._currentErrorDetails = Util.deepCopy(detail)
+    self:_renderErrorDetails(detail)
+end
+
 function LoadingOverlay:setActions(actions)
     if self._destroyed then
         return
@@ -1381,15 +2065,36 @@ function LoadingOverlay:showTip(text)
     self:_applyTipVisibility()
 end
 
-function LoadingOverlay:setStatus(text, options)
+function LoadingOverlay:setStatus(status, options)
     if self._destroyed then
         return
     end
     options = options or {}
-    text = text or ""
+
+    local detail = options.detail
+    local text = status
+    local dashboardPayload
+
+    if typeof(status) == "table" then
+        detail = detail or status.detail or status.details
+        text = status.text or status.message or ""
+        if options.force == nil and status.force ~= nil then
+            options.force = status.force
+        end
+        dashboardPayload = Util.deepCopy(status)
+        dashboardPayload.text = dashboardPayload.text or text
+        dashboardPayload.detail = dashboardPayload.detail or detail
+    else
+        text = text or ""
+        dashboardPayload = { text = text, detail = detail }
+    end
 
     local label = self._statusLabel
-    if label.Text == text and not options.force then
+    local detailChanged = detail ~= nil or (self._currentErrorDetails ~= nil and detail == nil)
+    if label.Text == text and not options.force and not detailChanged then
+        if self._dashboard and self._dashboard.setStatusText then
+            self._dashboard:setStatusText(dashboardPayload)
+        end
         return
     end
 
@@ -1410,7 +2115,7 @@ function LoadingOverlay:setStatus(text, options)
     tween:Play()
 
     if self._dashboard and self._dashboard.setStatusText then
-        self._dashboard:setStatusText(text)
+        self._dashboard:setStatusText(dashboardPayload)
     end
 end
 
@@ -1540,6 +2245,49 @@ function LoadingOverlay:applyTheme(themeOverrides)
         self._badge.BackgroundTransparency = theme.hologramBadgeTransparency or DEFAULT_THEME.hologramBadgeTransparency
         self._badge.Font = (theme.typography and theme.typography.badgeFont) or DEFAULT_THEME.typography.badgeFont
         self._badge.TextSize = (theme.typography and theme.typography.badgeTextSize) or DEFAULT_THEME.typography.badgeTextSize
+    end
+    local errorTheme = theme.errorPanel or DEFAULT_THEME.errorPanel
+    if self._errorPanel then
+        self._errorPanel.BackgroundColor3 = errorTheme.backgroundColor or DEFAULT_THEME.errorPanel.backgroundColor
+        self._errorPanel.BackgroundTransparency = errorTheme.backgroundTransparency or DEFAULT_THEME.errorPanel.backgroundTransparency
+    end
+    if self._errorPanelCorner then
+        self._errorPanelCorner.CornerRadius = errorTheme.cornerRadius or DEFAULT_THEME.errorPanel.cornerRadius
+    end
+    if self._errorPanelStroke then
+        self._errorPanelStroke.Color = errorTheme.strokeColor or DEFAULT_THEME.errorPanel.strokeColor
+        self._errorPanelStroke.Transparency = errorTheme.strokeTransparency or DEFAULT_THEME.errorPanel.strokeTransparency
+    end
+    if self._errorTitle then
+        self._errorTitle.Font = errorTheme.titleFont or DEFAULT_THEME.errorPanel.titleFont
+        self._errorTitle.TextSize = errorTheme.titleTextSize or DEFAULT_THEME.errorPanel.titleTextSize
+        self._errorTitle.TextColor3 = errorTheme.titleColor or DEFAULT_THEME.errorPanel.titleColor
+        if self._currentErrorDetails and self._currentErrorDetails.title then
+            self._errorTitle.Text = self._currentErrorDetails.title
+        end
+    end
+    if self._errorSummary then
+        self._errorSummary.Font = errorTheme.summaryFont or DEFAULT_THEME.errorPanel.summaryFont
+        self._errorSummary.TextSize = errorTheme.summaryTextSize or DEFAULT_THEME.errorPanel.summaryTextSize
+        self._errorSummary.TextColor3 = errorTheme.summaryColor or DEFAULT_THEME.errorPanel.summaryColor
+    end
+    if self._errorLogScroll then
+        self._errorLogScroll.ScrollBarImageColor3 = errorTheme.scrollBarColor or DEFAULT_THEME.errorPanel.scrollBarColor
+        self._errorLogScroll.ScrollBarImageTransparency = errorTheme.scrollBarTransparency or DEFAULT_THEME.errorPanel.scrollBarTransparency
+    end
+    if self._errorLogLayout then
+        self._errorLogLayout.Padding = UDim.new(0, errorTheme.listSpacing or DEFAULT_THEME.errorPanel.listSpacing or 8)
+    end
+    if self._errorLogPadding then
+        local pad = errorTheme.sectionPadding or DEFAULT_THEME.errorPanel.sectionPadding or 10
+        self._errorLogPadding.PaddingTop = UDim.new(0, pad)
+        self._errorLogPadding.PaddingBottom = UDim.new(0, pad)
+        self._errorLogPadding.PaddingLeft = UDim.new(0, pad)
+        self._errorLogPadding.PaddingRight = UDim.new(0, pad)
+    end
+    self:_restyleErrorButtons()
+    if self._currentErrorDetails then
+        self:_renderErrorDetails(Util.deepCopy(self._currentErrorDetails))
     end
     if self._actionsRow then
         self._actionsRow.AnchorPoint = Vector2.new(0.5, 0)
@@ -1749,6 +2497,20 @@ function LoadingOverlay:destroy()
         self._completedSignal:destroy()
         self._completedSignal = nil
     end
+
+    disconnectConnections(self._errorActionConnections)
+    self._errorActionConnections = nil
+    if self._errorEntryInstances then
+        for _, item in ipairs(self._errorEntryInstances) do
+            if item and item.Destroy then
+                item:Destroy()
+            end
+        end
+    end
+    self._errorEntryInstances = nil
+    self._currentErrorDetails = nil
+    self._errorCopyText = nil
+    self._errorDocsLink = nil
 
     disconnectConnections(self._actionConnections)
     self._actionConnections = nil
