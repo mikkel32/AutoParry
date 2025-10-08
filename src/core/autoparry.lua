@@ -102,7 +102,6 @@ local initProgress = { stage = "waiting-player" }
 local stateChanged = Signal.new()
 local parryEvent = Signal.new()
 local parrySuccessSignal = Signal.new()
-parrySuccessSignal:connect(handleParrySuccessLatency)
 local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 
@@ -143,9 +142,111 @@ local characterRemovingConnection: RBXScriptConnection?
 local trackedBall: BasePart?
 local parryHeld = false
 local parryHeldBallId: string?
+local pendingParryRelease = false
+local sendParryKeyEvent
+local setStage
+local updateStatusLabel
 local virtualInputWarningIssued = false
+local virtualInputUnavailable = false
+local virtualInputRetryAt = 0
+
+local function noteVirtualInputFailure(delay)
+    virtualInputUnavailable = true
+    if typeof(delay) == "number" and delay > 0 then
+        virtualInputRetryAt = os.clock() + delay
+    else
+        virtualInputRetryAt = os.clock() + 1.5
+    end
+
+    if state.enabled then
+        setStage("waiting-input", { reason = "virtual-input" })
+        updateStatusLabel({ "Auto-Parry F", "Status: waiting for input permissions" })
+    end
+end
+
+local function noteVirtualInputSuccess()
+    if virtualInputUnavailable then
+        virtualInputUnavailable = false
+        virtualInputRetryAt = 0
+
+        if state.enabled and initProgress.stage == "waiting-input" then
+            publishReadyStatus()
+        end
+
+        if pendingParryRelease then
+            pendingParryRelease = false
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            end
+        end
+    end
+end
 
 local immortalController = ImmortalModule and ImmortalModule.new({}) or nil
+local immortalMissingMethodWarnings = {}
+
+local function resolveVirtualInputManager()
+    if VirtualInputManager then
+        return VirtualInputManager
+    end
+
+    local ok, manager = pcall(game.GetService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    ok, manager = pcall(game.FindService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    return nil
+end
+
+local function warnOnceImmortalMissing(methodName)
+    if immortalMissingMethodWarnings[methodName] then
+        return
+    end
+
+    immortalMissingMethodWarnings[methodName] = true
+    warn(("AutoParry: Immortal controller missing '%s' support; disabling Immortal features."):format(tostring(methodName)))
+end
+
+local function disableImmortalSupport()
+    if not state.immortalEnabled then
+        return false
+    end
+
+    state.immortalEnabled = false
+    updateImmortalButton()
+    syncGlobalSettings()
+    immortalStateChanged:fire(false)
+    return true
+end
+
+local function callImmortalController(methodName, ...)
+    if not immortalController then
+        return false
+    end
+
+    local method = immortalController[methodName]
+    if typeof(method) ~= "function" then
+        warnOnceImmortalMissing(methodName)
+        disableImmortalSupport()
+        return false
+    end
+
+    local ok, result = pcall(method, immortalController, ...)
+    if not ok then
+        warn(("AutoParry: Immortal controller '%s' call failed: %s"):format(tostring(methodName), tostring(result)))
+        disableImmortalSupport()
+        return false
+    end
+
+    return true, result
+end
 
 type RollingStat = {
     count: number,
@@ -550,6 +651,8 @@ local function handleParrySuccessLatency(...)
         end
     end
 end
+
+parrySuccessSignal:connect(handleParrySuccessLatency)
 
 local function clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
@@ -1206,7 +1309,7 @@ local function applyInitStatus(update)
     initStatus:fire(cloneTable(initProgress))
 end
 
-local function setStage(stage, extra)
+setStage = function(stage, extra)
     local payload = { stage = stage }
     if typeof(extra) == "table" then
         for key, value in pairs(extra) do
@@ -1276,7 +1379,7 @@ local function updateImmortalButton()
     ImmortalButton.BackgroundColor3 = formatImmortalColor(state.immortalEnabled)
 end
 
-local function updateStatusLabel(lines)
+updateStatusLabel = function(lines)
     if not StatusLabel then
         return
     end
@@ -1293,7 +1396,7 @@ local function syncImmortalContextImpl()
         return
     end
 
-    immortalController:setContext({
+    local okContext = callImmortalController("setContext", {
         player = LocalPlayer,
         character = Character,
         humanoid = Humanoid,
@@ -1301,8 +1404,15 @@ local function syncImmortalContextImpl()
         ballsFolder = BallsFolder,
     })
 
-    immortalController:setBallsFolder(BallsFolder)
-    immortalController:setEnabled(state.immortalEnabled)
+    if not okContext then
+        return
+    end
+
+    if not callImmortalController("setBallsFolder", BallsFolder) then
+        return
+    end
+
+    callImmortalController("setEnabled", state.immortalEnabled)
 end
 
 syncImmortalContext = syncImmortalContextImpl
@@ -1348,13 +1458,14 @@ local function safeClearBallVisuals()
     trackedBall = nil
 end
 
-local function sendParryKeyEvent(isPressed)
-    local manager = VirtualInputManager
+sendParryKeyEvent = function(isPressed)
+    local manager = resolveVirtualInputManager()
     if not manager then
         if not virtualInputWarningIssued then
             virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager unavailable; cannot issue parry input.")
         end
+        noteVirtualInputFailure(3)
         return false
     end
 
@@ -1367,6 +1478,7 @@ local function sendParryKeyEvent(isPressed)
             virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager.SendKeyEvent missing; cannot issue parry input.")
         end
+        noteVirtualInputFailure(3)
         return false
     end
 
@@ -1376,12 +1488,15 @@ local function sendParryKeyEvent(isPressed)
             virtualInputWarningIssued = true
             warn("AutoParry: failed to send parry input via VirtualInputManager:", result)
         end
+        noteVirtualInputFailure(2)
         return false
     end
 
     if virtualInputWarningIssued then
         virtualInputWarningIssued = false
     end
+
+    noteVirtualInputSuccess()
 
     return true
 end
@@ -1815,6 +1930,10 @@ end
 
 local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     local forcing = force == true
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() and not forcing then
+        return false
+    end
+
     if parryHeld then
         local sameBall = parryHeldBallId == ballId
         if sameBall and not forcing then
@@ -1822,7 +1941,15 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         end
 
         -- release the existing hold before pressing again or for a new ball
-        sendParryKeyEvent(false)
+        if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+            pendingParryRelease = true
+        else
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            else
+                pendingParryRelease = false
+            end
+        end
         parryHeld = false
         parryHeldBallId = nil
     end
@@ -1830,6 +1957,8 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     if not sendParryKeyEvent(true) then
         return false
     end
+
+    pendingParryRelease = false
 
     parryHeld = true
     parryHeldBallId = ballId
@@ -1859,7 +1988,15 @@ local function releaseParry()
     local ballId = parryHeldBallId
     parryHeld = false
     parryHeldBallId = nil
-    sendParryKeyEvent(false)
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+        pendingParryRelease = true
+    else
+        if not sendParryKeyEvent(false) then
+            pendingParryRelease = true
+        else
+            pendingParryRelease = false
+        end
+    end
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1875,9 +2012,7 @@ local function handleHumanoidDied()
     safeClearBallVisuals()
     enterRespawnWaitState()
     updateCharacter(nil)
-    if immortalController then
-        immortalController:handleHumanoidDied()
-    end
+    callImmortalController("handleHumanoidDied")
 end
 
 local function updateCharacter(character)
@@ -2809,19 +2944,20 @@ end
 
 function AutoParry.setImmortalEnabled(enabled)
     local desired = not not enabled
+    local before = state.immortalEnabled
 
-    local changed = state.immortalEnabled ~= desired
     state.immortalEnabled = desired
-
     syncImmortalContext()
+
+    local after = state.immortalEnabled
     updateImmortalButton()
     syncGlobalSettings()
 
-    if changed then
-        immortalStateChanged:fire(state.immortalEnabled)
+    if before ~= after then
+        immortalStateChanged:fire(after)
     end
 
-    return state.immortalEnabled
+    return after
 end
 
 function AutoParry.toggleImmortal()
@@ -2942,9 +3078,7 @@ end
 function AutoParry.destroy()
     AutoParry.disable()
     AutoParry.setImmortalEnabled(false)
-    if immortalController then
-        immortalController:destroy()
-    end
+    callImmortalController("destroy")
 
     if loopConnection then
         loopConnection:Disconnect()
