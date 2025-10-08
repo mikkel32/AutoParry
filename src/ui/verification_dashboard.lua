@@ -136,6 +136,12 @@ local DEFAULT_THEME = {
         glyphColor = Color3.fromRGB(82, 156, 255),
         glyphTransparency = 0.15,
     },
+    layout = {
+        widthScale = 0.96,
+        maxWidth = 720,
+        minWidth = 420,
+        horizontalPadding = 16,
+    },
     iconography = {
         pending = "rbxassetid://6031071050",
         active = "rbxassetid://6031075929",
@@ -1133,6 +1139,7 @@ end
 function VerificationDashboard.new(options)
     options = options or {}
     local theme = mergeTable(DEFAULT_THEME, options.theme or {})
+    local layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, theme.layout or {})
 
     local parent = options.parent
     assert(parent, "VerificationDashboard.new requires a parent frame")
@@ -1141,8 +1148,12 @@ function VerificationDashboard.new(options)
     root.Name = options.name or "VerificationDashboard"
     root.BackgroundTransparency = theme.backgroundTransparency
     root.BackgroundColor3 = Color3.new(0, 0, 0)
-    root.Size = UDim2.new(1, 0, 1, 0)
+    root.Size = UDim2.new(1, 0, 0, 0)
+    root.AutomaticSize = Enum.AutomaticSize.Y
+    root.LayoutOrder = options.layoutOrder or 1
+    root.ZIndex = options.zIndex or 1
     root.BorderSizePixel = 0
+    root.ClipsDescendants = false
     root.Parent = parent
 
     local padding = Instance.new("UIPadding")
@@ -1152,20 +1163,42 @@ function VerificationDashboard.new(options)
     padding.PaddingRight = UDim.new(0, 12)
     padding.Parent = root
 
+    local canvas = Instance.new("Frame")
+    canvas.Name = "Canvas"
+    canvas.AnchorPoint = Vector2.new(0.5, 0.5)
+    canvas.Position = UDim2.new(0.5, 0, 0.5, 0)
+    canvas.AutomaticSize = Enum.AutomaticSize.Y
+    canvas.Size = UDim2.new(layoutTheme.widthScale or 1, 0, 0, 0)
+    canvas.BackgroundTransparency = 1
+    canvas.ZIndex = 2
+    canvas.Parent = root
+
+    local canvasPadding = Instance.new("UIPadding")
+    canvasPadding.PaddingTop = UDim.new(0, 0)
+    canvasPadding.PaddingBottom = UDim.new(0, 0)
+    canvasPadding.PaddingLeft = UDim.new(0, layoutTheme.horizontalPadding or 0)
+    canvasPadding.PaddingRight = UDim.new(0, layoutTheme.horizontalPadding or 0)
+    canvasPadding.Parent = canvas
+
+    local canvasConstraint = Instance.new("UISizeConstraint")
+    canvasConstraint.MaxSize = Vector2.new(layoutTheme.maxWidth or 720, math.huge)
+    canvasConstraint.MinSize = Vector2.new(layoutTheme.minWidth or 420, 0)
+    canvasConstraint.Parent = canvas
+
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
-    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Center
     layout.VerticalAlignment = Enum.VerticalAlignment.Top
     layout.SortOrder = Enum.SortOrder.LayoutOrder
     layout.Padding = UDim.new(0, 18)
-    layout.Parent = root
+    layout.Parent = canvas
 
     local header = Instance.new("Frame")
     header.Name = "Header"
     header.BackgroundTransparency = 1
     header.Size = UDim2.new(1, 0, 0, 118)
     header.LayoutOrder = 1
-    header.Parent = root
+    header.Parent = canvas
 
     local headerLayout = Instance.new("UIListLayout")
     headerLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -1279,7 +1312,7 @@ function VerificationDashboard.new(options)
     insightsCard.LayoutOrder = 2
     insightsCard.AutomaticSize = Enum.AutomaticSize.Y
     insightsCard.Size = UDim2.new(1, 0, 0, 0)
-    insightsCard.Parent = root
+    insightsCard.Parent = canvas
 
     local insightsCorner = Instance.new("UICorner")
     insightsCorner.CornerRadius = UDim.new(0, 16)
@@ -1434,7 +1467,7 @@ function VerificationDashboard.new(options)
     timelineCard.AutomaticSize = Enum.AutomaticSize.Y
     timelineCard.Size = UDim2.new(1, 0, 0, 200)
     timelineCard.LayoutOrder = 3
-    timelineCard.Parent = root
+    timelineCard.Parent = canvas
 
     local timelineCorner = Instance.new("UICorner")
     timelineCorner.CornerRadius = UDim.new(0, 14)
@@ -1453,6 +1486,20 @@ function VerificationDashboard.new(options)
     timelinePadding.PaddingRight = UDim.new(0, 18)
     timelinePadding.Parent = timelineCard
 
+    local timelineGradient = Instance.new("UIGradient")
+    local baseCardColor = theme.cardColor
+    local accentMix = baseCardColor:Lerp(theme.accentColor, 0.12)
+    timelineGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, accentMix),
+        ColorSequenceKeypoint.new(1, baseCardColor),
+    })
+    timelineGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, math.clamp((theme.cardTransparency or 0) + 0.45, 0, 1)),
+        NumberSequenceKeypoint.new(1, 1),
+    })
+    timelineGradient.Rotation = 125
+    timelineGradient.Parent = timelineCard
+
     local timelineLayout = Instance.new("UIListLayout")
     timelineLayout.FillDirection = Enum.FillDirection.Vertical
     timelineLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -1467,6 +1514,7 @@ function VerificationDashboard.new(options)
     progressTrack.BackgroundColor3 = theme.cardColor:Lerp(theme.accentColor, 0.08)
     progressTrack.BackgroundTransparency = math.clamp((theme.cardTransparency or 0) + 0.12, 0, 1)
     progressTrack.BorderSizePixel = 0
+    progressTrack.ZIndex = 2
     progressTrack.LayoutOrder = 1
     progressTrack.Parent = timelineCard
 
@@ -1474,11 +1522,18 @@ function VerificationDashboard.new(options)
     trackCorner.CornerRadius = UDim.new(0, 6)
     trackCorner.Parent = progressTrack
 
+    local trackStroke = Instance.new("UIStroke")
+    trackStroke.Thickness = 1
+    trackStroke.Color = theme.connectorColor
+    trackStroke.Transparency = math.clamp((theme.connectorTransparency or 0.35) + 0.25, 0, 1)
+    trackStroke.Parent = progressTrack
+
     local progressFill = Instance.new("Frame")
     progressFill.Name = "Fill"
     progressFill.Size = UDim2.new(0, 0, 1, 0)
     progressFill.BackgroundColor3 = theme.accentColor
     progressFill.BorderSizePixel = 0
+    progressFill.ZIndex = 3
     progressFill.Parent = progressTrack
 
     local progressCorner = Instance.new("UICorner")
@@ -1527,7 +1582,7 @@ function VerificationDashboard.new(options)
     actionsFrame.LayoutOrder = 4
     actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
-    actionsFrame.Parent = root
+    actionsFrame.Parent = canvas
 
     local actionsLayout = Instance.new("UIListLayout")
     actionsLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -1598,6 +1653,10 @@ function VerificationDashboard.new(options)
     local self = setmetatable({
         _theme = theme,
         _root = root,
+        _canvas = canvas,
+        _canvasPadding = canvasPadding,
+        _canvasConstraint = canvasConstraint,
+        _layoutTheme = layoutTheme,
         _layout = layout,
         _header = header,
         _headerLayout = headerLayout,
@@ -1627,8 +1686,10 @@ function VerificationDashboard.new(options)
         _onControlChanged = options and options.onControlToggle or nil,
         _timelineCard = timelineCard,
         _timelineStroke = timelineStroke,
+        _timelineGradient = timelineGradient,
         _progressTrack = progressTrack,
         _progressFill = progressFill,
+        _progressTrackStroke = trackStroke,
         _progressTween = nil,
         _stepsFrame = listFrame,
         _steps = steps,
@@ -1715,6 +1776,40 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
     width = math.floor(tonumber(width) or 0)
     if width <= 0 then
         return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, theme.layout or {})
+    self._layoutTheme = layoutTheme
+
+    local canvas = self._canvas
+    if canvas then
+        local widthScale = math.clamp(layoutTheme.widthScale or 1, 0.6, 1)
+        canvas.Size = UDim2.new(widthScale, 0, 0, 0)
+    end
+
+    local canvasConstraint = self._canvasConstraint
+    if canvasConstraint then
+        local maxWidth = layoutTheme.maxWidth or width
+        local minWidth = layoutTheme.minWidth or maxWidth
+        if width > 0 then
+            maxWidth = math.min(maxWidth, width)
+            minWidth = math.min(minWidth, maxWidth)
+        end
+        canvasConstraint.MaxSize = Vector2.new(math.max(0, maxWidth), math.huge)
+        canvasConstraint.MinSize = Vector2.new(math.max(0, minWidth), 0)
+    end
+
+    local canvasPadding = self._canvasPadding
+    if canvasPadding then
+        local horizontalPadding = layoutTheme.horizontalPadding or 0
+        if width <= 540 then
+            horizontalPadding = math.max(8, math.floor(horizontalPadding * 0.75))
+        elseif width >= (layoutTheme.maxWidth or width) then
+            horizontalPadding = math.max(horizontalPadding, 20)
+        end
+        canvasPadding.PaddingLeft = UDim.new(0, horizontalPadding)
+        canvasPadding.PaddingRight = UDim.new(0, horizontalPadding)
     end
 
     local headerLayout = self._headerLayout
@@ -1973,6 +2068,8 @@ function VerificationDashboard:updateLayout(bounds)
             dashboardWidth = bounds.dashboardWidth,
             dashboardHeight = bounds.dashboardHeight,
             contentWidth = bounds.contentWidth,
+            scale = bounds.scale,
+            raw = bounds.raw,
         }
     end
 
@@ -2278,6 +2375,7 @@ function VerificationDashboard:applyTheme(theme)
     end
 
     local currentTheme = self._theme
+    self._layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, currentTheme.layout or {})
 
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
@@ -2300,6 +2398,11 @@ function VerificationDashboard:applyTheme(theme)
     if self._progressTrack then
         self._progressTrack.BackgroundColor3 = currentTheme.cardColor:Lerp(currentTheme.accentColor, 0.08)
         self._progressTrack.BackgroundTransparency = math.clamp((currentTheme.cardTransparency or 0) + 0.12, 0, 1)
+    end
+
+    if self._progressTrackStroke then
+        self._progressTrackStroke.Color = currentTheme.connectorColor
+        self._progressTrackStroke.Transparency = math.clamp((currentTheme.connectorTransparency or 0.35) + 0.25, 0, 1)
     end
 
     if self._progressFill then
@@ -2386,6 +2489,17 @@ function VerificationDashboard:applyTheme(theme)
     if self._timelineStroke then
         self._timelineStroke.Color = currentTheme.cardStrokeColor
         self._timelineStroke.Transparency = currentTheme.cardStrokeTransparency
+    end
+
+    if self._timelineGradient then
+        self._timelineGradient.Color = ColorSequence.new({
+            ColorSequenceKeypoint.new(0, currentTheme.cardColor:Lerp(currentTheme.accentColor, 0.12)),
+            ColorSequenceKeypoint.new(1, currentTheme.cardColor),
+        })
+        self._timelineGradient.Transparency = NumberSequence.new({
+            NumberSequenceKeypoint.new(0, math.clamp((currentTheme.cardTransparency or 0) + 0.45, 0, 1)),
+            NumberSequenceKeypoint.new(1, 1),
+        })
     end
 
     for _, definition in ipairs(STEP_DEFINITIONS) do
