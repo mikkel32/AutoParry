@@ -1022,11 +1022,13 @@ function LoadingOverlay.new(options)
     dashboardLayout.Parent = dashboardMount
 
     local dashboardMountConstraint = Instance.new("UISizeConstraint")
-    dashboardMountConstraint.MaxSize = Vector2.new(
-        theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760,
-        math.huge
-    )
-    dashboardMountConstraint.MinSize = Vector2.new(360, 0)
+    local maxDashboardWidth = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760
+    local minDashboardWidth = 360
+    if maxDashboardWidth < minDashboardWidth then
+        maxDashboardWidth, minDashboardWidth = minDashboardWidth, maxDashboardWidth
+    end
+    dashboardMountConstraint.MinSize = Vector2.new(minDashboardWidth, 0)
+    dashboardMountConstraint.MaxSize = Vector2.new(maxDashboardWidth, math.huge)
     dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
