@@ -40,6 +40,32 @@ The `loadingOverlay` option accepts `false` to opt out entirely, or a
 configuration table (documented below) to customise the status text, styling,
 and retry behaviour of the bootstrap overlay.
 
+### Rich error reporting
+
+When something goes wrong during bootstrap or verification the overlay expands
+into a dedicated error panel. The formatter described below now returns both a
+status string and a detail payload, so the overlay can render stack traces,
+module paths, remediation tips, and timeline metadata inline.
+
+- **Inspector entries** — contextual lines (such as module paths or HTTP
+  errors) appear inside the panel alongside copy-friendly buttons. Players can
+  tap **Copy error** to put the entire report on their clipboard when reaching
+  out for support.
+- **Documentation shortcut** — the **Open docs** button jumps directly to the
+  troubleshooting guide referenced in the error detail (overridable via
+  `docsLink`).
+- **Structured timeline** — verification stages that failed are highlighted in
+  the dashboard and error panel at the same time, making it obvious which step
+  needs attention.
+- **Responsive layout** — the panel automatically adapts its size and styling to
+  the active theme, keeps action buttons aligned with retry/cancel controls, and
+  clamps scroll regions to ensure long logs stay readable.
+
+Custom formatters can piggyback on the same pipeline by returning a table of
+the shape `{ text = "status string", detail = buildErrorDetail(state) }`. Any
+custom `overlay:setErrorDetails` calls you make will reuse the same UI pieces,
+so your bespoke bootstrap flow inherits the copy/docs affordances automatically.
+
 ### Loader-level options
 
 | option       | type      | default            | description |
