@@ -1211,13 +1211,8 @@ function VerificationDashboard.new(options)
     canvasPadding.Parent = canvas
 
     local canvasConstraint = Instance.new("UISizeConstraint")
-    local initialMaxWidth = layoutTheme.maxWidth or 720
-    local initialMinWidth = layoutTheme.minWidth or 420
-    if initialMaxWidth < initialMinWidth then
-        initialMaxWidth, initialMinWidth = initialMinWidth, initialMaxWidth
-    end
-    canvasConstraint.MinSize = Vector2.new(initialMinWidth, 0)
-    canvasConstraint.MaxSize = Vector2.new(initialMaxWidth, math.huge)
+    canvasConstraint.MaxSize = Vector2.new(layoutTheme.maxWidth or 720, math.huge)
+    canvasConstraint.MinSize = Vector2.new(layoutTheme.minWidth or 420, 0)
     canvasConstraint.Parent = canvas
 
     local layout = Instance.new("UIListLayout")
