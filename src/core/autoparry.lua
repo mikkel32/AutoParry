@@ -12,6 +12,7 @@ local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:FindService("Stats")
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require and Require("src/shared/util.lua") or require(script.Parent.Parent.shared.util)
@@ -112,6 +113,7 @@ local ballsFolderStatusSnapshot: { [string]: any }?
 local ballsFolderConnections: { RBXScriptConnection? }?
 local restartPending = false
 local scheduleRestart
+local syncImmortalContext = function() end
 
 local UiRoot: ScreenGui?
 local ToggleButton: TextButton?
@@ -453,7 +455,9 @@ local function clearRemoteState()
     watchedBallsFolder = nil
     pendingBallsFolderSearch = false
     ballsFolderStatusSnapshot = nil
-    syncImmortalContext()
+    if syncImmortalContext then
+        syncImmortalContext()
+    end
 end
 
 local function configureSuccessListeners(successRemotes)
@@ -770,7 +774,7 @@ local function updateStatusLabel(lines)
     end
 end
 
-local function syncImmortalContext()
+local function syncImmortalContextImpl()
     if not immortalController then
         return
     end
@@ -786,6 +790,8 @@ local function syncImmortalContext()
     immortalController:setBallsFolder(BallsFolder)
     immortalController:setEnabled(state.immortalEnabled)
 end
+
+syncImmortalContext = syncImmortalContextImpl
 
 local function enterRespawnWaitState()
     if LocalPlayer then
@@ -807,6 +813,57 @@ local function clearBallVisuals()
         BallBillboard.Adornee = nil
     end
     trackedBall = nil
+end
+
+local function destroyDashboardUi()
+    if not CoreGui then
+        return
+    end
+
+    for _, name in ipairs({ "AutoParryUI", "AutoParryLoadingOverlay" }) do
+        local screen = CoreGui:FindFirstChild(name)
+        if screen then
+            screen:Destroy()
+        end
+    end
+end
+
+local function removePlayerGuiUi()
+    local player = Players.LocalPlayer
+    if not player then
+        return
+    end
+
+    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    if not playerGui then
+        return
+    end
+
+    local legacyScreen = playerGui:FindFirstChild("AutoParryF_UI")
+    if legacyScreen then
+        legacyScreen:Destroy()
+    end
+end
+
+local function removeAutoParryExperience()
+    local destroyOk, destroyErr = pcall(function()
+        if typeof(AutoParry) == "table" and typeof(AutoParry.destroy) == "function" then
+            AutoParry.destroy()
+        end
+    end)
+    if not destroyOk then
+        warn("AutoParry: failed to destroy core:", destroyErr)
+    end
+
+    GlobalEnv.Paws = nil
+
+    local cleanupOk, cleanupErr = pcall(function()
+        removePlayerGuiUi()
+        destroyDashboardUi()
+    end)
+    if not cleanupOk then
+        warn("AutoParry: failed to clear UI:", cleanupErr)
+    end
 end
 
 local function ensureUi()
@@ -869,8 +926,7 @@ local function ensureUi()
     removeBtn.Text = "REMOVE Auto-Parry"
     removeBtn.Parent = gui
     removeBtn.MouseButton1Click:Connect(function()
-        AutoParry.destroy()
-        GlobalEnv.Paws = nil
+        removeAutoParryExperience()
     end)
 
     local status = Instance.new("TextLabel")
@@ -2030,6 +2086,8 @@ function AutoParry.destroy()
 
     initProgress = { stage = "waiting-player" }
     applyInitStatus(cloneTable(initProgress))
+
+    GlobalEnv.Paws = nil
 
     initialization.destroyed = false
 end

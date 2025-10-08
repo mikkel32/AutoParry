@@ -572,6 +572,7 @@ function DiagnosticsPanel.new(options)
     eventList.ScrollingDirection = Enum.ScrollingDirection.Y
     eventList.ElasticBehavior = Enum.ElasticBehavior.Never
     eventList.Parent = eventViewport
+    eventsSection.list = eventList
 
     local eventPadding = theme.eventListPadding or DEFAULT_THEME.eventListPadding or Vector2.new(10, 8)
     local eventListPadding = Instance.new("UIPadding")
@@ -612,6 +613,7 @@ function DiagnosticsPanel.new(options)
         _stageOrder = stageOrder,
         _events = {},
         _eventRows = {},
+        _eventsList = eventList,
         _filters = {},
         _filterButtons = filterButtons,
         _activeFilter = nil,
@@ -785,7 +787,17 @@ function DiagnosticsPanel:pushEvent(event)
 
     table.insert(self._events, copied)
 
-    local entry = createEventRow(self._theme, self._sections.events.body.Events, copied, self._startClock)
+    local eventsList = self._eventsList
+    if not eventsList and self._sections and self._sections.events then
+        eventsList = self._sections.events.list
+        self._eventsList = eventsList
+    end
+
+    if not eventsList then
+        return
+    end
+
+    local entry = createEventRow(self._theme, eventsList, copied, self._startClock)
     entry.event = copied
     table.insert(self._eventRows, entry)
 
@@ -867,6 +879,7 @@ function DiagnosticsPanel:destroy()
     self._sections = nil
     self._stageRows = nil
     self._eventRows = nil
+    self._eventsList = nil
     self._badges = nil
 end
 
