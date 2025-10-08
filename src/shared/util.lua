@@ -98,4 +98,34 @@ function Util.merge(into, from)
     return into
 end
 
+function Util.setConstraintSize(constraint, minSize, maxSize)
+    if typeof(constraint) ~= "Instance" then
+        return
+    end
+
+    if constraint.ClassName ~= "UISizeConstraint" and not constraint:IsA("UISizeConstraint") then
+        return
+    end
+
+    minSize = minSize or Vector2.new(0, 0)
+    maxSize = maxSize or Vector2.new(0, 0)
+
+    local minX = math.max(0, minSize.X or 0)
+    local minY = math.max(0, minSize.Y or 0)
+    local maxX = math.max(minX, maxSize.X or 0)
+    local maxY = math.max(minY, maxSize.Y or 0)
+
+    local currentMax = constraint.MaxSize or Vector2.new(math.huge, math.huge)
+    local newMin = Vector2.new(minX, minY)
+    local newMax = Vector2.new(maxX, maxY)
+
+    if currentMax.X < minX or currentMax.Y < minY then
+        constraint.MaxSize = newMax
+        constraint.MinSize = newMin
+    else
+        constraint.MinSize = newMin
+        constraint.MaxSize = newMax
+    end
+end
+
 return Util
