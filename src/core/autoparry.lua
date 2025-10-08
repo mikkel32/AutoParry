@@ -211,6 +211,128 @@ local function isFiniteNumber(value: number?)
     return typeof(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
+local function cubeRoot(value: number)
+    if value >= 0 then
+        return value ^ (1 / 3)
+    end
+
+    return -((-value) ^ (1 / 3))
+end
+
+local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
+    if math.abs(a) < EPSILON then
+        if math.abs(b) < EPSILON then
+            return nil
+        end
+
+        local root = -c / b
+        if isFiniteNumber(root) and root > EPSILON then
+            return root
+        end
+
+        return nil
+    end
+
+    local discriminant = b * b - 4 * a * c
+    if discriminant < -EPSILON then
+        return nil
+    end
+
+    discriminant = math.max(discriminant, 0)
+    local sqrtDiscriminant = math.sqrt(discriminant)
+    local q = -0.5 * (b + (b >= 0 and sqrtDiscriminant or -sqrtDiscriminant))
+
+    local candidates = {
+        q / a,
+    }
+
+    if math.abs(q) > EPSILON then
+        candidates[#candidates + 1] = c / q
+    else
+        candidates[#candidates + 1] = (-b - sqrtDiscriminant) / (2 * a)
+    end
+
+    local best: number?
+    for _, root in ipairs(candidates) do
+        if isFiniteNumber(root) and root > EPSILON then
+            if not best or root < best then
+                best = root
+            end
+        end
+    end
+
+    return best
+end
+
+local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: number)
+    if math.abs(a) < EPSILON then
+        return smallestPositiveQuadraticRoot(b, c, d)
+    end
+
+    local invA = 1 / a
+    local A = b * invA
+    local B = c * invA
+    local C = d * invA
+
+    local sqA = A * A
+    local p = B - sqA / 3
+    local q = (2 * A * sqA) / 27 - (A * B) / 3 + C
+
+    local discriminant = (q * q) / 4 + (p * p * p) / 27
+    local roots = {}
+
+    if discriminant > EPSILON then
+        local sqrtDiscriminant = math.sqrt(discriminant)
+        local u = cubeRoot(-q / 2 + sqrtDiscriminant)
+        local v = cubeRoot(-q / 2 - sqrtDiscriminant)
+        roots[1] = u + v - A / 3
+    elseif discriminant >= -EPSILON then
+        local u = cubeRoot(-q / 2)
+        roots[1] = 2 * u - A / 3
+        roots[2] = -u - A / 3
+    else
+        local negPOver3 = -p / 3
+        if negPOver3 <= 0 then
+            roots[1] = -A / 3
+        else
+            local sqp = math.sqrt(negPOver3)
+            if sqp < EPSILON then
+                roots[1] = -A / 3
+            else
+                local angle = math.acos(math.clamp((-q / 2) / (sqp * sqp * sqp), -1, 1))
+                local twoSqp = 2 * sqp
+                roots[1] = twoSqp * math.cos(angle / 3) - A / 3
+                roots[2] = twoSqp * math.cos((angle + 2 * math.pi) / 3) - A / 3
+                roots[3] = twoSqp * math.cos((angle + 4 * math.pi) / 3) - A / 3
+            end
+        end
+    end
+
+    local best: number?
+    for _, root in ipairs(roots) do
+        if isFiniteNumber(root) and root > EPSILON then
+            if not best or root < best then
+                best = root
+            end
+        end
+    end
+
+    return best
+end
+
+local function solveRadialImpactTime(d0: number, vr: number, ar: number, jr: number)
+    if not (isFiniteNumber(d0) and isFiniteNumber(vr) and isFiniteNumber(ar) and isFiniteNumber(jr)) then
+        return nil
+    end
+
+    local a = jr / 6
+    local b = ar / 2
+    local c = vr
+    local d = d0
+
+    return smallestPositiveCubicRoot(a, b, c, d)
+end
+
 local function updateRollingStat(stat: RollingStat, sample: number)
     if not stat then
         return
@@ -2258,13 +2380,27 @@ local function renderLoop()
 
     local approachSpeed = math.max(filteredVr, rawVr, 0)
     local approaching = approachSpeed > EPSILON
+    local timeToImpactFallback = math.huge
+    local timeToImpactPolynomial: number?
     local timeToImpact = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToImpact = distance / speed
+        timeToImpactFallback = distance / speed
+
+        local impactRadial = filteredD
+        local polynomial = solveRadialImpactTime(impactRadial, filteredVr, filteredAr, filteredJr)
+        if polynomial and polynomial > EPSILON then
+            timeToImpactPolynomial = polynomial
+            timeToImpact = polynomial
+        elseif isFiniteNumber(timeToImpactFallback) and timeToImpactFallback >= 0 then
+            timeToImpact = timeToImpactFallback
+        end
     end
 
     local responseWindowBase = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    if approaching and timeToImpactPolynomial then
+        responseWindowBase = math.max(math.min(responseWindowBase, timeToImpactPolynomial), PROXIMITY_PRESS_GRACE)
+    end
     local responseWindow = responseWindowBase
 
     local curveLeadTime = 0
@@ -2332,8 +2468,6 @@ local function renderLoop()
         end
     end
 
-    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
-
     local dynamicLeadBase = 0
     if approaching then
         dynamicLeadBase = math.max(approachSpeed * responseWindowBase, 0)
@@ -2361,13 +2495,46 @@ local function renderLoop()
     local curveHoldApplied = math.max(holdLead - holdLeadBase, 0)
     local holdRadius = pressRadius + holdLead
 
+    local timeToPressRadiusFallback = math.huge
+    local timeToHoldRadiusFallback = math.huge
+    local timeToPressRadiusPolynomial: number?
+    local timeToHoldRadiusPolynomial: number?
     local timeToPressRadius = math.huge
     local timeToHoldRadius = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToPressRadius = math.max(distance - pressRadius, 0) / speed
-        timeToHoldRadius = math.max(distance - holdRadius, 0) / speed
+        timeToPressRadiusFallback = math.max(distance - pressRadius, 0) / speed
+        timeToHoldRadiusFallback = math.max(distance - holdRadius, 0) / speed
+
+        local radialToPress = filteredD + safeRadius - pressRadius
+        local radialToHold = filteredD + safeRadius - holdRadius
+
+        local pressPolynomial = solveRadialImpactTime(radialToPress, filteredVr, filteredAr, filteredJr)
+        if pressPolynomial and pressPolynomial > EPSILON then
+            timeToPressRadiusPolynomial = pressPolynomial
+            timeToPressRadius = pressPolynomial
+        else
+            timeToPressRadius = timeToPressRadiusFallback
+        end
+
+        local holdPolynomial = solveRadialImpactTime(radialToHold, filteredVr, filteredAr, filteredJr)
+        if holdPolynomial and holdPolynomial > EPSILON then
+            timeToHoldRadiusPolynomial = holdPolynomial
+            timeToHoldRadius = holdPolynomial
+        else
+            timeToHoldRadius = timeToHoldRadiusFallback
+        end
     end
+
+    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
+    if approaching and timeToHoldRadiusPolynomial then
+        local refinedHoldWindow = math.max(timeToHoldRadiusPolynomial, PROXIMITY_HOLD_GRACE)
+        holdWindow = math.min(holdWindow, refinedHoldWindow)
+        if holdWindow < responseWindow then
+            holdWindow = responseWindow
+        end
+    end
+    holdWindow = math.max(holdWindow, PROXIMITY_HOLD_GRACE)
 
     local proximityPress =
         targetingMe
@@ -2450,6 +2617,15 @@ local function renderLoop()
         )
     end
 
+    local timeToImpactPolyText = "n/a"
+    if timeToImpactPolynomial then
+        timeToImpactPolyText = string.format("%.3f", timeToImpactPolynomial)
+    end
+    local timeToImpactFallbackText = "n/a"
+    if isFiniteNumber(timeToImpactFallback) and timeToImpactFallback < math.huge then
+        timeToImpactFallbackText = string.format("%.3f", timeToImpactFallback)
+    end
+
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
@@ -2459,6 +2635,7 @@ local function renderLoop()
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
         string.format("Latency sample: %s | remoteActive: %s", latencyText, tostring(state.remoteEstimatorActive)),
+        string.format("TTI(poly|fb): %s | %s", timeToImpactPolyText, timeToImpactFallbackText),
         string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
         string.format(
             "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
