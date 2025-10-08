@@ -210,14 +210,33 @@ local function mergeTheme(overrides)
     return theme
 end
 
+local function resolveScreenGuiParent(requestedParent)
+    if typeof(requestedParent) ~= "Instance" then
+        return CoreGui
+    end
+
+    local current = requestedParent
+    while current do
+        if current:IsA("CoreGui") or current:IsA("BasePlayerGui") then
+            return current
+        end
+
+        current = current.Parent
+    end
+
+    return CoreGui
+end
+
 local function createScreenGui(options)
+    local parent = resolveScreenGuiParent(options.parent)
+
     local gui = Instance.new("ScreenGui")
     gui.Name = options.name or "AutoParryLoadingOverlay"
     gui.DisplayOrder = 10_000
     gui.ResetOnSpawn = false
     gui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     gui.IgnoreGuiInset = true
-    gui.Parent = options.parent or CoreGui
+    gui.Parent = parent
     return gui
 end
 
