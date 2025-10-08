@@ -48,7 +48,6 @@ return function(t)
             ballsFolderName = (defaults.ballsFolderName and (defaults.ballsFolderName .. "_Override")) or "Projectiles",
             playerTimeout = defaults.playerTimeout + 5,
             remotesTimeout = defaults.remotesTimeout + 5,
-            parryRemoteTimeout = defaults.parryRemoteTimeout + 5,
             ballsFolderTimeout = defaults.ballsFolderTimeout + 5,
             verificationRetryInterval = defaults.verificationRetryInterval + 0.1,
         }
@@ -90,7 +89,6 @@ return function(t)
             ballsFolderName = "",
             playerTimeout = -1,
             remotesTimeout = -1,
-            parryRemoteTimeout = -1,
             ballsFolderTimeout = -1,
             verificationRetryInterval = -0.1,
         }
