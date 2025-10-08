@@ -1536,11 +1536,71 @@ function VerificationDashboard.new(options)
     actionsLayout.Padding = UDim.new(0, 12)
     actionsLayout.Parent = actionsFrame
 
+    local headerDefaults = {
+        fillDirection = headerLayout.FillDirection,
+        horizontalAlignment = headerLayout.HorizontalAlignment,
+        verticalAlignment = headerLayout.VerticalAlignment,
+        padding = headerLayout.Padding,
+    }
+    local textDefaults = {
+        horizontalAlignment = textLayout.HorizontalAlignment,
+        verticalAlignment = textLayout.VerticalAlignment,
+    }
+    local titleDefaults = {
+        alignment = title.TextXAlignment,
+        wrapped = title.TextWrapped,
+    }
+    local subtitleDefaults = {
+        alignment = subtitle.TextXAlignment,
+    }
+    local summaryDefaults = summaryRow and {
+        fillDirection = summaryRow.layout.FillDirection,
+        horizontalAlignment = summaryRow.layout.HorizontalAlignment,
+    } or nil
+    local telemetryDefaults = {
+        cellSize = telemetryGrid.CellSize,
+        maxColumns = telemetryGrid.FillDirectionMaxCells,
+    }
+    local controlGridDefaults = {
+        maxColumns = controlGrid.FillDirectionMaxCells,
+    }
+    local actionsDefaults = {
+        fillDirection = actionsLayout.FillDirection,
+        horizontalAlignment = actionsLayout.HorizontalAlignment,
+        padding = actionsLayout.Padding,
+    }
+    local actionsFrameDefaults = {
+        size = actionsFrame.Size,
+        automaticSize = actionsFrame.AutomaticSize,
+    }
+    local logoDefaults
+    if logoElements then
+        logoDefaults = {
+            containerSize = logoContainer.Size,
+            frameAnchor = logoElements.frame.AnchorPoint,
+            framePosition = logoElements.frame.Position,
+            frameSize = logoElements.frame.Size,
+            glyphAnchor = logoElements.glyph.AnchorPoint,
+            glyphPosition = logoElements.glyph.Position,
+            glyphSize = logoElements.glyph.Size,
+            wordmarkAnchor = logoElements.wordmark.AnchorPoint,
+            wordmarkPosition = logoElements.wordmark.Position,
+            wordmarkSize = logoElements.wordmark.Size,
+            wordmarkAlignment = logoElements.wordmark.TextXAlignment,
+            taglineAnchor = logoElements.tagline.AnchorPoint,
+            taglinePosition = logoElements.tagline.Position,
+            taglineAlignment = logoElements.tagline.TextXAlignment,
+        }
+    end
+
+    local headerTextDefaults = textContainer.Size
+
     local self = setmetatable({
         _theme = theme,
         _root = root,
         _layout = layout,
         _header = header,
+        _headerLayout = headerLayout,
         _title = title,
         _subtitle = subtitle,
         _insightsCard = insightsCard,
@@ -1578,7 +1638,11 @@ function VerificationDashboard.new(options)
         _actionButtons = {},
         _actionConnections = {},
         _actions = nil,
+        _headerLayoutDefaults = headerDefaults,
+        _textLayout = textLayout,
+        _textLayoutDefaults = textDefaults,
         _headerText = textContainer,
+        _headerTextDefaults = headerTextDefaults,
         _logoContainer = logoContainer,
         _logoFrame = logoElements and logoElements.frame,
         _logoStroke = logoElements and logoElements.stroke,
@@ -1587,7 +1651,19 @@ function VerificationDashboard.new(options)
         _logoWordmark = logoElements and logoElements.wordmark,
         _logoWordmarkGradient = logoElements and logoElements.wordmarkGradient,
         _logoTagline = logoElements and logoElements.tagline,
+        _logoDefaults = logoDefaults,
+        _initialLogoWidth = initialLogoWidth,
+        _titleDefaults = titleDefaults,
+        _subtitleDefaults = subtitleDefaults,
+        _summaryDefaults = summaryDefaults,
+        _telemetryDefaults = telemetryDefaults,
+        _controlGridDefaults = controlGridDefaults,
+        _actionsDefaults = actionsDefaults,
+        _actionsFrameDefaults = actionsFrameDefaults,
         _logoShimmerTween = nil,
+        _connections = {},
+        _responsiveState = {},
+        _lastLayoutBounds = nil,
         _destroyed = false,
     }, VerificationDashboard)
 
@@ -1604,7 +1680,312 @@ function VerificationDashboard.new(options)
     self:setTelemetry(options.telemetry)
     self:setProgress(0)
 
+    self:_installResponsiveHandlers()
+    self:updateLayout()
+
     return self
+end
+
+function VerificationDashboard:_installResponsiveHandlers()
+    if not self._root then
+        return
+    end
+
+    local connection = self._root:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        if self._destroyed then
+            return
+        end
+        self:updateLayout(self._lastLayoutBounds)
+    end)
+    table.insert(self._connections, connection)
+
+    task.defer(function()
+        if self._destroyed then
+            return
+        end
+        self:updateLayout(self._lastLayoutBounds)
+    end)
+end
+
+function VerificationDashboard:_applyResponsiveLayout(width, bounds)
+    if self._destroyed then
+        return
+    end
+
+    width = math.floor(tonumber(width) or 0)
+    if width <= 0 then
+        return
+    end
+
+    local headerLayout = self._headerLayout
+    if not headerLayout then
+        return
+    end
+
+    local headerDefaults = self._headerLayoutDefaults
+    if headerDefaults then
+        headerLayout.FillDirection = headerDefaults.fillDirection
+        headerLayout.HorizontalAlignment = headerDefaults.horizontalAlignment
+        headerLayout.VerticalAlignment = headerDefaults.verticalAlignment
+        headerLayout.Padding = headerDefaults.padding or headerLayout.Padding
+    end
+
+    if self._textLayout and self._textLayoutDefaults then
+        self._textLayout.HorizontalAlignment = self._textLayoutDefaults.horizontalAlignment
+        self._textLayout.VerticalAlignment = self._textLayoutDefaults.verticalAlignment
+    end
+
+    if self._headerText and self._headerTextDefaults then
+        self._headerText.Size = self._headerTextDefaults
+    end
+
+    if self._title and self._titleDefaults then
+        self._title.TextXAlignment = self._titleDefaults.alignment
+        self._title.TextWrapped = self._titleDefaults.wrapped
+    end
+
+    if self._subtitle and self._subtitleDefaults then
+        self._subtitle.TextXAlignment = self._subtitleDefaults.alignment
+    end
+
+    if self._summaryLayout and self._summaryDefaults then
+        self._summaryLayout.FillDirection = self._summaryDefaults.fillDirection
+        self._summaryLayout.HorizontalAlignment = self._summaryDefaults.horizontalAlignment
+    end
+
+    if self._telemetryGrid and self._telemetryDefaults then
+        self._telemetryGrid.FillDirectionMaxCells = self._telemetryDefaults.maxColumns or self._telemetryGrid.FillDirectionMaxCells
+        self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
+    end
+
+    if self._controlGrid and self._controlGridDefaults then
+        self._controlGrid.FillDirectionMaxCells = self._controlGridDefaults.maxColumns or self._controlGrid.FillDirectionMaxCells
+    end
+
+    if self._actionsLayout and self._actionsDefaults then
+        self._actionsLayout.FillDirection = self._actionsDefaults.fillDirection
+        self._actionsLayout.HorizontalAlignment = self._actionsDefaults.horizontalAlignment
+        self._actionsLayout.Padding = self._actionsDefaults.padding or self._actionsLayout.Padding
+    end
+
+    if self._actionsFrame and self._actionsFrameDefaults then
+        self._actionsFrame.AutomaticSize = self._actionsFrameDefaults.automaticSize or Enum.AutomaticSize.None
+        self._actionsFrame.Size = self._actionsFrameDefaults.size or self._actionsFrame.Size
+    end
+
+    local logoDefaults = self._logoDefaults
+    if logoDefaults then
+        if self._logoContainer then
+            self._logoContainer.Size = logoDefaults.containerSize
+        end
+        if self._logoFrame then
+            self._logoFrame.AnchorPoint = logoDefaults.frameAnchor
+            self._logoFrame.Position = logoDefaults.framePosition
+            self._logoFrame.Size = logoDefaults.frameSize
+        end
+        if self._logoGlyph then
+            self._logoGlyph.AnchorPoint = logoDefaults.glyphAnchor
+            self._logoGlyph.Position = logoDefaults.glyphPosition
+            self._logoGlyph.Size = logoDefaults.glyphSize
+        end
+        if self._logoWordmark then
+            self._logoWordmark.AnchorPoint = logoDefaults.wordmarkAnchor
+            self._logoWordmark.Position = logoDefaults.wordmarkPosition
+            self._logoWordmark.Size = logoDefaults.wordmarkSize
+            self._logoWordmark.TextXAlignment = logoDefaults.wordmarkAlignment
+        end
+        if self._logoTagline then
+            self._logoTagline.AnchorPoint = logoDefaults.taglineAnchor
+            self._logoTagline.Position = logoDefaults.taglinePosition
+            self._logoTagline.TextXAlignment = logoDefaults.taglineAlignment
+        end
+    end
+
+    local breakpoint
+    if bounds and bounds.mode == "stacked" then
+        breakpoint = "small"
+    elseif bounds and bounds.mode == "hybrid" then
+        breakpoint = "medium"
+    else
+        if width <= 540 then
+            breakpoint = "small"
+        elseif width <= 820 then
+            breakpoint = "medium"
+        else
+            breakpoint = "large"
+        end
+    end
+
+    local state = self._responsiveState or {}
+    state.breakpoint = breakpoint
+    state.width = width
+    state.mode = bounds and bounds.mode or breakpoint
+    self._responsiveState = state
+
+    local dashboardWidth = (bounds and bounds.dashboardWidth) or width
+    local logoMaxWidth = self._initialLogoWidth or ((logoDefaults and logoDefaults.containerSize and logoDefaults.containerSize.X.Offset) or 240)
+
+    if breakpoint == "small" then
+        if headerLayout then
+            headerLayout.FillDirection = Enum.FillDirection.Vertical
+            headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+            headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+            headerLayout.Padding = UDim.new(0, 12)
+        end
+        if self._logoContainer then
+            self._logoContainer.Size = UDim2.new(1, 0, 0, 112)
+        end
+        if self._headerText then
+            self._headerText.Size = UDim2.new(1, 0, 0, 96)
+        end
+        if self._logoFrame then
+            self._logoFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._logoFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+            self._logoFrame.Size = UDim2.new(1, -16, 0, 102)
+        end
+        if self._logoGlyph then
+            self._logoGlyph.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._logoGlyph.Position = UDim2.new(0.5, 0, 0.5, -20)
+        end
+        if self._logoWordmark then
+            self._logoWordmark.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._logoWordmark.Position = UDim2.new(0.5, 0, 0.5, 8)
+            self._logoWordmark.Size = UDim2.new(1, -40, 0, self._logoWordmark.Size.Y.Offset)
+            self._logoWordmark.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._logoTagline then
+            self._logoTagline.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._logoTagline.Position = UDim2.new(0.5, 0, 0.5, 34)
+            self._logoTagline.Size = UDim2.new(1, -48, 0, self._logoTagline.Size.Y.Offset)
+            self._logoTagline.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._textLayout then
+            self._textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+        if self._title then
+            self._title.TextWrapped = true
+            self._title.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._subtitle then
+            self._subtitle.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._summaryLayout then
+            self._summaryLayout.FillDirection = Enum.FillDirection.Vertical
+            self._summaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+        if self._telemetryGrid then
+            self._telemetryGrid.FillDirectionMaxCells = 1
+            self._telemetryGrid.CellSize = UDim2.new(1, -12, 0, 112)
+        end
+        if self._controlGrid then
+            self._controlGrid.FillDirectionMaxCells = 1
+        end
+        if self._actionsLayout then
+            self._actionsLayout.FillDirection = Enum.FillDirection.Vertical
+            self._actionsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+            self._actionsLayout.Padding = UDim.new(0, 10)
+        end
+        if self._actionsFrame then
+            self._actionsFrame.AutomaticSize = Enum.AutomaticSize.Y
+            self._actionsFrame.Size = UDim2.new(1, 0, 0, 0)
+        end
+    elseif breakpoint == "medium" then
+        local logoWidth = math.clamp(math.floor(dashboardWidth * 0.38), 170, logoMaxWidth)
+        if self._logoContainer then
+            self._logoContainer.Size = UDim2.new(0, logoWidth, 1, 0)
+        end
+        if self._headerText then
+            self._headerText.Size = UDim2.new(1, -logoWidth, 1, 0)
+        end
+        if headerLayout then
+            headerLayout.FillDirection = Enum.FillDirection.Horizontal
+            headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
+        end
+        if self._textLayout then
+            self._textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._title then
+            self._title.TextWrapped = width <= 680
+        end
+        if self._summaryLayout then
+            self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._summaryLayout.HorizontalAlignment = width <= 700 and Enum.HorizontalAlignment.Center
+                or Enum.HorizontalAlignment.Left
+        end
+        if self._telemetryGrid then
+            if width <= 700 then
+                self._telemetryGrid.FillDirectionMaxCells = 1
+                self._telemetryGrid.CellSize = UDim2.new(1, -12, 0, 112)
+            else
+                self._telemetryGrid.FillDirectionMaxCells = math.min(2, self._telemetryDefaults.maxColumns or 2)
+                self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
+            end
+        end
+        if self._controlGrid then
+            self._controlGrid.FillDirectionMaxCells = width <= 700 and 1 or (self._controlGridDefaults.maxColumns or 2)
+        end
+        if self._actionsLayout then
+            self._actionsLayout.FillDirection = Enum.FillDirection.Horizontal
+            if width <= 700 then
+                self._actionsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+                self._actionsLayout.Padding = UDim.new(0, 10)
+                if self._actionsFrame then
+                    self._actionsFrame.AutomaticSize = Enum.AutomaticSize.Y
+                    self._actionsFrame.Size = UDim2.new(1, 0, 0, 0)
+                end
+            else
+                self._actionsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            end
+        end
+    else
+        local logoWidth = math.clamp(math.floor(dashboardWidth * 0.32), 200, logoMaxWidth)
+        if self._logoContainer then
+            self._logoContainer.Size = UDim2.new(0, logoWidth, 1, 0)
+        end
+        if self._headerText then
+            self._headerText.Size = UDim2.new(1, -logoWidth, 1, 0)
+        end
+        if self._summaryLayout then
+            self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._summaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._telemetryGrid then
+            self._telemetryGrid.FillDirectionMaxCells = self._telemetryDefaults.maxColumns or 2
+            self._telemetryGrid.CellSize = self._telemetryDefaults.cellSize or self._telemetryGrid.CellSize
+        end
+        if self._controlGrid and self._controlGridDefaults then
+            self._controlGrid.FillDirectionMaxCells = self._controlGridDefaults.maxColumns or self._controlGrid.FillDirectionMaxCells
+        end
+    end
+end
+
+function VerificationDashboard:updateLayout(bounds)
+    if self._destroyed then
+        return
+    end
+
+    if bounds then
+        self._lastLayoutBounds = {
+            mode = bounds.mode,
+            containerWidth = bounds.containerWidth,
+            containerHeight = bounds.containerHeight,
+            dashboardWidth = bounds.dashboardWidth,
+            dashboardHeight = bounds.dashboardHeight,
+            contentWidth = bounds.contentWidth,
+        }
+    end
+
+    local reference = bounds or self._lastLayoutBounds
+    local width = reference and reference.dashboardWidth or (self._root and self._root.AbsoluteSize.X) or 0
+    if width <= 0 and self._root then
+        width = self._root.AbsoluteSize.X
+    end
+    if width <= 0 then
+        return
+    end
+
+    self:_applyResponsiveLayout(width, reference)
 end
 
 function VerificationDashboard:_stopLogoShimmer()
@@ -1851,6 +2232,19 @@ function VerificationDashboard:destroy()
         end
     end
 
+    if self._connections then
+        for _, connection in ipairs(self._connections) do
+            if connection then
+                if connection.Disconnect then
+                    connection:Disconnect()
+                elseif connection.disconnect then
+                    connection:disconnect()
+                end
+            end
+        end
+        self._connections = nil
+    end
+
     if self._controlButtons then
         for _, toggle in pairs(self._controlButtons) do
             if toggle and toggle.button and toggle.button.Destroy then
@@ -2052,6 +2446,7 @@ function VerificationDashboard:applyTheme(theme)
         self:setActions(self._actions)
     end
 
+    self:updateLayout(self._lastLayoutBounds)
     self:_startLogoShimmer()
 end
 
@@ -2496,6 +2891,7 @@ function VerificationDashboard:setActions(actions)
         if self._actionsFrame then
             self._actionsFrame.Visible = false
         end
+        self:updateLayout(self._lastLayoutBounds)
         return
     end
 
@@ -2525,6 +2921,8 @@ function VerificationDashboard:setActions(actions)
         table.insert(self._actionButtons, button)
         table.insert(self._actionConnections, connection)
     end
+
+    self:updateLayout(self._lastLayoutBounds)
 end
 
 function VerificationDashboard:setControls(controls)
@@ -2595,6 +2993,8 @@ function VerificationDashboard:setControls(controls)
         end)
         table.insert(self._controlConnections, connection)
     end
+
+    self:updateLayout(self._lastLayoutBounds)
 end
 
 function VerificationDashboard:setControlState(id, enabled)
