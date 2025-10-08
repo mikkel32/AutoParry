@@ -137,10 +137,40 @@ local DEFAULT_THEME = {
         glyphTransparency = 0.15,
     },
     layout = {
-        widthScale = 0.96,
-        maxWidth = 720,
-        minWidth = 420,
-        horizontalPadding = 16,
+        widthScale = 1,
+        maxWidth = 1100,
+        minWidth = 560,
+        horizontalPadding = 24,
+        contentSpacing = 20,
+        contentColumnPadding = 24,
+        primaryColumnRatio = 0.64,
+        primaryColumnMinWidth = 420,
+        secondaryColumnMinWidth = 320,
+    },
+    timeline = {
+        headerFont = Enum.Font.GothamSemibold,
+        headerTextSize = 18,
+        headerColor = Color3.fromRGB(226, 236, 252),
+        subtitleFont = Enum.Font.Gotham,
+        subtitleTextSize = 15,
+        subtitleColor = Color3.fromRGB(176, 192, 224),
+        subtitleTintMix = 0.22,
+        badgeFont = Enum.Font.GothamSemibold,
+        badgeTextSize = 13,
+        badgeTextColor = Color3.fromRGB(226, 236, 252),
+        badgeBackground = Color3.fromRGB(30, 36, 48),
+        badgeBackgroundTransparency = 0.18,
+        badgeBackgroundHighlight = 0.16,
+        badgeStrokeColor = Color3.fromRGB(88, 142, 218),
+        badgeStrokeTransparency = 0.28,
+        badgeStrokeMix = 0.18,
+        badgeAccentColor = Color3.fromRGB(112, 198, 255),
+        badgeAccentTransparency = 0,
+        badgeDefaultColor = Color3.fromRGB(112, 198, 255),
+        badgeActiveColor = Color3.fromRGB(112, 198, 255),
+        badgeSuccessColor = Color3.fromRGB(118, 228, 182),
+        badgeWarningColor = Color3.fromRGB(255, 198, 110),
+        badgeDangerColor = Color3.fromRGB(248, 110, 128),
     },
     iconography = {
         pending = "rbxassetid://6031071050",
@@ -1200,6 +1230,54 @@ function VerificationDashboard.new(options)
     header.LayoutOrder = 1
     header.Parent = canvas
 
+    local contentRow = Instance.new("Frame")
+    contentRow.Name = "ContentRow"
+    contentRow.BackgroundTransparency = 1
+    contentRow.AutomaticSize = Enum.AutomaticSize.Y
+    contentRow.Size = UDim2.new(1, 0, 0, 0)
+    contentRow.LayoutOrder = 2
+    contentRow.Parent = canvas
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Vertical
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    contentLayout.Parent = contentRow
+
+    local primaryColumn = Instance.new("Frame")
+    primaryColumn.Name = "PrimaryColumn"
+    primaryColumn.BackgroundTransparency = 1
+    primaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    primaryColumn.LayoutOrder = 1
+    primaryColumn.Parent = contentRow
+
+    local primaryLayout = Instance.new("UIListLayout")
+    primaryLayout.FillDirection = Enum.FillDirection.Vertical
+    primaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    primaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    primaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    primaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    primaryLayout.Parent = primaryColumn
+
+    local secondaryColumn = Instance.new("Frame")
+    secondaryColumn.Name = "SecondaryColumn"
+    secondaryColumn.BackgroundTransparency = 1
+    secondaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    secondaryColumn.LayoutOrder = 2
+    secondaryColumn.Parent = contentRow
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Vertical
+    secondaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    secondaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    secondaryLayout.Parent = secondaryColumn
+
     local headerLayout = Instance.new("UIListLayout")
     headerLayout.FillDirection = Enum.FillDirection.Horizontal
     headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -1309,10 +1387,10 @@ function VerificationDashboard.new(options)
     insightsCard.BackgroundColor3 = insightsTheme.backgroundColor or theme.cardColor
     insightsCard.BackgroundTransparency = insightsTheme.backgroundTransparency or theme.cardTransparency
     insightsCard.BorderSizePixel = 0
-    insightsCard.LayoutOrder = 2
+    insightsCard.LayoutOrder = 1
     insightsCard.AutomaticSize = Enum.AutomaticSize.Y
     insightsCard.Size = UDim2.new(1, 0, 0, 0)
-    insightsCard.Parent = canvas
+    insightsCard.Parent = primaryColumn
 
     local insightsCorner = Instance.new("UICorner")
     insightsCorner.CornerRadius = UDim.new(0, 16)
@@ -1459,6 +1537,8 @@ function VerificationDashboard.new(options)
 
     local controlButtons = {}
 
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
+
     local timelineCard = Instance.new("Frame")
     timelineCard.Name = "TimelineCard"
     timelineCard.BackgroundColor3 = theme.cardColor
@@ -1466,8 +1546,8 @@ function VerificationDashboard.new(options)
     timelineCard.BorderSizePixel = 0
     timelineCard.AutomaticSize = Enum.AutomaticSize.Y
     timelineCard.Size = UDim2.new(1, 0, 0, 200)
-    timelineCard.LayoutOrder = 3
-    timelineCard.Parent = canvas
+    timelineCard.LayoutOrder = 2
+    timelineCard.Parent = secondaryColumn
 
     local timelineCorner = Instance.new("UICorner")
     timelineCorner.CornerRadius = UDim.new(0, 14)
@@ -1500,6 +1580,101 @@ function VerificationDashboard.new(options)
     timelineGradient.Rotation = 125
     timelineGradient.Parent = timelineCard
 
+    local timelineHeader = Instance.new("Frame")
+    timelineHeader.Name = "TimelineHeader"
+    timelineHeader.BackgroundTransparency = 1
+    timelineHeader.AutomaticSize = Enum.AutomaticSize.Y
+    timelineHeader.Size = UDim2.new(1, 0, 0, 0)
+    timelineHeader.LayoutOrder = 1
+    timelineHeader.Parent = timelineCard
+
+    local timelineHeaderLayout = Instance.new("UIListLayout")
+    timelineHeaderLayout.FillDirection = Enum.FillDirection.Vertical
+    timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    timelineHeaderLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    timelineHeaderLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    timelineHeaderLayout.Padding = UDim.new(0, 6)
+    timelineHeaderLayout.Parent = timelineHeader
+
+    local headerRow = Instance.new("Frame")
+    headerRow.Name = "HeaderRow"
+    headerRow.BackgroundTransparency = 1
+    headerRow.Size = UDim2.new(1, 0, 0, 32)
+    headerRow.LayoutOrder = 1
+    headerRow.Parent = timelineHeader
+
+    local timelineTitle = Instance.new("TextLabel")
+    timelineTitle.Name = "Title"
+    timelineTitle.BackgroundTransparency = 1
+    timelineTitle.AnchorPoint = Vector2.new(0, 0.5)
+    timelineTitle.Position = UDim2.new(0, 0, 0.5, 0)
+    timelineTitle.Size = UDim2.new(1, -150, 0, 26)
+    timelineTitle.Text = "Verification timeline"
+    timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+    timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+    timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+    timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    timelineTitle.Parent = headerRow
+
+    local badgeContainer = Instance.new("Frame")
+    badgeContainer.Name = "StatusBadge"
+    badgeContainer.AnchorPoint = Vector2.new(1, 0.5)
+    badgeContainer.Position = UDim2.new(1, 0, 0.5, 0)
+    badgeContainer.AutomaticSize = Enum.AutomaticSize.XY
+    badgeContainer.Size = UDim2.new(0, 144, 0, 28)
+    badgeContainer.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+    badgeContainer.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    badgeContainer.BorderSizePixel = 0
+    badgeContainer.Parent = headerRow
+
+    local badgeCorner = Instance.new("UICorner")
+    badgeCorner.CornerRadius = UDim.new(0, 12)
+    badgeCorner.Parent = badgeContainer
+
+    local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.Thickness = 1
+    badgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+    badgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    badgeStroke.Parent = badgeContainer
+
+    local badgeAccent = Instance.new("Frame")
+    badgeAccent.Name = "Accent"
+    badgeAccent.AnchorPoint = Vector2.new(0, 0.5)
+    badgeAccent.Position = UDim2.new(0, 0, 0.5, 0)
+    badgeAccent.Size = UDim2.new(0, 4, 1, 0)
+    badgeAccent.BorderSizePixel = 0
+    badgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+    badgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    badgeAccent.Parent = badgeContainer
+
+    local badgeLabel = Instance.new("TextLabel")
+    badgeLabel.Name = "Label"
+    badgeLabel.BackgroundTransparency = 1
+    badgeLabel.AnchorPoint = Vector2.new(0, 0.5)
+    badgeLabel.Position = UDim2.new(0, 8, 0.5, 0)
+    badgeLabel.Size = UDim2.new(1, -16, 0, 0)
+    badgeLabel.AutomaticSize = Enum.AutomaticSize.Y
+    badgeLabel.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+    badgeLabel.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    badgeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    badgeLabel.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    badgeLabel.Text = "Preparing checks"
+    badgeLabel.Parent = badgeContainer
+
+    local timelineStatus = Instance.new("TextLabel")
+    timelineStatus.Name = "Status"
+    timelineStatus.BackgroundTransparency = 1
+    timelineStatus.AutomaticSize = Enum.AutomaticSize.Y
+    timelineStatus.Size = UDim2.new(1, 0, 0, 0)
+    timelineStatus.TextXAlignment = Enum.TextXAlignment.Left
+    timelineStatus.TextWrapped = true
+    timelineStatus.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+    timelineStatus.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    timelineStatus.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    timelineStatus.Text = "Awaiting verification updates."
+    timelineStatus.LayoutOrder = 2
+    timelineStatus.Parent = timelineHeader
+
     local timelineLayout = Instance.new("UIListLayout")
     timelineLayout.FillDirection = Enum.FillDirection.Vertical
     timelineLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -1515,7 +1690,7 @@ function VerificationDashboard.new(options)
     progressTrack.BackgroundTransparency = math.clamp((theme.cardTransparency or 0) + 0.12, 0, 1)
     progressTrack.BorderSizePixel = 0
     progressTrack.ZIndex = 2
-    progressTrack.LayoutOrder = 1
+    progressTrack.LayoutOrder = 2
     progressTrack.Parent = timelineCard
 
     local trackCorner = Instance.new("UICorner")
@@ -1556,7 +1731,7 @@ function VerificationDashboard.new(options)
     listFrame.BackgroundTransparency = 1
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.Size = UDim2.new(1, 0, 0, 0)
-    listFrame.LayoutOrder = 2
+    listFrame.LayoutOrder = 3
     listFrame.Parent = timelineCard
 
     local listLayout = Instance.new("UIListLayout")
@@ -1579,7 +1754,7 @@ function VerificationDashboard.new(options)
     local actionsFrame = Instance.new("Frame")
     actionsFrame.Name = "Actions"
     actionsFrame.BackgroundTransparency = 1
-    actionsFrame.LayoutOrder = 4
+    actionsFrame.LayoutOrder = 3
     actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
     actionsFrame.Parent = canvas
@@ -1590,6 +1765,44 @@ function VerificationDashboard.new(options)
     actionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
     actionsLayout.Padding = UDim.new(0, 12)
     actionsLayout.Parent = actionsFrame
+
+    local contentDefaults = {
+        fillDirection = contentLayout.FillDirection,
+        horizontalAlignment = contentLayout.HorizontalAlignment,
+        verticalAlignment = contentLayout.VerticalAlignment,
+        padding = contentLayout.Padding,
+    }
+
+    local columnDefaults = {
+        primarySize = primaryColumn.Size,
+        primaryOrder = primaryColumn.LayoutOrder,
+        secondarySize = secondaryColumn.Size,
+        secondaryOrder = secondaryColumn.LayoutOrder,
+    }
+
+    local primaryLayoutDefaults = {
+        padding = primaryLayout.Padding,
+        horizontalAlignment = primaryLayout.HorizontalAlignment,
+    }
+
+    local secondaryLayoutDefaults = {
+        padding = secondaryLayout.Padding,
+        horizontalAlignment = secondaryLayout.HorizontalAlignment,
+    }
+
+    local timelineHeaderDefaults = {
+        horizontalAlignment = timelineHeaderLayout.HorizontalAlignment,
+        titleAlignment = timelineTitle.TextXAlignment,
+        statusAlignment = timelineStatus.TextXAlignment,
+    }
+
+    local timelineBadgeDefaults = {
+        anchorPoint = badgeContainer.AnchorPoint,
+        position = badgeContainer.Position,
+    }
+
+    local insightsCardSizeDefault = insightsCard.Size
+    local timelineCardSizeDefault = timelineCard.Size
 
     local headerDefaults = {
         fillDirection = headerLayout.FillDirection,
@@ -1662,11 +1875,22 @@ function VerificationDashboard.new(options)
         _headerLayout = headerLayout,
         _title = title,
         _subtitle = subtitle,
+        _contentRow = contentRow,
+        _contentLayout = contentLayout,
+        _contentDefaults = contentDefaults,
+        _primaryColumn = primaryColumn,
+        _secondaryColumn = secondaryColumn,
+        _primaryLayout = primaryLayout,
+        _secondaryLayout = secondaryLayout,
+        _columnDefaults = columnDefaults,
+        _primaryLayoutDefaults = primaryLayoutDefaults,
+        _secondaryLayoutDefaults = secondaryLayoutDefaults,
         _insightsCard = insightsCard,
         _insightsStroke = insightsStroke,
         _insightsGradient = insightsGradient,
         _insightsLayout = insightsLayout,
         _insightsPadding = insightsPadding,
+        _insightsSizeDefaults = insightsCardSizeDefault,
         _summaryFrame = summaryRow and summaryRow.frame or nil,
         _summaryLayout = summaryRow and summaryRow.layout or nil,
         _summaryChips = summaryRow and summaryRow.chips or nil,
@@ -1687,6 +1911,16 @@ function VerificationDashboard.new(options)
         _timelineCard = timelineCard,
         _timelineStroke = timelineStroke,
         _timelineGradient = timelineGradient,
+        _timelineHeader = timelineHeader,
+        _timelineHeaderLayout = timelineHeaderLayout,
+        _timelineHeaderDefaults = timelineHeaderDefaults,
+        _timelineTitle = timelineTitle,
+        _timelineStatusLabel = timelineStatus,
+        _timelineBadgeFrame = badgeContainer,
+        _timelineBadge = badgeLabel,
+        _timelineBadgeAccent = badgeAccent,
+        _timelineBadgeStroke = badgeStroke,
+        _timelineBadgeDefaults = timelineBadgeDefaults,
         _progressTrack = progressTrack,
         _progressFill = progressFill,
         _progressTrackStroke = trackStroke,
@@ -1694,6 +1928,7 @@ function VerificationDashboard.new(options)
         _stepsFrame = listFrame,
         _steps = steps,
         _stepStates = {},
+        _timelineSizeDefaults = timelineCardSizeDefault,
         _actionsFrame = actionsFrame,
         _actionsLayout = actionsLayout,
         _actionButtons = {},
@@ -1740,6 +1975,8 @@ function VerificationDashboard.new(options)
     self:setControls(options.controls)
     self:setTelemetry(options.telemetry)
     self:setProgress(0)
+
+    self:_updateTimelineBadge()
 
     self:_installResponsiveHandlers()
     self:updateLayout()
@@ -1868,6 +2105,58 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         self._actionsFrame.Size = self._actionsFrameDefaults.size or self._actionsFrame.Size
     end
 
+    if self._contentLayout and self._contentDefaults then
+        self._contentLayout.FillDirection = self._contentDefaults.fillDirection
+        self._contentLayout.HorizontalAlignment = self._contentDefaults.horizontalAlignment
+        self._contentLayout.VerticalAlignment = self._contentDefaults.verticalAlignment
+        self._contentLayout.Padding = self._contentDefaults.padding or self._contentLayout.Padding
+    end
+
+    if self._primaryLayout and self._primaryLayoutDefaults then
+        self._primaryLayout.Padding = self._primaryLayoutDefaults.padding or self._primaryLayout.Padding
+        self._primaryLayout.HorizontalAlignment = self._primaryLayoutDefaults.horizontalAlignment or self._primaryLayout.HorizontalAlignment
+    end
+
+    if self._secondaryLayout and self._secondaryLayoutDefaults then
+        self._secondaryLayout.Padding = self._secondaryLayoutDefaults.padding or self._secondaryLayout.Padding
+        self._secondaryLayout.HorizontalAlignment = self._secondaryLayoutDefaults.horizontalAlignment or self._secondaryLayout.HorizontalAlignment
+    end
+
+    if self._primaryColumn and self._columnDefaults then
+        self._primaryColumn.Size = self._columnDefaults.primarySize
+        self._primaryColumn.LayoutOrder = self._columnDefaults.primaryOrder or self._primaryColumn.LayoutOrder
+    end
+
+    if self._secondaryColumn and self._columnDefaults then
+        self._secondaryColumn.Size = self._columnDefaults.secondarySize
+        self._secondaryColumn.LayoutOrder = self._columnDefaults.secondaryOrder or self._secondaryColumn.LayoutOrder
+    end
+
+    if self._timelineHeaderLayout and self._timelineHeaderDefaults then
+        self._timelineHeaderLayout.HorizontalAlignment = self._timelineHeaderDefaults.horizontalAlignment or self._timelineHeaderLayout.HorizontalAlignment
+    end
+
+    if self._timelineTitle and self._timelineHeaderDefaults then
+        self._timelineTitle.TextXAlignment = self._timelineHeaderDefaults.titleAlignment or self._timelineTitle.TextXAlignment
+    end
+
+    if self._timelineStatusLabel and self._timelineHeaderDefaults then
+        self._timelineStatusLabel.TextXAlignment = self._timelineHeaderDefaults.statusAlignment or self._timelineStatusLabel.TextXAlignment
+    end
+
+    if self._timelineBadgeFrame and self._timelineBadgeDefaults then
+        self._timelineBadgeFrame.AnchorPoint = self._timelineBadgeDefaults.anchorPoint or self._timelineBadgeFrame.AnchorPoint
+        self._timelineBadgeFrame.Position = self._timelineBadgeDefaults.position or self._timelineBadgeFrame.Position
+    end
+
+    if self._insightsCard and self._insightsSizeDefaults then
+        self._insightsCard.Size = self._insightsSizeDefaults
+    end
+
+    if self._timelineCard and self._timelineSizeDefaults then
+        self._timelineCard.Size = self._timelineSizeDefaults
+    end
+
     local logoDefaults = self._logoDefaults
     if logoDefaults then
         if self._logoContainer then
@@ -1926,6 +2215,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
             headerLayout.Padding = UDim.new(0, 12)
+        end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
         end
         if self._logoContainer then
             self._logoContainer.Size = UDim2.new(1, 0, 0, 112)
@@ -1997,6 +2318,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
         end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
+        end
         if self._textLayout then
             self._textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
         end
@@ -2040,6 +2393,71 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         end
         if self._headerText then
             self._headerText.Size = UDim2.new(1, -logoWidth, 1, 0)
+        end
+
+        local columnPadding = (layoutTheme and layoutTheme.contentColumnPadding) or 24
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+            self._contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+            self._contentLayout.Padding = UDim.new(0, columnPadding)
+        end
+
+        local horizontalPadding = (layoutTheme and layoutTheme.horizontalPadding) or 0
+        local estimatedWidth = dashboardWidth - (horizontalPadding * 2)
+        if bounds and bounds.contentWidth then
+            estimatedWidth = bounds.contentWidth
+        elseif self._contentRow and self._contentRow.AbsoluteSize.X > 0 then
+            estimatedWidth = self._contentRow.AbsoluteSize.X
+        end
+
+        local minPrimary = (layoutTheme and layoutTheme.primaryColumnMinWidth) or 420
+        local minSecondary = (layoutTheme and layoutTheme.secondaryColumnMinWidth) or 320
+        estimatedWidth = math.max(estimatedWidth, minPrimary + minSecondary + columnPadding)
+        local availableWidth = math.max(estimatedWidth - columnPadding, minPrimary + minSecondary)
+        local ratio = (layoutTheme and layoutTheme.primaryColumnRatio) or 0.64
+        ratio = math.clamp(ratio, 0.48, 0.75)
+        local desiredPrimary = math.floor(availableWidth * ratio + 0.5)
+        local maxPrimary = math.max(minPrimary, availableWidth - minSecondary)
+        local primaryWidth = math.clamp(desiredPrimary, minPrimary, maxPrimary)
+        local secondaryWidth = availableWidth - primaryWidth
+        if secondaryWidth < minSecondary then
+            secondaryWidth = minSecondary
+            primaryWidth = math.max(minPrimary, availableWidth - secondaryWidth)
+        end
+        primaryWidth = math.floor(primaryWidth + 0.5)
+        secondaryWidth = math.floor(secondaryWidth + 0.5)
+        if primaryWidth + secondaryWidth > availableWidth then
+            primaryWidth = math.max(minPrimary, availableWidth - minSecondary)
+            secondaryWidth = math.max(minSecondary, availableWidth - primaryWidth)
+        end
+
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(0, primaryWidth, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(0, secondaryWidth, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
         end
         if self._summaryLayout then
             self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -2377,6 +2795,14 @@ function VerificationDashboard:applyTheme(theme)
     local currentTheme = self._theme
     self._layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, currentTheme.layout or {})
 
+    if self._contentLayout then
+        local contentPadding = self._layoutTheme.contentSpacing or 18
+        self._contentLayout.Padding = UDim.new(0, contentPadding)
+        if self._contentDefaults then
+            self._contentDefaults.padding = UDim.new(0, contentPadding)
+        end
+    end
+
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
     self:_applyInsightsTheme()
@@ -2407,6 +2833,35 @@ function VerificationDashboard:applyTheme(theme)
 
     if self._progressFill then
         self._progressFill.BackgroundColor3 = currentTheme.accentColor
+    end
+
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, currentTheme.timeline or {})
+    if self._timelineTitle then
+        self._timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+        self._timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+        self._timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    end
+    if self._timelineStatusLabel then
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+        self._timelineStatusLabel.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    end
+    if self._timelineBadge then
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    end
+    if self._timelineBadgeFrame then
+        self._timelineBadgeFrame.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+    if self._timelineBadgeStroke then
+        self._timelineBadgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
     end
 
     if self._telemetryGrid or self._telemetryCards then
@@ -2559,6 +3014,8 @@ function VerificationDashboard:applyTheme(theme)
     if self._actions then
         self:setActions(self._actions)
     end
+
+    self:_updateTimelineBadge()
 
     self:updateLayout(self._lastLayoutBounds)
     self:_startLogoShimmer()
@@ -2739,6 +3196,8 @@ function VerificationDashboard:reset()
     self:setProgress(0)
     self:setHeaderSummary(nil)
     self:setStatusText("Initialising AutoParry suite…")
+
+    self:_updateTimelineBadge()
 end
 
 local function resolveStyle(theme, status)
@@ -2762,6 +3221,118 @@ function VerificationDashboard:_resolveStatusColor(status)
     end
 
     return nil
+end
+
+function VerificationDashboard:_updateTimelineBadge()
+    if self._destroyed then
+        return
+    end
+
+    if not (self._timelineBadge and self._timelineStatusLabel) then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
+
+    local states = self._stepStates or {}
+    local worstStatus = "pending"
+    local worstPriority = -math.huge
+    local worstDefinition
+    local activeDefinition
+    local nextPending
+    local allOk = true
+
+    for _, definition in ipairs(STEP_DEFINITIONS) do
+        local state = states[definition.id]
+        local status = state and state.status or "pending"
+        local priority = STATUS_PRIORITY[status] or 0
+
+        if status ~= "ok" then
+            allOk = false
+        end
+
+        if status == "active" and not activeDefinition then
+            activeDefinition = definition
+        end
+
+        if status == "pending" and not nextPending then
+            nextPending = definition
+        end
+
+        if priority > worstPriority then
+            worstPriority = priority
+            worstStatus = status
+            worstDefinition = definition
+        end
+    end
+
+    local badgeColor
+    local badgeText
+    local statusText
+
+    if worstStatus == "failed" then
+        badgeText = "Failure detected"
+        badgeColor = timelineTheme.badgeDangerColor or theme.failedColor
+        statusText = string.format("%s needs attention immediately.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif worstStatus == "warning" then
+        badgeText = "Warnings active"
+        badgeColor = timelineTheme.badgeWarningColor or theme.warningColor
+        statusText = string.format("%s reported unusual data.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif allOk and worstPriority >= (STATUS_PRIORITY.ok or 2) then
+        badgeText = "All systems ready"
+        badgeColor = timelineTheme.badgeSuccessColor or theme.okColor
+        statusText = "Every verification check has passed."
+    elseif worstStatus == "active" then
+        local focus = activeDefinition or worstDefinition or nextPending or STEP_DEFINITIONS[1]
+        badgeText = "Verification running"
+        badgeColor = timelineTheme.badgeActiveColor or theme.accentColor
+        statusText = focus and string.format("Currently checking %s.", focus.title) or "Verification checks are in progress."
+    else
+        local upcoming = nextPending or worstDefinition or STEP_DEFINITIONS[1]
+        badgeText = "Preparing checks"
+        badgeColor = timelineTheme.badgeDefaultColor or theme.accentColor
+        statusText = upcoming and string.format("Next up: %s.", upcoming.title) or "Awaiting verification updates."
+    end
+
+    if self._timelineBadge then
+        self._timelineBadge.Text = badgeText
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or self._timelineBadge.TextColor3
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    end
+
+    if self._timelineBadgeFrame then
+        local baseBackground = timelineTheme.badgeBackground or theme.cardColor
+        local highlight = timelineTheme.badgeBackgroundHighlight or 0.16
+        self._timelineBadgeFrame.BackgroundColor3 = baseBackground:Lerp(badgeColor, highlight)
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = badgeColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    end
+
+    if self._timelineBadgeStroke then
+        local mix = timelineTheme.badgeStrokeMix or 0.18
+        local strokeBase = timelineTheme.badgeStrokeColor or theme.cardStrokeColor or badgeColor
+        self._timelineBadgeStroke.Color = badgeColor:Lerp(strokeBase, mix)
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+
+    if self._timelineStatusLabel then
+        local baseStatusColor = timelineTheme.subtitleColor or self._timelineStatusLabel.TextColor3
+        local tintMix = timelineTheme.subtitleTintMix or 0.22
+        self._timelineStatusLabel.Text = statusText
+        if typeof(baseStatusColor) == "Color3" then
+            self._timelineStatusLabel.TextColor3 = baseStatusColor:Lerp(badgeColor, tintMix)
+        else
+            self._timelineStatusLabel.TextColor3 = badgeColor
+        end
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    end
 end
 
 function VerificationDashboard:_applyStepState(id, status, message, tooltip)
@@ -2830,6 +3401,8 @@ function VerificationDashboard:_applyStepState(id, status, message, tooltip)
     end
 
     step.state = status
+
+    self:_updateTimelineBadge()
 end
 
 local function formatElapsed(seconds)
