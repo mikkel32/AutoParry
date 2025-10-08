@@ -1695,7 +1695,7 @@ function VerificationDashboard:_installResponsiveHandlers()
         if self._destroyed then
             return
         end
-        self:updateLayout(self._lastLayoutBounds)
+        self:updateLayout(self:_resolveBoundsFromRoot())
     end)
     table.insert(self._connections, connection)
 
@@ -1703,8 +1703,33 @@ function VerificationDashboard:_installResponsiveHandlers()
         if self._destroyed then
             return
         end
-        self:updateLayout(self._lastLayoutBounds)
+        self:updateLayout(self:_resolveBoundsFromRoot())
     end)
+end
+
+function VerificationDashboard:_resolveBoundsFromRoot()
+    local root = self._root
+    if not root then
+        return self._lastLayoutBounds
+    end
+
+    local size = root.AbsoluteSize
+    local width = math.floor((size and size.X) or 0)
+    if width <= 0 then
+        return self._lastLayoutBounds
+    end
+
+    local height = math.floor((size and size.Y) or 0)
+    local last = self._lastLayoutBounds
+
+    return {
+        mode = last and last.mode or nil,
+        containerWidth = width,
+        containerHeight = (last and last.containerHeight) or height,
+        dashboardWidth = width,
+        dashboardHeight = (last and last.dashboardHeight) or height,
+        contentWidth = last and last.contentWidth,
+    }
 end
 
 function VerificationDashboard:_applyResponsiveLayout(width, bounds)
