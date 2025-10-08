@@ -24,9 +24,6 @@ local ImmortalModule = Require and Require("src/core/immortal.lua") or require(s
 local DEFAULT_CONFIG = {
     -- public API configuration that remains relevant for the PERFECT-PARRY rule
     safeRadius = 10,
-    proximityTriggerRadius = 10,
-    proximityMargin = 1.5,
-    proximityMinApproachSpeed = 5,
     confidenceZ = 2.2,
     activationLatency = 0.12,
     targetHighlightName = "Highlight",
@@ -741,9 +738,6 @@ local function syncGlobalSettings()
 
     settings.AutoParry = state.enabled
     settings.SafeRadius = config.safeRadius
-    settings.ProximityTriggerRadius = config.proximityTriggerRadius
-    settings.ProximityMargin = config.proximityMargin
-    settings.ProximityMinApproachSpeed = config.proximityMinApproachSpeed
     settings.ConfidenceZ = config.confidenceZ
     settings.ActivationLatency = activationLatencyEstimate
     settings.PerfectParry = perfectParrySnapshot
@@ -1603,22 +1597,6 @@ local function renderLoop()
     end
 
     local safeRadius = config.safeRadius or 0
-    local proximityRadius = config.proximityTriggerRadius
-    if not isFiniteNumber(proximityRadius) or proximityRadius < 0 then
-        proximityRadius = safeRadius
-    end
-    if proximityRadius < 0 then
-        proximityRadius = 0
-    end
-    local proximityMargin = config.proximityMargin
-    if not isFiniteNumber(proximityMargin) or proximityMargin < 0 then
-        proximityMargin = DEFAULT_CONFIG.proximityMargin
-    end
-    local proximityMinApproachSpeed = config.proximityMinApproachSpeed
-    if not isFiniteNumber(proximityMinApproachSpeed) or proximityMinApproachSpeed < 0 then
-        proximityMinApproachSpeed = DEFAULT_CONFIG.proximityMinApproachSpeed
-    end
-    local proximityThreshold = math.max(proximityRadius, 0) + proximityMargin
     local d0 = distance - safeRadius
 
     local rawVelocity = Vector3.zero
@@ -1774,28 +1752,12 @@ local function renderLoop()
     perfectParrySnapshot.z = z
 
     local targetingMe = isTargetingMe()
-    local approachingSpeed = filteredVr
-    local withinProximity = distance <= proximityThreshold
-    local approaching = approachingSpeed >= proximityMinApproachSpeed or d0 <= 0
-    local proximityActive = targetingMe and withinProximity and approaching
-
     local fired = false
-    local firedReason
     local released = false
 
     local shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
     if shouldPress then
         fired = pressParry(ball, ballId)
-        if fired then
-            firedReason = "prediction"
-        end
-    end
-
-    if not fired and proximityActive then
-        fired = pressParry(ball, ballId)
-        if fired then
-            firedReason = "proximity"
-        end
     end
 
     if parryHeld and parryHeldBallId == ballId then
@@ -1815,20 +1777,8 @@ local function renderLoop()
         end
     end
 
-    local keepHolding = false
-    local holdingViaProximity = false
-    if parryHeld and parryHeldBallId == ballId then
-        if targetingMe and muValid and sigmaValid and muMinus < 0 then
-            keepHolding = true
-        end
-        if proximityActive then
-            keepHolding = true
-            holdingViaProximity = true
-        end
-    end
-
     if parryHeld then
-        if (parryHeldBallId and parryHeldBallId ~= ballId) or not keepHolding then
+        if (not targetingMe) or not (muValid and sigmaValid) or muMinus >= 0 or (parryHeldBallId and parryHeldBallId ~= ballId) then
             releaseParry()
             released = true
         end
@@ -1842,14 +1792,6 @@ local function renderLoop()
         string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
-        string.format(
-            "Prox: %.3f/%.3f | within: %s | vr≥%.1f? %s",
-            distance,
-            proximityThreshold,
-            tostring(withinProximity),
-            proximityMinApproachSpeed,
-            tostring(approaching)
-        ),
         string.format("Targeting: %s", tostring(targetingMe)),
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
@@ -1859,22 +1801,10 @@ local function renderLoop()
         table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
     end
 
-    if proximityActive then
-        table.insert(debugLines, "Proximity guard: ready")
-    end
-
     if fired then
-        if firedReason == "proximity" then
-            table.insert(debugLines, "🛡️ Press F: proximity trigger")
-        else
-            table.insert(debugLines, "🔥 Press F: inequality satisfied")
-        end
+        table.insert(debugLines, "🔥 Press F: inequality satisfied")
     elseif parryHeld and not released then
-        if holdingViaProximity then
-            table.insert(debugLines, "Hold: proximity guard active")
-        else
-            table.insert(debugLines, "Hold: μ−zσ < 0")
-        end
+        table.insert(debugLines, "Hold: μ−zσ < 0")
     else
         table.insert(debugLines, "Hold: inequality not met")
     end
@@ -1894,15 +1824,6 @@ end
 
 local validators = {
     safeRadius = function(value)
-        return typeof(value) == "number" and value >= 0
-    end,
-    proximityTriggerRadius = function(value)
-        return typeof(value) == "number" and value >= 0
-    end,
-    proximityMargin = function(value)
-        return typeof(value) == "number" and value >= 0
-    end,
-    proximityMinApproachSpeed = function(value)
         return typeof(value) == "number" and value >= 0
     end,
     confidenceZ = function(value)
