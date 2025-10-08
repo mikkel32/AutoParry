@@ -7,6 +7,7 @@
 
 local CoreGui = game:GetService("CoreGui")
 local UserInputService = game:GetService("UserInputService")
+local Workspace = game:GetService("Workspace")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require("src/shared/util.lua")
@@ -18,7 +19,70 @@ local Controller = {}
 Controller.__index = Controller
 
 local DASHBOARD_THEME = {
-    width = 460,
+    widths = {
+        min = 360,
+        medium = 480,
+        large = 620,
+    },
+    minContentWidth = 280,
+    breakpoints = {
+        medium = 900,
+        large = 1280,
+    },
+    spacing = {
+        padding = {
+            min = 18,
+            medium = 22,
+            large = 26,
+        },
+        paddingY = {
+            min = 20,
+            medium = 26,
+            large = 30,
+        },
+        blockGap = {
+            min = 14,
+            medium = 18,
+            large = 22,
+        },
+        columnGap = {
+            min = 0,
+            medium = 18,
+            large = 24,
+        },
+        sectionGap = {
+            min = 14,
+            medium = 16,
+            large = 18,
+        },
+        cardGap = {
+            min = 12,
+            medium = 14,
+            large = 16,
+        },
+        cardPadding = {
+            min = 16,
+            medium = 20,
+            large = 24,
+        },
+        controlPadding = {
+            min = 18,
+            medium = 22,
+            large = 26,
+        },
+        marginX = {
+            min = 20,
+            medium = 40,
+            large = 48,
+        },
+        marginTop = {
+            min = 70,
+            medium = 120,
+            large = 140,
+        },
+        minMargin = 12,
+    },
+    telemetryCardHeight = 116,
     backgroundColor = Color3.fromRGB(24, 28, 36),
     backgroundTransparency = 0.05,
     strokeColor = Color3.fromRGB(94, 148, 214),
@@ -99,6 +163,114 @@ local DEFAULT_CONTROL_SWITCHES = {
         badge = "LINK",
     },
 }
+
+local DEFAULT_VIEWPORT_SIZE = Vector2.new(DASHBOARD_THEME.widths.medium, 720)
+
+local function getBreakpointForViewport(viewportSize)
+    local width = viewportSize and viewportSize.X or DEFAULT_VIEWPORT_SIZE.X
+    if DASHBOARD_THEME.breakpoints and DASHBOARD_THEME.breakpoints.large and width >= DASHBOARD_THEME.breakpoints.large then
+        return "large"
+    end
+    if DASHBOARD_THEME.breakpoints and DASHBOARD_THEME.breakpoints.medium and width >= DASHBOARD_THEME.breakpoints.medium then
+        return "medium"
+    end
+    return "min"
+end
+
+local function getResponsiveValue(values, breakpoint)
+    if not values then
+        return nil
+    end
+
+    local value = values[breakpoint]
+    if value ~= nil then
+        return value
+    end
+
+    if breakpoint == "large" then
+        value = values.medium or values.min
+    elseif breakpoint == "medium" then
+        value = values.large or values.min
+    else
+        value = values.medium or values.large
+    end
+
+    if value ~= nil then
+        return value
+    end
+
+    return values.default or values.min or values.medium or values.large
+end
+
+local function resolveLayoutMetrics(viewportSize)
+    viewportSize = viewportSize or DEFAULT_VIEWPORT_SIZE
+    local viewportWidth = viewportSize.X
+    if viewportWidth <= 0 then
+        viewportWidth = DEFAULT_VIEWPORT_SIZE.X
+    end
+
+    local breakpoint = getBreakpointForViewport(viewportSize)
+    local desiredWidth = getResponsiveValue(DASHBOARD_THEME.widths, breakpoint) or DASHBOARD_THEME.widths.medium
+    local minContentWidth = DASHBOARD_THEME.minContentWidth or desiredWidth
+    local marginX = getResponsiveValue(DASHBOARD_THEME.spacing.marginX, breakpoint) or 24
+    local minMargin = DASHBOARD_THEME.spacing.minMargin or 12
+    marginX = math.max(minMargin, marginX)
+
+    local availableWidth = math.max(viewportWidth - (marginX * 2), 0)
+    if availableWidth < minContentWidth then
+        local adjustedMargin = math.max(minMargin, math.floor((viewportWidth - minContentWidth) / 2))
+        marginX = adjustedMargin
+        availableWidth = math.max(viewportWidth - (marginX * 2), 0)
+    end
+
+    local effectiveMin = math.min(minContentWidth, availableWidth)
+    if effectiveMin <= 0 then
+        effectiveMin = math.min(minContentWidth, math.max(viewportWidth - (minMargin * 2), 0))
+    end
+
+    local effectiveMax = math.max(availableWidth, effectiveMin)
+    if effectiveMax <= 0 then
+        effectiveMax = math.max(effectiveMin, math.max(viewportWidth - (minMargin * 2), 0))
+    end
+
+    local resolvedWidth = math.clamp(desiredWidth, effectiveMin, effectiveMax)
+    if resolvedWidth <= 0 then
+        resolvedWidth = effectiveMax > 0 and effectiveMax or math.max(desiredWidth, math.max(viewportWidth - (minMargin * 2), 0))
+    end
+    resolvedWidth = math.min(resolvedWidth, viewportWidth)
+
+    local topOffset = getResponsiveValue(DASHBOARD_THEME.spacing.marginTop, breakpoint) or 120
+    local paddingX = getResponsiveValue(DASHBOARD_THEME.spacing.padding, breakpoint) or 20
+    local paddingY = getResponsiveValue(DASHBOARD_THEME.spacing.paddingY, breakpoint) or paddingX
+    local blockGap = getResponsiveValue(DASHBOARD_THEME.spacing.blockGap, breakpoint) or 16
+    local columnGap = getResponsiveValue(DASHBOARD_THEME.spacing.columnGap, breakpoint) or 0
+    local sectionGap = getResponsiveValue(DASHBOARD_THEME.spacing.sectionGap, breakpoint) or 14
+    local cardGap = getResponsiveValue(DASHBOARD_THEME.spacing.cardGap, breakpoint) or sectionGap
+    local cardPadding = getResponsiveValue(DASHBOARD_THEME.spacing.cardPadding, breakpoint) or 18
+    local controlPadding = getResponsiveValue(DASHBOARD_THEME.spacing.controlPadding, breakpoint) or cardPadding
+    local splitColumns = breakpoint ~= "min"
+    local telemetryColumns = splitColumns and 2 or 1
+    local controlSwitchWidth = splitColumns and 120 or 108
+
+    return {
+        breakpoint = breakpoint,
+        width = math.floor(resolvedWidth + 0.5),
+        sideMargin = marginX,
+        topOffset = topOffset,
+        paddingX = paddingX,
+        paddingY = paddingY,
+        blockGap = blockGap,
+        columnGap = columnGap,
+        sectionGap = sectionGap,
+        cardGap = cardGap,
+        cardPadding = cardPadding,
+        controlPadding = controlPadding,
+        splitColumns = splitColumns,
+        telemetryColumns = telemetryColumns,
+        telemetryCardHeight = DASHBOARD_THEME.telemetryCardHeight,
+        controlSwitchWidth = controlSwitchWidth,
+    }
+end
 
 local function ensureGuiRoot(name)
     local existing = CoreGui:FindFirstChild(name)
@@ -253,9 +425,9 @@ end
 local function createDashboardFrame(parent)
     local frame = Instance.new("Frame")
     frame.Name = "Dashboard"
-    frame.AnchorPoint = Vector2.new(0, 0)
-    frame.Position = UDim2.new(0, 36, 0, 140)
-    frame.Size = UDim2.new(0, DASHBOARD_THEME.width, 0, 0)
+    frame.AnchorPoint = Vector2.new(0.5, 0)
+    frame.Position = UDim2.new(0.5, 0, 0, 0)
+    frame.Size = UDim2.new(0, DASHBOARD_THEME.widths.medium, 0, 0)
     frame.AutomaticSize = Enum.AutomaticSize.Y
     frame.BackgroundColor3 = DASHBOARD_THEME.backgroundColor
     frame.BackgroundTransparency = DASHBOARD_THEME.backgroundTransparency
@@ -305,18 +477,147 @@ local function createDashboardFrame(parent)
     local content = Instance.new("Frame")
     content.Name = "Content"
     content.BackgroundTransparency = 1
-    content.Position = UDim2.new(0, 24, 0, 24)
-    content.Size = UDim2.new(1, -48, 0, 0)
+    content.Size = UDim2.new(1, 0, 0, 0)
     content.AutomaticSize = Enum.AutomaticSize.Y
     content.Parent = frame
 
-    local layout = Instance.new("UIListLayout")
+    local padding = Instance.new("UIPadding")
+    padding.Parent = content
+
+    local layout = Instance.new("UIFlexLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
     layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, 14)
+    layout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    layout.VerticalAlignment = Enum.VerticalAlignment.Top
+    layout.Wraps = false
+    layout.Padding = UDim.new(0, DASHBOARD_THEME.spacing.blockGap.min)
     layout.Parent = content
 
-    return frame, content
+    local columnsContainer = Instance.new("Frame")
+    columnsContainer.Name = "Columns"
+    columnsContainer.BackgroundTransparency = 1
+    columnsContainer.Size = UDim2.new(1, 0, 0, 0)
+    columnsContainer.AutomaticSize = Enum.AutomaticSize.Y
+    columnsContainer.LayoutOrder = 3
+    columnsContainer.Parent = content
+
+    local columnsLayout = Instance.new("UIFlexLayout")
+    columnsLayout.FillDirection = Enum.FillDirection.Horizontal
+    columnsLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    columnsLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    columnsLayout.Wraps = true
+    columnsLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    columnsLayout.Parent = columnsContainer
+
+    local leftColumn = Instance.new("Frame")
+    leftColumn.Name = "LeftColumn"
+    leftColumn.BackgroundTransparency = 1
+    leftColumn.Size = UDim2.new(1, 0, 0, 0)
+    leftColumn.AutomaticSize = Enum.AutomaticSize.Y
+    leftColumn.LayoutOrder = 1
+    leftColumn.Parent = columnsContainer
+
+    local leftLayout = Instance.new("UIListLayout")
+    leftLayout.FillDirection = Enum.FillDirection.Vertical
+    leftLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    leftLayout.Padding = UDim.new(0, DASHBOARD_THEME.spacing.sectionGap.min)
+    leftLayout.Parent = leftColumn
+
+    local rightColumn = Instance.new("Frame")
+    rightColumn.Name = "RightColumn"
+    rightColumn.BackgroundTransparency = 1
+    rightColumn.Size = UDim2.new(1, 0, 0, 0)
+    rightColumn.AutomaticSize = Enum.AutomaticSize.Y
+    rightColumn.LayoutOrder = 2
+    rightColumn.Parent = columnsContainer
+
+    local rightLayout = Instance.new("UIListLayout")
+    rightLayout.FillDirection = Enum.FillDirection.Vertical
+    rightLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    rightLayout.Padding = UDim.new(0, DASHBOARD_THEME.spacing.sectionGap.min)
+    rightLayout.Parent = rightColumn
+
+    local shell = {}
+    local metricListeners = {}
+    local currentMetrics
+
+    function shell:getMetrics()
+        return currentMetrics
+    end
+
+    function shell:addMetricListener(callback)
+        assert(typeof(callback) == "function", "Dashboard shell expects a function listener")
+        local listener = {
+            callback = callback,
+            connected = true,
+        }
+        table.insert(metricListeners, listener)
+        if currentMetrics then
+            callback(currentMetrics)
+        end
+
+        return function()
+            listener.connected = false
+        end
+    end
+
+    function shell:applyMetrics(metrics)
+        if not metrics then
+            return
+        end
+
+        currentMetrics = metrics
+
+        frame.Size = UDim2.new(0, metrics.width, 0, 0)
+        frame.Position = UDim2.new(0.5, 0, 0, metrics.topOffset)
+
+        padding.PaddingLeft = UDim.new(0, metrics.paddingX)
+        padding.PaddingRight = UDim.new(0, metrics.paddingX)
+        padding.PaddingTop = UDim.new(0, metrics.paddingY)
+        padding.PaddingBottom = UDim.new(0, metrics.paddingY)
+
+        layout.Padding = UDim.new(0, metrics.blockGap)
+
+        columnsLayout.Padding = UDim.new(0, metrics.columnGap)
+        columnsLayout.HorizontalAlignment = metrics.splitColumns and Enum.HorizontalAlignment.Left or Enum.HorizontalAlignment.Center
+
+        local columnOffset = math.floor((metrics.columnGap or 0) / 2)
+        if metrics.splitColumns then
+            leftColumn.Size = UDim2.new(0.5, -columnOffset, 0, 0)
+            rightColumn.Size = UDim2.new(0.5, -columnOffset, 0, 0)
+        else
+            leftColumn.Size = UDim2.new(1, 0, 0, 0)
+            rightColumn.Size = UDim2.new(1, 0, 0, 0)
+        end
+
+        leftLayout.Padding = UDim.new(0, metrics.sectionGap)
+        rightLayout.Padding = UDim.new(0, metrics.sectionGap)
+
+        for index = #metricListeners, 1, -1 do
+            local listener = metricListeners[index]
+            if listener.connected and listener.callback then
+                listener.callback(metrics)
+            else
+                table.remove(metricListeners, index)
+            end
+        end
+    end
+
+    shell.content = content
+    shell.layout = layout
+    shell.padding = padding
+    shell.columns = {
+        left = leftColumn,
+        right = rightColumn,
+    }
+    shell.columnLayouts = {
+        left = leftLayout,
+        right = rightLayout,
+    }
+    shell.columnsContainer = columnsContainer
+    shell.columnsLayout = columnsLayout
+
+    return frame, shell
 end
 
 local function createHeader(parent, titleText, hotkeyText)
@@ -405,6 +706,98 @@ local function createHeader(parent, titleText, hotkeyText)
         badgeLabel = badgeLabel,
         hotkeyLabel = hotkeyLabel,
     }
+end
+
+local function createDashboardCard(shell, parent, options)
+    options = options or {}
+
+    local card = Instance.new("Frame")
+    card.Name = options.name or "Card"
+    card.BackgroundColor3 = options.backgroundColor or DASHBOARD_THEME.telemetryCardColor
+    card.BackgroundTransparency = options.backgroundTransparency or 0.08
+    card.BorderSizePixel = 0
+    card.Size = UDim2.new(1, 0, 0, 0)
+    card.AutomaticSize = Enum.AutomaticSize.Y
+    card.LayoutOrder = options.layoutOrder or 0
+    card.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, options.cornerRadius or 14)
+    corner.Parent = card
+
+    if options.strokeColor then
+        local stroke = Instance.new("UIStroke")
+        stroke.Thickness = options.strokeThickness or 1
+        stroke.Transparency = options.strokeTransparency or 0.5
+        stroke.Color = options.strokeColor
+        stroke.Parent = card
+    end
+
+    local padding = Instance.new("UIPadding")
+    padding.Parent = card
+
+    local function apply(metrics)
+        local basePadding
+        if options.paddingToken == "control" then
+            basePadding = metrics and metrics.controlPadding or DASHBOARD_THEME.spacing.controlPadding.medium
+        else
+            basePadding = metrics and metrics.cardPadding or DASHBOARD_THEME.spacing.cardPadding.medium
+        end
+
+        local top = options.paddingTop or basePadding
+        local bottom = options.paddingBottom or basePadding
+        local left = options.paddingLeft or options.horizontalPadding or basePadding
+        local right = options.paddingRight or options.horizontalPadding or basePadding
+
+        if typeof(options.padding) == "function" then
+            local resolved = options.padding(metrics) or {}
+            top = resolved.top or resolved.y or resolved.vertical or top
+            bottom = resolved.bottom or resolved.y or resolved.vertical or bottom
+            left = resolved.left or resolved.x or resolved.horizontal or left
+            right = resolved.right or resolved.x or resolved.horizontal or right
+        elseif typeof(options.padding) == "table" then
+            top = options.padding.top or options.padding[1] or options.padding.y or options.padding.vertical or top
+            bottom = options.padding.bottom or options.padding[2] or options.padding.y or options.padding.vertical or bottom
+            left = options.padding.left or options.padding[3] or options.padding.x or options.padding.horizontal or left
+            right = options.padding.right or options.padding[4] or options.padding.x or options.padding.horizontal or right
+        end
+
+        padding.PaddingTop = UDim.new(0, top)
+        padding.PaddingBottom = UDim.new(0, bottom)
+        padding.PaddingLeft = UDim.new(0, left)
+        padding.PaddingRight = UDim.new(0, right)
+    end
+
+    apply(nil)
+
+    local disconnect
+    if shell and shell.addMetricListener then
+        local function onMetrics(metrics)
+            if not card.Parent then
+                if disconnect then
+                    disconnect()
+                    disconnect = nil
+                end
+                return
+            end
+
+            apply(metrics)
+        end
+
+        local remover = shell:addMetricListener(onMetrics)
+        disconnect = function()
+            remover()
+        end
+
+        card.AncestryChanged:Connect(function(_, parent)
+            if not parent and disconnect then
+                disconnect()
+                disconnect = nil
+            end
+        end)
+    end
+
+    return card, padding
 end
 
 local function createStatusCard(parent)
@@ -537,32 +930,22 @@ local function createStatusCard(parent)
     }
 end
 
-local function createTelemetryCard(parent, definition)
-    local card = Instance.new("Frame")
-    card.Name = definition.id or "Telemetry"
-    card.BackgroundColor3 = DASHBOARD_THEME.telemetryCardColor
-    card.BackgroundTransparency = 0.1
-    card.BorderSizePixel = 0
-    card.Size = UDim2.new(0, 0, 0, 100)
-    card.AutomaticSize = Enum.AutomaticSize.Y
-    card.Parent = parent
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 14)
-    corner.Parent = card
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Transparency = 0.5
-    stroke.Color = DASHBOARD_THEME.telemetryStrokeColor
-    stroke.Parent = card
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 16)
-    padding.PaddingBottom = UDim.new(0, 16)
-    padding.PaddingLeft = UDim.new(0, 18)
-    padding.PaddingRight = UDim.new(0, 18)
-    padding.Parent = card
+local function createTelemetryCard(shell, parent, definition)
+    local card = createDashboardCard(shell, parent, {
+        name = definition.id or "Telemetry",
+        backgroundColor = DASHBOARD_THEME.telemetryCardColor,
+        backgroundTransparency = 0.1,
+        strokeColor = DASHBOARD_THEME.telemetryStrokeColor,
+        strokeTransparency = 0.5,
+        padding = function(metrics)
+            local base = metrics and metrics.cardPadding or DASHBOARD_THEME.spacing.cardPadding.medium
+            return {
+                top = base,
+                bottom = base,
+                horizontal = base + 2,
+            }
+        end,
+    })
 
     local label = Instance.new("TextLabel")
     label.Name = "Label"
@@ -608,14 +991,22 @@ local function createTelemetryCard(parent, definition)
     }
 end
 
-local function createTelemetrySection(parent, definitions)
+local function createTelemetrySection(shell, definitions)
     local section = Instance.new("Frame")
     section.Name = "Telemetry"
     section.BackgroundTransparency = 1
     section.LayoutOrder = 3
     section.Size = UDim2.new(1, 0, 0, 0)
     section.AutomaticSize = Enum.AutomaticSize.Y
-    section.Parent = parent
+    local targetParent
+    if shell then
+        if shell.columns and shell.columns.left then
+            targetParent = shell.columns.left
+        elseif shell.content then
+            targetParent = shell.content
+        end
+    end
+    section.Parent = targetParent
 
     local title = Instance.new("TextLabel")
     title.Name = "Title"
@@ -646,8 +1037,37 @@ local function createTelemetrySection(parent, definitions)
     layout.Parent = grid
 
     local cards = {}
+
+    local function applyMetrics(metrics)
+        if not layout.Parent then
+            return
+        end
+
+        local columns = metrics and metrics.telemetryColumns or 1
+        local gap = metrics and metrics.cardGap or 12
+        local height = metrics and metrics.telemetryCardHeight or DASHBOARD_THEME.telemetryCardHeight
+
+        if columns > 1 then
+            layout.CellSize = UDim2.new(1 / columns, -gap, 0, height)
+        else
+            layout.CellSize = UDim2.new(1, 0, 0, height)
+        end
+        layout.CellPadding = UDim2.new(0, gap, 0, gap)
+    end
+
+    if shell and shell.addMetricListener then
+        local disconnect = shell:addMetricListener(applyMetrics)
+        section.AncestryChanged:Connect(function(_, parentFrame)
+            if not parentFrame then
+                disconnect()
+            end
+        end)
+    else
+        applyMetrics(nil)
+    end
+
     for _, definition in ipairs(definitions) do
-        local card = createTelemetryCard(grid, definition)
+        local card = createTelemetryCard(shell, grid, definition)
         cards[definition.id or definition.label] = card
     end
 
@@ -656,35 +1076,26 @@ local function createTelemetrySection(parent, definitions)
         grid = grid,
         layout = layout,
         cards = cards,
+        applyMetrics = applyMetrics,
     }
 end
 
-local function createControlToggle(parent, definition, onToggle)
-    local row = Instance.new("Frame")
-    row.Name = definition.id or (definition.title or "Control")
-    row.BackgroundColor3 = DASHBOARD_THEME.controlCardColor
-    row.BackgroundTransparency = 0.08
-    row.BorderSizePixel = 0
-    row.Size = UDim2.new(1, 0, 0, 80)
-    row.AutomaticSize = Enum.AutomaticSize.Y
-    row.Parent = parent
-
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, 14)
-    corner.Parent = row
-
-    local stroke = Instance.new("UIStroke")
-    stroke.Thickness = 1
-    stroke.Transparency = 0.5
-    stroke.Color = DASHBOARD_THEME.controlStrokeColor
-    stroke.Parent = row
-
-    local padding = Instance.new("UIPadding")
-    padding.PaddingTop = UDim.new(0, 18)
-    padding.PaddingBottom = UDim.new(0, 18)
-    padding.PaddingLeft = UDim.new(0, 20)
-    padding.PaddingRight = UDim.new(0, 20)
-    padding.Parent = row
+local function createControlToggle(shell, parent, definition, onToggle)
+    local row = createDashboardCard(shell, parent, {
+        name = definition.id or (definition.title or "Control"),
+        backgroundColor = DASHBOARD_THEME.controlCardColor,
+        backgroundTransparency = 0.08,
+        strokeColor = DASHBOARD_THEME.controlStrokeColor,
+        paddingToken = "control",
+        padding = function(metrics)
+            local base = metrics and metrics.controlPadding or DASHBOARD_THEME.spacing.controlPadding.medium
+            return {
+                top = base,
+                bottom = base,
+                horizontal = base + 2,
+            }
+        end,
+    })
 
     local title = Instance.new("TextLabel")
     title.Name = "Title"
@@ -694,7 +1105,6 @@ local function createControlToggle(parent, definition, onToggle)
     title.TextColor3 = DASHBOARD_THEME.headingColor
     title.TextXAlignment = Enum.TextXAlignment.Left
     title.Text = definition.title or "Control"
-    title.Size = UDim2.new(1, -150, 0, 20)
     title.Parent = row
 
     local description = Instance.new("TextLabel")
@@ -707,7 +1117,6 @@ local function createControlToggle(parent, definition, onToggle)
     description.TextXAlignment = Enum.TextXAlignment.Left
     description.Text = definition.description or ""
     description.Position = UDim2.new(0, 0, 0, 24)
-    description.Size = UDim2.new(1, -150, 0, 34)
     description.Parent = row
 
     local badge
@@ -742,6 +1151,32 @@ local function createControlToggle(parent, definition, onToggle)
     local switchCorner = Instance.new("UICorner")
     switchCorner.CornerRadius = UDim.new(0, 12)
     switchCorner.Parent = switch
+
+    local function applyResponsiveMetrics(metrics)
+        local switchWidth = metrics and metrics.controlSwitchWidth or 120
+        local spacing = 24
+        switch.Size = UDim2.new(0, switchWidth, 0, 34)
+        title.Size = UDim2.new(1, -(switchWidth + spacing), 0, 20)
+        description.Size = UDim2.new(1, -(switchWidth + spacing), 0, 34)
+    end
+
+    applyResponsiveMetrics(shell and shell:getMetrics())
+
+    if shell and shell.addMetricListener then
+        local disconnect = shell:addMetricListener(function(metrics)
+            if not row.Parent then
+                disconnect()
+                return
+            end
+            applyResponsiveMetrics(metrics)
+        end)
+
+        row.AncestryChanged:Connect(function(_, parentFrame)
+            if not parentFrame then
+                disconnect()
+            end
+        end)
+    end
 
     local currentState = definition.default == true
 
@@ -782,14 +1217,22 @@ local function createControlToggle(parent, definition, onToggle)
     }
 end
 
-local function createControlsSection(parent, definitions, onToggle)
+local function createControlsSection(shell, definitions, onToggle)
     local section = Instance.new("Frame")
     section.Name = "Controls"
     section.BackgroundTransparency = 1
     section.LayoutOrder = 4
     section.Size = UDim2.new(1, 0, 0, 0)
     section.AutomaticSize = Enum.AutomaticSize.Y
-    section.Parent = parent
+    local targetParent
+    if shell then
+        if shell.columns and shell.columns.right then
+            targetParent = shell.columns.right
+        elseif shell.content then
+            targetParent = shell.content
+        end
+    end
+    section.Parent = targetParent
 
     local title = Instance.new("TextLabel")
     title.Name = "Title"
@@ -813,12 +1256,34 @@ local function createControlsSection(parent, definitions, onToggle)
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
     layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, 10)
+    layout.Padding = UDim.new(0, 12)
     layout.Parent = list
+
+    local function applyMetrics(metrics)
+        if metrics then
+            layout.Padding = UDim.new(0, metrics.sectionGap)
+        end
+    end
+
+    if shell and shell.addMetricListener then
+        local disconnect = shell:addMetricListener(function(metrics)
+            if not section.Parent then
+                disconnect()
+                return
+            end
+            applyMetrics(metrics)
+        end)
+
+        section.AncestryChanged:Connect(function(_, parentFrame)
+            if not parentFrame then
+                disconnect()
+            end
+        end)
+    end
 
     local toggles = {}
     for _, definition in ipairs(definitions) do
-        local toggle = createControlToggle(list, definition, function(state)
+        local toggle = createControlToggle(shell, list, definition, function(state)
             if typeof(onToggle) == "function" then
                 onToggle(definition, state)
             end
@@ -964,6 +1429,20 @@ function Controller:getDashboard()
     return self.dashboard
 end
 
+function Controller:getColumns()
+    if self._shell and self._shell.columns then
+        return self._shell.columns
+    end
+    return nil
+end
+
+function Controller:getLayoutMetrics()
+    if self._shell and self._shell.getMetrics then
+        self._layoutMetrics = self._layoutMetrics or self._shell:getMetrics()
+    end
+    return self._layoutMetrics
+end
+
 function Controller:setTooltip(text)
     if self._statusCard and self._statusCard.tooltip then
         self._statusCard.tooltip.Text = text or ""
@@ -1050,7 +1529,7 @@ function Controller:setTelemetry(definitions)
 
     local cards = {}
     for _, definition in ipairs(definitions) do
-        local card = createTelemetryCard(self._telemetrySection.grid, definition)
+        local card = createTelemetryCard(self._shell, self._telemetrySection.grid, definition)
         cards[definition.id or definition.label] = card
     end
 
@@ -1082,7 +1561,7 @@ function Controller:setControls(definitions)
     self._controlDefinitions = definitions
 
     for _, definition in ipairs(definitions) do
-        local toggle = createControlToggle(self._controlsSection.list, definition, function(state)
+        local toggle = createControlToggle(self._shell, self._controlsSection.list, definition, function(state)
             if self._controlChanged then
                 self._controlChanged:fire(definition.id or definition.title, state, definition)
             end
@@ -1225,6 +1704,16 @@ function Controller:destroy()
         self.gui = nil
     end
 
+    if self._viewportSizeConnection then
+        self._viewportSizeConnection:Disconnect()
+        self._viewportSizeConnection = nil
+    end
+
+    if self._workspaceCameraConnection then
+        self._workspaceCameraConnection:Disconnect()
+        self._workspaceCameraConnection = nil
+    end
+
     self.dashboard = nil
     self.button = nil
     self._header = nil
@@ -1233,6 +1722,9 @@ function Controller:destroy()
     self._telemetryCards = nil
     self._controlsSection = nil
     self._actionsRow = nil
+    self._shell = nil
+    self._columns = nil
+    self._layoutMetrics = nil
 
     if self._changed then
         self._changed:destroy()
@@ -1244,32 +1736,39 @@ function UI.mount(options)
     options = options or {}
 
     local gui = ensureGuiRoot("AutoParryUI")
-    local dashboard, content = createDashboardFrame(gui)
+    local dashboard, shell = createDashboardFrame(gui)
+
+    local camera = Workspace.CurrentCamera
+    if camera then
+        shell:applyMetrics(resolveLayoutMetrics(camera.ViewportSize))
+    else
+        shell:applyMetrics(resolveLayoutMetrics(DEFAULT_VIEWPORT_SIZE))
+    end
 
     local rawHotkey = options.hotkey
     local hotkeyDescriptor = parseHotkey(rawHotkey)
     local hotkeyDisplay = formatHotkeyDisplay(hotkeyDescriptor and hotkeyDescriptor.key and hotkeyDescriptor or rawHotkey)
 
-    local header = createHeader(content, options.title or "AutoParry", hotkeyDisplay)
+    local header = createHeader(shell.content, options.title or "AutoParry", hotkeyDisplay)
     if typeof(options.tagline) == "string" then
         header.tagline.Text = options.tagline
     end
 
-    local statusCard = createStatusCard(content)
+    local statusCard = createStatusCard(shell.content)
     statusCard.tooltip.Text = options.tooltip or ""
     statusCard.tooltip.Visible = options.tooltip ~= nil and options.tooltip ~= ""
     statusCard.hotkeyLabel.Text = hotkeyDisplay and ("Hotkey: %s"):format(hotkeyDisplay) or ""
 
     local telemetryDefinitions = options.telemetry or DEFAULT_TELEMETRY_CARDS
-    local telemetry = createTelemetrySection(content, telemetryDefinitions)
+    local telemetry = createTelemetrySection(shell, telemetryDefinitions)
 
     local controlSignal = Util.Signal.new()
     local controlDefinitions = options.controls or DEFAULT_CONTROL_SWITCHES
-    local controls = createControlsSection(content, controlDefinitions, function(definition, state)
+    local controls = createControlsSection(shell, controlDefinitions, function(definition, state)
         controlSignal:fire(definition.id or definition.title, state, definition)
     end)
 
-    local actions = createActionsRow(content)
+    local actions = createActionsRow(shell.content)
 
     local controller = setmetatable({
         gui = gui,
@@ -1290,6 +1789,9 @@ function UI.mount(options)
         _controlChanged = controlSignal,
         _header = header,
         _statusCard = statusCard,
+        _shell = shell,
+        _columns = shell.columns,
+        _layoutMetrics = shell:getMetrics(),
     }, Controller)
 
     controller:setHotkeyDisplay(hotkeyDisplay)
@@ -1314,6 +1816,59 @@ function UI.mount(options)
         end)
         table.insert(controller._connections, controller._hotkeyConnection)
     end
+
+    if shell and shell.addMetricListener then
+        local metricDisconnect = shell:addMetricListener(function(metrics)
+            controller._layoutMetrics = metrics
+        end)
+        table.insert(controller._connections, {
+            Disconnect = function()
+                metricDisconnect()
+            end,
+        })
+    end
+
+    local function applyViewportMetrics(currentCamera)
+        if controller._destroyed then
+            return
+        end
+
+        if currentCamera then
+            shell:applyMetrics(resolveLayoutMetrics(currentCamera.ViewportSize))
+        else
+            shell:applyMetrics(resolveLayoutMetrics(DEFAULT_VIEWPORT_SIZE))
+        end
+    end
+
+    local function bindCamera(newCamera)
+        if controller._viewportSizeConnection then
+            controller._viewportSizeConnection:Disconnect()
+            controller._viewportSizeConnection = nil
+        end
+
+        if not newCamera then
+            applyViewportMetrics(nil)
+            return
+        end
+
+        applyViewportMetrics(newCamera)
+
+        controller._viewportSizeConnection = newCamera:GetPropertyChangedSignal("ViewportSize"):Connect(function()
+            if controller._destroyed then
+                return
+            end
+            applyViewportMetrics(newCamera)
+        end)
+    end
+
+    bindCamera(camera)
+
+    controller._workspaceCameraConnection = Workspace:GetPropertyChangedSignal("CurrentCamera"):Connect(function()
+        if controller._destroyed then
+            return
+        end
+        bindCamera(Workspace.CurrentCamera)
+    end)
 
     controller:_applyVisualState({ forceStatusRefresh = true })
     controller:setTooltip(options.tooltip)
