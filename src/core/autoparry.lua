@@ -33,6 +33,8 @@ local DEFAULT_CONFIG = {
     ballsFolderTimeout = 5,
     verificationRetryInterval = 0,
     remoteQueueGuards = { "SyncDragonSpirit", "SecondaryEndCD" },
+    oscillationFrequency = 3,
+    oscillationDistanceDelta = 0.35,
 }
 
 local function getGlobalTable()
@@ -60,6 +62,8 @@ local SMOOTH_ALPHA = 0.25
 local KAPPA_ALPHA = 0.3
 local DKAPPA_ALPHA = 0.3
 local ACTIVATION_LATENCY_ALPHA = 0.2
+local VR_SIGN_EPSILON = 1e-3
+local OSCILLATION_HISTORY_SECONDS = 0.6
 local SIGMA_FLOORS = {
     d = 0.01,
     vr = 1.5,
@@ -159,6 +163,18 @@ type TelemetryState = {
     filteredVr: number,
     filteredAr: number,
     filteredJr: number,
+    lastD0: number?,
+    lastD0Delta: number,
+    d0DeltaHistory: { { time: number, delta: number } },
+    lastVrSign: number?,
+    vrSignFlips: { { time: number, sign: number } },
+    lastOscillationCheck: number,
+    lastOscillationFrequency: number,
+    lastOscillationDelta: number,
+    lastOscillationCount: number,
+    oscillationActive: boolean,
+    lastOscillationTrigger: number,
+    lastOscillationApplied: number,
     statsD: RollingStat,
     statsVr: RollingStat,
     statsAr: RollingStat,
@@ -206,6 +222,82 @@ local function updateRollingStat(stat: RollingStat, sample: number)
     stat.mean += delta / count
     local delta2 = sample - stat.mean
     stat.m2 += delta * delta2
+end
+
+local function trimHistory(history, cutoff)
+    if not history then
+        return
+    end
+
+    while #history > 0 and history[1].time < cutoff do
+        table.remove(history, 1)
+    end
+end
+
+local function evaluateOscillation(telemetry: TelemetryState?, now: number)
+    if not telemetry then
+        return false, 0, 0, 0
+    end
+
+    local freqThreshold = config.oscillationFrequency or 0
+    if freqThreshold <= 0 then
+        telemetry.oscillationActive = false
+        telemetry.lastOscillationFrequency = 0
+        telemetry.lastOscillationCount = 0
+        telemetry.lastOscillationDelta = 0
+        telemetry.lastOscillationCheck = now
+        return false, 0, 0, 0
+    end
+
+    local flips = telemetry.vrSignFlips or {}
+    local flipCount = #flips
+    telemetry.lastOscillationCount = flipCount
+
+    if flipCount < math.max(2, math.ceil(freqThreshold)) then
+        telemetry.oscillationActive = false
+        telemetry.lastOscillationFrequency = 0
+        telemetry.lastOscillationDelta = 0
+        telemetry.lastOscillationCheck = now
+        return false, 0, flipCount, 0
+    end
+
+    local lastIndex = flipCount
+    local requiredFlips = math.max(math.ceil(freqThreshold), 2)
+    local firstIndex = math.max(1, lastIndex - requiredFlips + 1)
+    local earliest = flips[firstIndex].time
+    local latest = flips[lastIndex].time
+    local span = math.max(latest - earliest, EPSILON)
+    local intervals = lastIndex - firstIndex
+    local frequency = intervals / span
+
+    local d0Threshold = config.oscillationDistanceDelta or 0
+    local d0History = telemetry.d0DeltaHistory or {}
+    local windowStart = earliest
+    local maxDelta = 0
+    local smallDeltaCount = 0
+    local considered = 0
+    for _, entry in ipairs(d0History) do
+        if entry.time >= windowStart then
+            considered += 1
+            maxDelta = math.max(maxDelta, entry.delta)
+            if entry.delta <= d0Threshold then
+                smallDeltaCount += 1
+            end
+        end
+    end
+
+    telemetry.lastOscillationFrequency = frequency
+    telemetry.lastOscillationDelta = maxDelta
+    telemetry.lastOscillationCheck = now
+
+    local distanceGate = d0Threshold <= 0 or considered == 0 or smallDeltaCount == considered
+    local triggered = frequency >= freqThreshold and distanceGate
+    telemetry.oscillationActive = triggered
+    if triggered then
+        telemetry.lastOscillationTrigger = now
+    end
+
+    return triggered, frequency, flipCount, maxDelta
 end
 
 local function getRollingStd(stat: RollingStat?, floor: number)
@@ -274,6 +366,18 @@ local function ensureTelemetry(ballId: string, now: number): TelemetryState
         filteredVr = 0,
         filteredAr = 0,
         filteredJr = 0,
+        lastD0 = nil,
+        lastD0Delta = 0,
+        d0DeltaHistory = {},
+        lastVrSign = nil,
+        vrSignFlips = {},
+        lastOscillationCheck = now,
+        lastOscillationFrequency = 0,
+        lastOscillationDelta = 0,
+        lastOscillationCount = 0,
+        oscillationActive = false,
+        lastOscillationTrigger = 0,
+        lastOscillationApplied = 0,
         statsD = newRollingStat(),
         statsVr = newRollingStat(),
         statsAr = newRollingStat(),
@@ -1474,13 +1578,15 @@ local function getBallIdentifier(ball)
 end
 
 
-local function pressParry(ball: BasePart?, ballId: string?)
+local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
+    local forcing = force == true
     if parryHeld then
-        if parryHeldBallId == ballId then
+        local sameBall = parryHeldBallId == ballId
+        if sameBall and not forcing then
             return false
         end
 
-        -- release the existing hold before pressing for a new ball
+        -- release the existing hold before pressing again or for a new ball
         sendParryKeyEvent(false)
         parryHeld = false
         parryHeldBallId = nil
@@ -1909,6 +2015,21 @@ local function renderLoop()
     local rawVr = -unit:Dot(rawVelocity)
     local filteredVr = emaScalar(telemetry.filteredVr, -unit:Dot(velocity), SMOOTH_ALPHA)
     telemetry.filteredVr = filteredVr
+    local vrSign = 0
+    if filteredVr > VR_SIGN_EPSILON then
+        vrSign = 1
+    elseif filteredVr < -VR_SIGN_EPSILON then
+        vrSign = -1
+    end
+    if vrSign ~= 0 then
+        local previousSign = telemetry.lastVrSign
+        if previousSign and previousSign ~= 0 and previousSign ~= vrSign then
+            local flips = telemetry.vrSignFlips
+            flips[#flips + 1] = { time = now, sign = vrSign }
+        end
+        telemetry.lastVrSign = vrSign
+    end
+    trimHistory(telemetry.vrSignFlips, now - OSCILLATION_HISTORY_SECONDS)
 
     local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
     local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
@@ -1926,6 +2047,15 @@ local function renderLoop()
 
     local filteredD = emaScalar(telemetry.filteredD, d0, SMOOTH_ALPHA)
     telemetry.filteredD = filteredD
+    local d0Delta = 0
+    if telemetry.lastD0 ~= nil then
+        d0Delta = d0 - telemetry.lastD0
+    end
+    telemetry.lastD0 = d0
+    telemetry.lastD0Delta = d0Delta
+    local d0History = telemetry.d0DeltaHistory
+    d0History[#d0History + 1] = { time = now, delta = math.abs(d0Delta) }
+    trimHistory(d0History, now - OSCILLATION_HISTORY_SECONDS)
 
     updateRollingStat(telemetry.statsD, d0 - filteredD)
     updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
@@ -2068,8 +2198,28 @@ local function renderLoop()
         shouldHold = true
     end
 
+    local oscillationTriggered = false
+    local spamFallback = false
+    if telemetry then
+        oscillationTriggered = evaluateOscillation(telemetry, now)
+        if oscillationTriggered and parryHeld and parryHeldBallId == ballId then
+            local lastApplied = telemetry.lastOscillationApplied or 0
+            if now - lastApplied > (1 / 120) then
+                spamFallback = pressParry(ball, ballId, true)
+                if spamFallback then
+                    telemetry.lastOscillationApplied = now
+                end
+            end
+        end
+    end
+
+    if spamFallback then
+        fired = true
+    end
+
     if shouldPress then
-        fired = pressParry(ball, ballId)
+        local pressed = pressParry(ball, ballId)
+        fired = pressed or fired
     end
 
     if parryHeld and parryHeldBallId == ballId then
@@ -2108,6 +2258,14 @@ local function renderLoop()
         string.format("Rad: safe %.2f | press %.2f | hold %.2f", safeRadius, pressRadius, holdRadius),
         string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
         string.format("Targeting: %s", tostring(targetingMe)),
+        string.format(
+            "Osc: trig %s | flips %d | freq %.2f | dΔ %.3f | spam %s",
+            tostring(telemetry.oscillationActive),
+            telemetry.lastOscillationCount or 0,
+            telemetry.lastOscillationFrequency or 0,
+            telemetry.lastOscillationDelta or 0,
+            tostring(spamFallback)
+        ),
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
@@ -2197,6 +2355,12 @@ local validators = {
         end
 
         return true
+    end,
+    oscillationFrequency = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    oscillationDistanceDelta = function(value)
+        return typeof(value) == "number" and value >= 0
     end,
 }
 
