@@ -1216,7 +1216,8 @@ function VerificationDashboard.new(options)
     -- Guard against custom themes setting a max width smaller than the min
     -- width, which would otherwise trigger Roblox constraint warnings.
     local initialMaxWidth = math.max(configuredMaxWidth, initialMinWidth)
-    Util.setConstraintSize(canvasConstraint, Vector2.new(initialMinWidth, 0), Vector2.new(initialMaxWidth, math.huge))
+    canvasConstraint.MaxSize = Vector2.new(initialMaxWidth, math.huge)
+    canvasConstraint.MinSize = Vector2.new(initialMinWidth, 0)
     canvasConstraint.Parent = canvas
 
     local layout = Instance.new("UIListLayout")
@@ -2037,9 +2038,8 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             maxWidth = math.min(maxWidth, width)
             minWidth = math.min(minWidth, maxWidth)
         end
-        local minVector = Vector2.new(math.max(0, minWidth), 0)
-        local maxVector = Vector2.new(math.max(0, maxWidth), math.huge)
-        Util.setConstraintSize(canvasConstraint, minVector, maxVector)
+        canvasConstraint.MaxSize = Vector2.new(math.max(0, maxWidth), math.huge)
+        canvasConstraint.MinSize = Vector2.new(math.max(0, minWidth), 0)
     end
 
     local canvasPadding = self._canvasPadding

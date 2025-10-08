@@ -102,6 +102,7 @@ local initProgress = { stage = "waiting-player" }
 local stateChanged = Signal.new()
 local parryEvent = Signal.new()
 local parrySuccessSignal = Signal.new()
+parrySuccessSignal:connect(handleParrySuccessLatency)
 local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 
@@ -549,8 +550,6 @@ local function handleParrySuccessLatency(...)
         end
     end
 end
-
-parrySuccessSignal:connect(handleParrySuccessLatency)
 
 local function clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
