@@ -1211,8 +1211,13 @@ function VerificationDashboard.new(options)
     canvasPadding.Parent = canvas
 
     local canvasConstraint = Instance.new("UISizeConstraint")
-    canvasConstraint.MaxSize = Vector2.new(layoutTheme.maxWidth or 720, math.huge)
-    canvasConstraint.MinSize = Vector2.new(layoutTheme.minWidth or 420, 0)
+    local initialMinWidth = math.max(0, layoutTheme.minWidth or 420)
+    local configuredMaxWidth = layoutTheme.maxWidth or 720
+    -- Guard against custom themes setting a max width smaller than the min
+    -- width, which would otherwise trigger Roblox constraint warnings.
+    local initialMaxWidth = math.max(configuredMaxWidth, initialMinWidth)
+    canvasConstraint.MaxSize = Vector2.new(initialMaxWidth, math.huge)
+    canvasConstraint.MinSize = Vector2.new(initialMinWidth, 0)
     canvasConstraint.Parent = canvas
 
     local layout = Instance.new("UIListLayout")
