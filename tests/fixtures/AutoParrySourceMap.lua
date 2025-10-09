@@ -1,6 +1,7 @@
 -- Auto-generated source map for AutoParry tests
 return {
     ['src/core/autoparry.lua'] = [===[
+-- src/core/autoparry.lua (sha1: 0d28ff874ea30ba9abe0856a8258d4ef91da2c15)
 -- mikkel32/AutoParry : src/core/autoparry.lua
 -- selene: allow(global_usage)
 -- Auto-parry implementation that mirrors the "Auto-Parry (F-Key Proximity)" logic
@@ -14,7 +15,8 @@ local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local Workspace = game:GetService("Workspace")
 local Stats = game:FindService("Stats")
-local VirtualInputManager = game:GetService("VirtualInputManager")
+local VirtualInputManager = game:FindService("VirtualInputManager")
+local CoreGui = game:GetService("CoreGui")
 
 local Require = rawget(_G, "ARequire")
 local Util = Require and Require("src/shared/util.lua") or require(script.Parent.Parent.shared.util)
@@ -23,19 +25,29 @@ local Signal = Util.Signal
 local Verification = Require and Require("src/core/verification.lua") or require(script.Parent.verification)
 local ImmortalModule = Require and Require("src/core/immortal.lua") or require(script.Parent.immortal)
 
-    local DEFAULT_CONFIG = {
-        -- public API configuration that remains relevant for the PERFECT-PARRY rule
-        safeRadius = 10,
-        curvatureLeadScale = 0.12,
-        curvatureHoldBoost = 0.5,
-        confidenceZ = 2.2,
+local DEFAULT_CONFIG = {
+    cooldown = 0.1,
+    minSpeed = 10,
+    pingOffset = 0.05,
+    minTTI = 0.12,
+    maxTTI = 0.55,
+    -- public API configuration that remains relevant for the PERFECT-PARRY rule
+    safeRadius = 10,
+    curvatureLeadScale = 0.12,
+    curvatureHoldBoost = 0.5,
+    confidenceZ = 2.2,
     activationLatency = 0.12,
+    pressReactionBias = 0.02,
+    pressScheduleSlack = 0.015,
+    pressMaxLookahead = 0.75,
+    pressConfidencePadding = 0.08,
     targetHighlightName = "Highlight",
     ballsFolderName = "Balls",
     playerTimeout = 10,
     remotesTimeout = 10,
     ballsFolderTimeout = 5,
     verificationRetryInterval = 0,
+    remoteQueueGuards = { "SyncDragonSpirit", "SecondaryEndCD" },
     oscillationFrequency = 3,
     oscillationDistanceDelta = 0.35,
 }
@@ -103,7 +115,6 @@ local initProgress = { stage = "waiting-player" }
 local stateChanged = Signal.new()
 local parryEvent = Signal.new()
 local parrySuccessSignal = Signal.new()
-parrySuccessSignal:connect(handleParrySuccessLatency)
 local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 
@@ -121,8 +132,11 @@ local successConnections: { RBXScriptConnection? } = {}
 local successStatusSnapshot: { [string]: boolean }?
 local ballsFolderStatusSnapshot: { [string]: any }?
 local ballsFolderConnections: { RBXScriptConnection? }?
+local remoteQueueGuardConnections: { [string]: { remote: Instance?, connection: RBXScriptConnection?, destroying: RBXScriptConnection?, nameChanged: RBXScriptConnection? } } = {}
+local remoteQueueGuardWatchers: { RBXScriptConnection? }?
 local restartPending = false
 local scheduleRestart
+local syncImmortalContext = function() end
 
 local UiRoot: ScreenGui?
 local ToggleButton: TextButton?
@@ -141,8 +155,122 @@ local characterRemovingConnection: RBXScriptConnection?
 local trackedBall: BasePart?
 local parryHeld = false
 local parryHeldBallId: string?
+local pendingParryRelease = false
+local sendParryKeyEvent
+local scheduledPressState = {
+    ballId = nil :: string?,
+    pressAt = 0,
+    predictedImpact = math.huge,
+    lead = 0,
+    slack = 0,
+    reason = nil :: string?,
+    lastUpdate = 0,
+}
+local SMART_PRESS_TRIGGER_GRACE = 0.01
+local SMART_PRESS_STALE_SECONDS = 0.75
+local setStage
+local updateStatusLabel
+local virtualInputWarningIssued = false
+local virtualInputUnavailable = false
+local virtualInputRetryAt = 0
+
+local function noteVirtualInputFailure(delay)
+    virtualInputUnavailable = true
+    if typeof(delay) == "number" and delay > 0 then
+        virtualInputRetryAt = os.clock() + delay
+    else
+        virtualInputRetryAt = os.clock() + 1.5
+    end
+
+    if state.enabled then
+        setStage("waiting-input", { reason = "virtual-input" })
+        updateStatusLabel({ "Auto-Parry F", "Status: waiting for input permissions" })
+    end
+end
+
+local function noteVirtualInputSuccess()
+    if virtualInputUnavailable then
+        virtualInputUnavailable = false
+        virtualInputRetryAt = 0
+
+        if state.enabled and initProgress.stage == "waiting-input" then
+            publishReadyStatus()
+        end
+
+        if pendingParryRelease then
+            pendingParryRelease = false
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            end
+        end
+    end
+end
 
 local immortalController = ImmortalModule and ImmortalModule.new({}) or nil
+local immortalMissingMethodWarnings = {}
+
+local function resolveVirtualInputManager()
+    if VirtualInputManager then
+        return VirtualInputManager
+    end
+
+    local ok, manager = pcall(game.GetService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    ok, manager = pcall(game.FindService, game, "VirtualInputManager")
+    if ok and manager then
+        VirtualInputManager = manager
+        return VirtualInputManager
+    end
+
+    return nil
+end
+
+local function warnOnceImmortalMissing(methodName)
+    if immortalMissingMethodWarnings[methodName] then
+        return
+    end
+
+    immortalMissingMethodWarnings[methodName] = true
+    warn(("AutoParry: Immortal controller missing '%s' support; disabling Immortal features."):format(tostring(methodName)))
+end
+
+local function disableImmortalSupport()
+    if not state.immortalEnabled then
+        return false
+    end
+
+    state.immortalEnabled = false
+    updateImmortalButton()
+    syncGlobalSettings()
+    immortalStateChanged:fire(false)
+    return true
+end
+
+local function callImmortalController(methodName, ...)
+    if not immortalController then
+        return false
+    end
+
+    local method = immortalController[methodName]
+    if typeof(method) ~= "function" then
+        warnOnceImmortalMissing(methodName)
+        disableImmortalSupport()
+        return false
+    end
+
+    local ok, result = pcall(method, immortalController, ...)
+    if not ok then
+        warn(("AutoParry: Immortal controller '%s' call failed: %s"):format(tostring(methodName), tostring(result)))
+        disableImmortalSupport()
+        return false
+    end
+
+    return true, result
+end
 
 type RollingStat = {
     count: number,
@@ -206,6 +334,128 @@ end
 
 local function isFiniteNumber(value: number?)
     return typeof(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
+end
+
+local function cubeRoot(value: number)
+    if value >= 0 then
+        return value ^ (1 / 3)
+    end
+
+    return -((-value) ^ (1 / 3))
+end
+
+local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
+    if math.abs(a) < EPSILON then
+        if math.abs(b) < EPSILON then
+            return nil
+        end
+
+        local root = -c / b
+        if isFiniteNumber(root) and root > EPSILON then
+            return root
+        end
+
+        return nil
+    end
+
+    local discriminant = b * b - 4 * a * c
+    if discriminant < -EPSILON then
+        return nil
+    end
+
+    discriminant = math.max(discriminant, 0)
+    local sqrtDiscriminant = math.sqrt(discriminant)
+    local q = -0.5 * (b + (b >= 0 and sqrtDiscriminant or -sqrtDiscriminant))
+
+    local candidates = {
+        q / a,
+    }
+
+    if math.abs(q) > EPSILON then
+        candidates[#candidates + 1] = c / q
+    else
+        candidates[#candidates + 1] = (-b - sqrtDiscriminant) / (2 * a)
+    end
+
+    local best: number?
+    for _, root in ipairs(candidates) do
+        if isFiniteNumber(root) and root > EPSILON then
+            if not best or root < best then
+                best = root
+            end
+        end
+    end
+
+    return best
+end
+
+local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: number)
+    if math.abs(a) < EPSILON then
+        return smallestPositiveQuadraticRoot(b, c, d)
+    end
+
+    local invA = 1 / a
+    local A = b * invA
+    local B = c * invA
+    local C = d * invA
+
+    local sqA = A * A
+    local p = B - sqA / 3
+    local q = (2 * A * sqA) / 27 - (A * B) / 3 + C
+
+    local discriminant = (q * q) / 4 + (p * p * p) / 27
+    local roots = {}
+
+    if discriminant > EPSILON then
+        local sqrtDiscriminant = math.sqrt(discriminant)
+        local u = cubeRoot(-q / 2 + sqrtDiscriminant)
+        local v = cubeRoot(-q / 2 - sqrtDiscriminant)
+        roots[1] = u + v - A / 3
+    elseif discriminant >= -EPSILON then
+        local u = cubeRoot(-q / 2)
+        roots[1] = 2 * u - A / 3
+        roots[2] = -u - A / 3
+    else
+        local negPOver3 = -p / 3
+        if negPOver3 <= 0 then
+            roots[1] = -A / 3
+        else
+            local sqp = math.sqrt(negPOver3)
+            if sqp < EPSILON then
+                roots[1] = -A / 3
+            else
+                local angle = math.acos(math.clamp((-q / 2) / (sqp * sqp * sqp), -1, 1))
+                local twoSqp = 2 * sqp
+                roots[1] = twoSqp * math.cos(angle / 3) - A / 3
+                roots[2] = twoSqp * math.cos((angle + 2 * math.pi) / 3) - A / 3
+                roots[3] = twoSqp * math.cos((angle + 4 * math.pi) / 3) - A / 3
+            end
+        end
+    end
+
+    local best: number?
+    for _, root in ipairs(roots) do
+        if isFiniteNumber(root) and root > EPSILON then
+            if not best or root < best then
+                best = root
+            end
+        end
+    end
+
+    return best
+end
+
+local function solveRadialImpactTime(d0: number, vr: number, ar: number, jr: number)
+    if not (isFiniteNumber(d0) and isFiniteNumber(vr) and isFiniteNumber(ar) and isFiniteNumber(jr)) then
+        return nil
+    end
+
+    local a = jr / 6
+    local b = ar / 2
+    local c = vr
+    local d = d0
+
+    return smallestPositiveCubicRoot(a, b, c, d)
 end
 
 local function updateRollingStat(stat: RollingStat, sample: number)
@@ -426,6 +676,8 @@ local function handleParrySuccessLatency(...)
     end
 end
 
+parrySuccessSignal:connect(handleParrySuccessLatency)
+
 local function clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
         return value, 0
@@ -520,6 +772,12 @@ local setBallsFolderWatcher
 
 local function cloneTable(tbl)
     return Util.deepCopy(tbl)
+end
+
+local function safeCall(fn, ...)
+    if typeof(fn) == "function" then
+        return fn(...)
+    end
 end
 
 local function safeDisconnect(connection)
@@ -637,6 +895,174 @@ local function connectClientEvent(remote, handler)
     return nil
 end
 
+local remoteQueueGuardTargets: { [string]: boolean } = {}
+
+local function rebuildRemoteQueueGuardTargets()
+    for name in pairs(remoteQueueGuardTargets) do
+        remoteQueueGuardTargets[name] = nil
+    end
+
+    local defaults = DEFAULT_CONFIG.remoteQueueGuards
+    if typeof(defaults) == "table" then
+        for _, entry in pairs(defaults) do
+            if typeof(entry) == "string" and entry ~= "" then
+                remoteQueueGuardTargets[entry] = true
+            end
+        end
+    end
+
+    local overrides = config.remoteQueueGuards
+    if typeof(overrides) == "table" then
+        for _, entry in pairs(overrides) do
+            if typeof(entry) == "string" and entry ~= "" then
+                remoteQueueGuardTargets[entry] = true
+            end
+        end
+    end
+end
+
+rebuildRemoteQueueGuardTargets()
+
+local function clearRemoteQueueGuards()
+    if remoteQueueGuardWatchers then
+        disconnectConnections(remoteQueueGuardWatchers)
+        remoteQueueGuardWatchers = nil
+    end
+
+    for name, guard in pairs(remoteQueueGuardConnections) do
+        safeDisconnect(guard.connection)
+        safeDisconnect(guard.destroying)
+        safeDisconnect(guard.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+end
+
+local function dropRemoteQueueGuard(remote)
+    if not remote then
+        return
+    end
+
+    local name = remote.Name
+    local guard = remoteQueueGuardConnections[name]
+    if guard and guard.remote == remote then
+        safeDisconnect(guard.connection)
+        safeDisconnect(guard.destroying)
+        safeDisconnect(guard.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+end
+
+local function attachRemoteQueueGuard(remote)
+    if not remote or not remoteQueueGuardTargets[remote.Name] then
+        return
+    end
+
+    local okClass, isEvent = pcall(function()
+        return remote:IsA("RemoteEvent")
+    end)
+
+    if not okClass or not isEvent then
+        return
+    end
+
+    local name = remote.Name
+    local existing = remoteQueueGuardConnections[name]
+    if existing and existing.remote == remote and existing.connection then
+        return
+    end
+
+    if existing then
+        safeDisconnect(existing.connection)
+        safeDisconnect(existing.destroying)
+        safeDisconnect(existing.nameChanged)
+        remoteQueueGuardConnections[name] = nil
+    end
+
+    local okSignal, signal = pcall(function()
+        return remote.OnClientEvent
+    end)
+
+    if not okSignal or signal == nil then
+        return
+    end
+
+    local okConnect, connection = pcall(function()
+        return signal:Connect(function() end)
+    end)
+
+    if not okConnect or not connection then
+        return
+    end
+
+    local destroyingConnection = connectInstanceEvent(remote, "Destroying", function()
+        dropRemoteQueueGuard(remote)
+    end)
+
+    local nameChangedConnection = connectPropertyChangedSignal(remote, "Name", function()
+        local newName = remote.Name
+        if not remoteQueueGuardTargets[newName] then
+            dropRemoteQueueGuard(remote)
+            return
+        end
+
+        local existingGuard = remoteQueueGuardConnections[newName]
+        if existingGuard and existingGuard.remote ~= remote then
+            dropRemoteQueueGuard(existingGuard.remote)
+        end
+
+        local currentGuard = remoteQueueGuardConnections[name]
+        if currentGuard and currentGuard.remote == remote then
+            remoteQueueGuardConnections[name] = nil
+            remoteQueueGuardConnections[newName] = currentGuard
+        end
+
+        name = newName
+    end)
+
+    remoteQueueGuardConnections[name] = {
+        remote = remote,
+        connection = connection,
+        destroying = destroyingConnection,
+        nameChanged = nameChangedConnection,
+    }
+end
+
+local function setRemoteQueueGuardFolder(folder)
+    clearRemoteQueueGuards()
+
+    if not folder then
+        return
+    end
+
+    for name in pairs(remoteQueueGuardTargets) do
+        local remote = folder:FindFirstChild(name)
+        if remote then
+            attachRemoteQueueGuard(remote)
+        end
+    end
+
+    local watchers = {}
+
+    local addedConnection = folder.ChildAdded:Connect(function(child)
+        attachRemoteQueueGuard(child)
+    end)
+    table.insert(watchers, addedConnection)
+
+    local removedConnection = folder.ChildRemoved:Connect(function(child)
+        dropRemoteQueueGuard(child)
+    end)
+    table.insert(watchers, removedConnection)
+
+    local destroyingConnection = connectInstanceEvent(folder, "Destroying", function()
+        clearRemoteQueueGuards()
+    end)
+    if destroyingConnection then
+        table.insert(watchers, destroyingConnection)
+    end
+
+    remoteQueueGuardWatchers = watchers
+end
+
 local function disconnectVerificationWatchers()
     for index = #verificationWatchers, 1, -1 do
         local connections = verificationWatchers[index]
@@ -661,6 +1087,7 @@ local function clearRemoteState()
     disconnectSuccessListeners()
     ParryInputInfo = nil
     RemotesFolder = nil
+    clearRemoteQueueGuards()
     if ballsFolderConnections then
         disconnectConnections(ballsFolderConnections)
         ballsFolderConnections = nil
@@ -670,7 +1097,9 @@ local function clearRemoteState()
     pendingBallsFolderSearch = false
     ballsFolderStatusSnapshot = nil
     pendingLatencyPresses = {}
-    syncImmortalContext()
+    if syncImmortalContext then
+        syncImmortalContext()
+    end
 end
 
 local function configureSuccessListeners(successRemotes)
@@ -910,7 +1339,7 @@ local function applyInitStatus(update)
     initStatus:fire(cloneTable(initProgress))
 end
 
-local function setStage(stage, extra)
+setStage = function(stage, extra)
     local payload = { stage = stage }
     if typeof(extra) == "table" then
         for key, value in pairs(extra) do
@@ -960,6 +1389,12 @@ local function syncGlobalSettings()
     settings.RemoteLatencyActive = state.remoteEstimatorActive
     settings.PerfectParry = perfectParrySnapshot
     settings.Immortal = state.immortalEnabled
+    settings.SmartPress = {
+        reactionBias = config.pressReactionBias,
+        scheduleSlack = config.pressScheduleSlack,
+        maxLookahead = config.pressMaxLookahead,
+        confidencePadding = config.pressConfidencePadding,
+    }
 end
 
 local function updateToggleButton()
@@ -980,7 +1415,7 @@ local function updateImmortalButton()
     ImmortalButton.BackgroundColor3 = formatImmortalColor(state.immortalEnabled)
 end
 
-local function updateStatusLabel(lines)
+updateStatusLabel = function(lines)
     if not StatusLabel then
         return
     end
@@ -992,12 +1427,12 @@ local function updateStatusLabel(lines)
     end
 end
 
-local function syncImmortalContext()
+local function syncImmortalContextImpl()
     if not immortalController then
         return
     end
 
-    immortalController:setContext({
+    local okContext = callImmortalController("setContext", {
         player = LocalPlayer,
         character = Character,
         humanoid = Humanoid,
@@ -1005,9 +1440,18 @@ local function syncImmortalContext()
         ballsFolder = BallsFolder,
     })
 
-    immortalController:setBallsFolder(BallsFolder)
-    immortalController:setEnabled(state.immortalEnabled)
+    if not okContext then
+        return
+    end
+
+    if not callImmortalController("setBallsFolder", BallsFolder) then
+        return
+    end
+
+    callImmortalController("setEnabled", state.immortalEnabled)
 end
+
+syncImmortalContext = syncImmortalContextImpl
 
 local function enterRespawnWaitState()
     if LocalPlayer then
@@ -1019,7 +1463,7 @@ local function enterRespawnWaitState()
     updateStatusLabel({ "Auto-Parry F", "Status: waiting for respawn" })
 end
 
-local function clearBallVisuals()
+local function clearBallVisualsInternal()
     if BallHighlight then
         BallHighlight.Enabled = false
         BallHighlight.Adornee = nil
@@ -1031,14 +1475,150 @@ local function clearBallVisuals()
     trackedBall = nil
 end
 
+local function safeClearBallVisuals()
+    -- Some exploit environments aggressively nil out locals when reloading the
+    -- module; guard the call so we gracefully fall back instead of throwing.
+    if typeof(clearBallVisualsInternal) == "function" then
+        clearBallVisualsInternal()
+        return
+    end
+
+    if BallHighlight then
+        BallHighlight.Enabled = false
+        BallHighlight.Adornee = nil
+    end
+    if BallBillboard then
+        BallBillboard.Enabled = false
+        BallBillboard.Adornee = nil
+    end
+    trackedBall = nil
+end
+
+sendParryKeyEvent = function(isPressed)
+    local manager = resolveVirtualInputManager()
+    if not manager then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: VirtualInputManager unavailable; cannot issue parry input.")
+        end
+        noteVirtualInputFailure(3)
+        return false
+    end
+
+    local okMethod, method = pcall(function()
+        return manager.SendKeyEvent
+    end)
+
+    if not okMethod or typeof(method) ~= "function" then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: VirtualInputManager.SendKeyEvent missing; cannot issue parry input.")
+        end
+        noteVirtualInputFailure(3)
+        return false
+    end
+
+    local success, result = pcall(method, manager, isPressed, Enum.KeyCode.F, false, game)
+    if not success then
+        if not virtualInputWarningIssued then
+            virtualInputWarningIssued = true
+            warn("AutoParry: failed to send parry input via VirtualInputManager:", result)
+        end
+        noteVirtualInputFailure(2)
+        return false
+    end
+
+    if virtualInputWarningIssued then
+        virtualInputWarningIssued = false
+    end
+
+    noteVirtualInputSuccess()
+
+    return true
+end
+
+local function destroyDashboardUi()
+    if not CoreGui then
+        return
+    end
+
+    for _, name in ipairs({ "AutoParryUI", "AutoParryLoadingOverlay" }) do
+        local screen = CoreGui:FindFirstChild(name)
+        if screen then
+            screen:Destroy()
+        end
+    end
+end
+
+local function removePlayerGuiUi()
+    local player = Players.LocalPlayer
+    if not player then
+        return
+    end
+
+    local playerGui
+    local finder = player.FindFirstChildOfClass or player.FindFirstChildWhichIsA
+    if typeof(finder) == "function" then
+        local ok, result = pcall(finder, player, "PlayerGui")
+        if ok then
+            playerGui = result
+        end
+    end
+
+    if not playerGui then
+        return
+    end
+
+    if typeof(playerGui.FindFirstChild) == "function" then
+        local ok, legacyScreen = pcall(playerGui.FindFirstChild, playerGui, "AutoParryF_UI")
+        if ok and legacyScreen then
+            legacyScreen:Destroy()
+        end
+    end
+end
+
+local function removeAutoParryExperience()
+    local destroyOk, destroyErr = pcall(function()
+        if typeof(AutoParry) == "table" and typeof(AutoParry.destroy) == "function" then
+            AutoParry.destroy()
+        end
+    end)
+    if not destroyOk then
+        warn("AutoParry: failed to destroy core:", destroyErr)
+    end
+
+    GlobalEnv.Paws = nil
+
+    local cleanupOk, cleanupErr = pcall(function()
+        removePlayerGuiUi()
+        destroyDashboardUi()
+    end)
+    if not cleanupOk then
+        warn("AutoParry: failed to clear UI:", cleanupErr)
+    end
+end
+
 local function ensureUi()
     if UiRoot or not LocalPlayer then
         return
     end
 
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then
-        playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+    local playerGui
+    if LocalPlayer then
+        local finder = LocalPlayer.FindFirstChildOfClass or LocalPlayer.FindFirstChildWhichIsA
+        if typeof(finder) == "function" then
+            local ok, result = pcall(finder, LocalPlayer, "PlayerGui")
+            if ok then
+                playerGui = result
+            end
+        end
+
+        if not playerGui and typeof(LocalPlayer.WaitForChild) == "function" then
+            local okWait, result = pcall(LocalPlayer.WaitForChild, LocalPlayer, "PlayerGui", 5)
+            if okWait then
+                playerGui = result
+            end
+        end
     end
 
     if not playerGui then
@@ -1091,8 +1671,7 @@ local function ensureUi()
     removeBtn.Text = "REMOVE Auto-Parry"
     removeBtn.Parent = gui
     removeBtn.MouseButton1Click:Connect(function()
-        AutoParry.destroy()
-        GlobalEnv.Paws = nil
+        removeAutoParryExperience()
     end)
 
     local status = Instance.new("TextLabel")
@@ -1152,7 +1731,7 @@ local function ensureUi()
 end
 
 local function destroyUi()
-    clearBallVisuals()
+    safeClearBallVisuals()
     if UiRoot then
         UiRoot:Destroy()
     end
@@ -1408,8 +1987,52 @@ local function getBallIdentifier(ball)
 end
 
 
+local function clearScheduledPress(targetBallId: string?)
+    if targetBallId and scheduledPressState.ballId ~= targetBallId then
+        return
+    end
+
+    scheduledPressState.ballId = nil
+    scheduledPressState.pressAt = 0
+    scheduledPressState.predictedImpact = math.huge
+    scheduledPressState.lead = 0
+    scheduledPressState.slack = 0
+    scheduledPressState.reason = nil
+    scheduledPressState.lastUpdate = 0
+end
+
+local function updateScheduledPress(
+    ballId: string,
+    predictedImpact: number,
+    lead: number,
+    slack: number,
+    reason: string?,
+    now: number
+)
+    local pressDelay = math.max(predictedImpact - lead, 0)
+    local pressAt = now + pressDelay
+
+    if scheduledPressState.ballId ~= ballId then
+        scheduledPressState.ballId = ballId
+    elseif math.abs(scheduledPressState.pressAt - pressAt) > SMART_PRESS_TRIGGER_GRACE then
+        scheduledPressState.ballId = ballId
+    end
+
+    scheduledPressState.pressAt = pressAt
+    scheduledPressState.predictedImpact = predictedImpact
+    scheduledPressState.lead = lead
+    scheduledPressState.slack = slack
+    scheduledPressState.reason = reason
+    scheduledPressState.lastUpdate = now
+end
+
+
 local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     local forcing = force == true
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() and not forcing then
+        return false
+    end
+
     if parryHeld then
         local sameBall = parryHeldBallId == ballId
         if sameBall and not forcing then
@@ -1417,12 +2040,25 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         end
 
         -- release the existing hold before pressing again or for a new ball
-        VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+        if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+            pendingParryRelease = true
+        else
+            if not sendParryKeyEvent(false) then
+                pendingParryRelease = true
+            else
+                pendingParryRelease = false
+            end
+        end
         parryHeld = false
         parryHeldBallId = nil
     end
 
-    VirtualInputManager:SendKeyEvent(true, Enum.KeyCode.F, false, game)
+    if not sendParryKeyEvent(true) then
+        return false
+    end
+
+    pendingParryRelease = false
+
     parryHeld = true
     parryHeldBallId = ballId
 
@@ -1430,6 +2066,12 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     state.lastParry = now
     prunePendingLatencyPresses(now)
     pendingLatencyPresses[#pendingLatencyPresses + 1] = { time = now, ballId = ballId }
+
+    if ballId then
+        clearScheduledPress(ballId)
+    else
+        clearScheduledPress(nil)
+    end
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1451,7 +2093,17 @@ local function releaseParry()
     local ballId = parryHeldBallId
     parryHeld = false
     parryHeldBallId = nil
-    VirtualInputManager:SendKeyEvent(false, Enum.KeyCode.F, false, game)
+    if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
+        pendingParryRelease = true
+    else
+        if not sendParryKeyEvent(false) then
+            pendingParryRelease = true
+        else
+            pendingParryRelease = false
+        end
+    end
+
+    clearScheduledPress(ballId)
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -1463,13 +2115,12 @@ local function releaseParry()
 end
 
 local function handleHumanoidDied()
-    releaseParry()
-    clearBallVisuals()
-    enterRespawnWaitState()
-    updateCharacter(nil)
-    if immortalController then
-        immortalController:handleHumanoidDied()
-    end
+    clearScheduledPress(nil)
+    safeCall(releaseParry)
+    safeCall(safeClearBallVisuals)
+    safeCall(enterRespawnWaitState)
+    safeCall(updateCharacter, nil)
+    callImmortalController("handleHumanoidDied")
 end
 
 local function updateCharacter(character)
@@ -1525,10 +2176,11 @@ local function handleCharacterAdded(character)
 end
 
 local function handleCharacterRemoving()
-    releaseParry()
-    clearBallVisuals()
-    enterRespawnWaitState()
-    updateCharacter(nil)
+    clearScheduledPress(nil)
+    safeCall(releaseParry)
+    safeCall(safeClearBallVisuals)
+    safeCall(enterRespawnWaitState)
+    safeCall(updateCharacter, nil)
 end
 
 local function beginInitialization()
@@ -1606,6 +2258,7 @@ local function beginInitialization()
         end
 
         configureSuccessListeners(verificationResult.successRemotes)
+        setRemoteQueueGuardFolder(RemotesFolder)
 
         if verificationResult.successRemotes then
             local localEntry = verificationResult.successRemotes.ParrySuccess
@@ -1633,15 +2286,27 @@ local function beginInitialization()
             safeDisconnect(characterAddedConnection)
             safeDisconnect(characterRemovingConnection)
 
-            characterAddedConnection = LocalPlayer.CharacterAdded:Connect(handleCharacterAdded)
-            characterRemovingConnection = LocalPlayer.CharacterRemoving:Connect(handleCharacterRemoving)
+            local characterAddedSignal = LocalPlayer.CharacterAdded
+            local characterRemovingSignal = LocalPlayer.CharacterRemoving
+
+            if characterAddedSignal and typeof(characterAddedSignal.Connect) == "function" then
+                characterAddedConnection = characterAddedSignal:Connect(handleCharacterAdded)
+            else
+                characterAddedConnection = nil
+            end
+
+            if characterRemovingSignal and typeof(characterRemovingSignal.Connect) == "function" then
+                characterRemovingConnection = characterRemovingSignal:Connect(handleCharacterRemoving)
+            else
+                characterRemovingConnection = nil
+            end
 
             local currentCharacter = LocalPlayer.Character
             if currentCharacter then
                 updateCharacter(currentCharacter)
-            else
+            elseif characterAddedSignal and typeof(characterAddedSignal.Wait) == "function" then
                 local okChar, char = pcall(function()
-                    return LocalPlayer.CharacterAdded:Wait()
+                    return characterAddedSignal:Wait()
                 end)
                 if okChar and char then
                     updateCharacter(char)
@@ -1717,16 +2382,19 @@ end
 
 local function renderLoop()
     if initialization.destroyed then
+        clearScheduledPress(nil)
         return
     end
 
     if not LocalPlayer then
+        clearScheduledPress(nil)
         return
     end
 
     if not Character or not RootPart then
         updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
-        clearBallVisuals()
+        safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
@@ -1735,15 +2403,17 @@ local function renderLoop()
     local folder = BallsFolder
     if not folder then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
-        clearBallVisuals()
+        safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
 
     if not state.enabled then
+        clearScheduledPress(nil)
         releaseParry()
         updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
-        clearBallVisuals()
+        safeClearBallVisuals()
         updateToggleButton()
         return
     end
@@ -1755,7 +2425,8 @@ local function renderLoop()
     local ball = findRealBall(folder)
     if not ball or not ball:IsDescendantOf(Workspace) then
         updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
-        clearBallVisuals()
+        safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
     end
@@ -1763,9 +2434,16 @@ local function renderLoop()
     local ballId = getBallIdentifier(ball)
     if not ballId then
         updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
-        clearBallVisuals()
+        safeClearBallVisuals()
+        clearScheduledPress(nil)
         releaseParry()
         return
+    end
+
+    if scheduledPressState.ballId and scheduledPressState.ballId ~= ballId then
+        clearScheduledPress(nil)
+    elseif scheduledPressState.ballId == ballId and now - scheduledPressState.lastUpdate > SMART_PRESS_STALE_SECONDS then
+        clearScheduledPress(ballId)
     end
 
     local telemetry = ensureTelemetry(ballId, now)
@@ -1971,13 +2649,27 @@ local function renderLoop()
 
     local approachSpeed = math.max(filteredVr, rawVr, 0)
     local approaching = approachSpeed > EPSILON
+    local timeToImpactFallback = math.huge
+    local timeToImpactPolynomial: number?
     local timeToImpact = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToImpact = distance / speed
+        timeToImpactFallback = distance / speed
+
+        local impactRadial = filteredD
+        local polynomial = solveRadialImpactTime(impactRadial, filteredVr, filteredAr, filteredJr)
+        if polynomial and polynomial > EPSILON then
+            timeToImpactPolynomial = polynomial
+            timeToImpact = polynomial
+        elseif isFiniteNumber(timeToImpactFallback) and timeToImpactFallback >= 0 then
+            timeToImpact = timeToImpactFallback
+        end
     end
 
     local responseWindowBase = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    if approaching and timeToImpactPolynomial then
+        responseWindowBase = math.max(math.min(responseWindowBase, timeToImpactPolynomial), PROXIMITY_PRESS_GRACE)
+    end
     local responseWindow = responseWindowBase
 
     local curveLeadTime = 0
@@ -2045,8 +2737,6 @@ local function renderLoop()
         end
     end
 
-    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
-
     local dynamicLeadBase = 0
     if approaching then
         dynamicLeadBase = math.max(approachSpeed * responseWindowBase, 0)
@@ -2074,13 +2764,109 @@ local function renderLoop()
     local curveHoldApplied = math.max(holdLead - holdLeadBase, 0)
     local holdRadius = pressRadius + holdLead
 
+    local timeToPressRadiusFallback = math.huge
+    local timeToHoldRadiusFallback = math.huge
+    local timeToPressRadiusPolynomial: number?
+    local timeToHoldRadiusPolynomial: number?
     local timeToPressRadius = math.huge
     local timeToHoldRadius = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToPressRadius = math.max(distance - pressRadius, 0) / speed
-        timeToHoldRadius = math.max(distance - holdRadius, 0) / speed
+        timeToPressRadiusFallback = math.max(distance - pressRadius, 0) / speed
+        timeToHoldRadiusFallback = math.max(distance - holdRadius, 0) / speed
+
+        local radialToPress = filteredD + safeRadius - pressRadius
+        local radialToHold = filteredD + safeRadius - holdRadius
+
+        local pressPolynomial = solveRadialImpactTime(radialToPress, filteredVr, filteredAr, filteredJr)
+        if pressPolynomial and pressPolynomial > EPSILON then
+            timeToPressRadiusPolynomial = pressPolynomial
+            timeToPressRadius = pressPolynomial
+        else
+            timeToPressRadius = timeToPressRadiusFallback
+        end
+
+        local holdPolynomial = solveRadialImpactTime(radialToHold, filteredVr, filteredAr, filteredJr)
+        if holdPolynomial and holdPolynomial > EPSILON then
+            timeToHoldRadiusPolynomial = holdPolynomial
+            timeToHoldRadius = holdPolynomial
+        else
+            timeToHoldRadius = timeToHoldRadiusFallback
+        end
     end
+
+    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
+    if approaching and timeToHoldRadiusPolynomial then
+        local refinedHoldWindow = math.max(timeToHoldRadiusPolynomial, PROXIMITY_HOLD_GRACE)
+        holdWindow = math.min(holdWindow, refinedHoldWindow)
+        if holdWindow < responseWindow then
+            holdWindow = responseWindow
+        end
+    end
+    holdWindow = math.max(holdWindow, PROXIMITY_HOLD_GRACE)
+
+    local predictedImpact = math.huge
+    if approaching then
+        predictedImpact = math.min(timeToImpact, timeToPressRadius, timeToImpactFallback)
+        if timeToImpactPolynomial then
+            predictedImpact = math.min(predictedImpact, timeToImpactPolynomial)
+        end
+        if timeToPressRadiusPolynomial then
+            predictedImpact = math.min(predictedImpact, timeToPressRadiusPolynomial)
+        end
+    end
+    if not isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+        predictedImpact = math.huge
+    end
+
+    local reactionBias = config.pressReactionBias
+    if reactionBias == nil then
+        reactionBias = DEFAULT_CONFIG.pressReactionBias
+    end
+    if not isFiniteNumber(reactionBias) or reactionBias < 0 then
+        reactionBias = 0
+    end
+
+    local scheduleSlack = config.pressScheduleSlack
+    if scheduleSlack == nil then
+        scheduleSlack = DEFAULT_CONFIG.pressScheduleSlack
+    end
+    if not isFiniteNumber(scheduleSlack) or scheduleSlack < 0 then
+        scheduleSlack = 0
+    end
+
+    local maxLookahead = config.pressMaxLookahead
+    if maxLookahead == nil then
+        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+    end
+    if not isFiniteNumber(maxLookahead) or maxLookahead <= 0 then
+        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+    end
+    if maxLookahead < PROXIMITY_PRESS_GRACE then
+        maxLookahead = PROXIMITY_PRESS_GRACE
+    end
+
+    local confidencePadding = config.pressConfidencePadding
+    if confidencePadding == nil then
+        confidencePadding = DEFAULT_CONFIG.pressConfidencePadding
+    end
+    if not isFiniteNumber(confidencePadding) or confidencePadding < 0 then
+        confidencePadding = 0
+    end
+
+    local scheduleLead = math.max(delta + reactionBias, PROXIMITY_PRESS_GRACE)
+
+    local inequalityPress = targetingMe and muValid and sigmaValid and muPlus <= 0
+    local confidencePress = targetingMe and muValid and sigmaValid and muPlus <= -confidencePadding
+
+    local timeUntilPress = predictedImpact - scheduleLead
+    if not isFiniteNumber(timeUntilPress) then
+        timeUntilPress = math.huge
+    end
+    local canPredict = approaching and targetingMe and predictedImpact < math.huge
+    local shouldDelay = canPredict and not confidencePress and predictedImpact > scheduleLead
+    local withinLookahead = maxLookahead <= 0 or timeUntilPress <= maxLookahead
+    local shouldSchedule = shouldDelay and withinLookahead
 
     local proximityPress =
         targetingMe
@@ -2092,10 +2878,7 @@ local function renderLoop()
         and approaching
         and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
 
-    local shouldPress = proximityPress
-    if not shouldPress then
-        shouldPress = targetingMe and muValid and sigmaValid and muPlus <= 0
-    end
+    local shouldPress = proximityPress or inequalityPress
 
     local shouldHold = proximityHold
     if targetingMe and muValid and sigmaValid and muMinus < 0 then
@@ -2124,9 +2907,52 @@ local function renderLoop()
         fired = true
     end
 
+    local existingSchedule = nil
+    if scheduledPressState.ballId == ballId then
+        existingSchedule = scheduledPressState
+        scheduledPressState.lead = scheduleLead
+        scheduledPressState.slack = scheduleSlack
+    end
+
+    local smartReason = nil
+
     if shouldPress then
-        local pressed = pressParry(ball, ballId)
-        fired = pressed or fired
+        if shouldSchedule then
+            smartReason = string.format("impact %.3f > lead %.3f (press in %.3f)", predictedImpact, scheduleLead, math.max(timeUntilPress, 0))
+            updateScheduledPress(ballId, predictedImpact, scheduleLead, scheduleSlack, smartReason, now)
+            existingSchedule = scheduledPressState
+        elseif existingSchedule and not shouldDelay then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        elseif existingSchedule and shouldDelay and not withinLookahead then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        end
+
+        local activeSlack = (existingSchedule and existingSchedule.slack) or scheduleSlack
+        local readyToPress = confidencePress or not shouldDelay
+        if not readyToPress and predictedImpact <= scheduleLead + activeSlack then
+            readyToPress = true
+        end
+
+        if not readyToPress and existingSchedule then
+            if now >= existingSchedule.pressAt - activeSlack then
+                readyToPress = true
+            end
+        end
+
+        if readyToPress then
+            local pressed = pressParry(ball, ballId)
+            fired = pressed or fired
+            if pressed then
+                existingSchedule = nil
+            end
+        end
+    else
+        if existingSchedule then
+            clearScheduledPress(ballId)
+            existingSchedule = nil
+        end
     end
 
     if parryHeld and parryHeldBallId == ballId then
@@ -2163,6 +2989,15 @@ local function renderLoop()
         )
     end
 
+    local timeToImpactPolyText = "n/a"
+    if timeToImpactPolynomial then
+        timeToImpactPolyText = string.format("%.3f", timeToImpactPolynomial)
+    end
+    local timeToImpactFallbackText = "n/a"
+    if isFiniteNumber(timeToImpactFallback) and timeToImpactFallback < math.huge then
+        timeToImpactFallbackText = string.format("%.3f", timeToImpactFallback)
+    end
+
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
@@ -2172,6 +3007,7 @@ local function renderLoop()
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
         string.format("Latency sample: %s | remoteActive: %s", latencyText, tostring(state.remoteEstimatorActive)),
+        string.format("TTI(poly|fb): %s | %s", timeToImpactPolyText, timeToImpactFallbackText),
         string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
         string.format(
             "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
@@ -2196,6 +3032,31 @@ local function renderLoop()
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
+
+    if scheduledPressState.ballId == ballId then
+        local eta = math.max((scheduledPressState.pressAt or now) - now, 0)
+        table.insert(
+            debugLines,
+            string.format(
+                "Smart press: eta %.3f | lead %.3f | slack %.3f | reason %s",
+                eta,
+                scheduledPressState.lead or 0,
+                scheduledPressState.slack or 0,
+                scheduledPressState.reason or "?"
+            )
+        )
+    elseif shouldPress and shouldDelay then
+        table.insert(
+            debugLines,
+            string.format(
+                "Smart press: delaying %.3f | lookahead %.3f",
+                math.max(timeUntilPress, 0),
+                maxLookahead
+            )
+        )
+    else
+        table.insert(debugLines, "Smart press: idle")
+    end
 
     if sigmaArOverflow > 0 or sigmaJrOverflow > 0 then
         table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
@@ -2239,6 +3100,21 @@ local function ensureLoop()
 end
 
 local validators = {
+    cooldown = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    minSpeed = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pingOffset = function(value)
+        return typeof(value) == "number"
+    end,
+    minTTI = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    maxTTI = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
     safeRadius = function(value)
         return typeof(value) == "number" and value >= 0
     end,
@@ -2252,6 +3128,18 @@ local validators = {
         return typeof(value) == "number" and value >= 0
     end,
     activationLatency = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressReactionBias = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressScheduleSlack = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pressMaxLookahead = function(value)
+        return typeof(value) == "number" and value > 0
+    end,
+    pressConfidencePadding = function(value)
         return typeof(value) == "number" and value >= 0
     end,
     targetHighlightName = function(value)
@@ -2271,6 +3159,23 @@ local validators = {
     end,
     verificationRetryInterval = function(value)
         return typeof(value) == "number" and value >= 0
+    end,
+    remoteQueueGuards = function(value)
+        if value == nil then
+            return true
+        end
+
+        if typeof(value) ~= "table" then
+            return false
+        end
+
+        for _, entry in pairs(value) do
+            if typeof(entry) ~= "string" or entry == "" then
+                return false
+            end
+        end
+
+        return true
     end,
     oscillationFrequency = function(value)
         return typeof(value) == "number" and value >= 0
@@ -2301,6 +3206,7 @@ function AutoParry.disable()
     end
 
     state.enabled = false
+    clearScheduledPress(nil)
     releaseParry()
     telemetryStates = {}
     trackedBall = nil
@@ -2328,19 +3234,20 @@ end
 
 function AutoParry.setImmortalEnabled(enabled)
     local desired = not not enabled
+    local before = state.immortalEnabled
 
-    local changed = state.immortalEnabled ~= desired
     state.immortalEnabled = desired
-
     syncImmortalContext()
+
+    local after = state.immortalEnabled
     updateImmortalButton()
     syncGlobalSettings()
 
-    if changed then
-        immortalStateChanged:fire(state.immortalEnabled)
+    if before ~= after then
+        immortalStateChanged:fire(after)
     end
 
-    return state.immortalEnabled
+    return after
 end
 
 function AutoParry.toggleImmortal()
@@ -2370,6 +3277,9 @@ local function applyConfigOverride(key, value)
         end
     elseif key == "confidenceZ" then
         perfectParrySnapshot.z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ or perfectParrySnapshot.z
+    elseif key == "remoteQueueGuards" then
+        rebuildRemoteQueueGuardTargets()
+        setRemoteQueueGuardFolder(RemotesFolder)
     end
 end
 
@@ -2391,6 +3301,8 @@ end
 function AutoParry.resetConfig()
     config = Util.deepCopy(DEFAULT_CONFIG)
     resetActivationLatency()
+    rebuildRemoteQueueGuardTargets()
+    setRemoteQueueGuardFolder(RemotesFolder)
     syncGlobalSettings()
     return AutoParry.getConfig()
 end
@@ -2405,6 +3317,50 @@ end
 
 function AutoParry.getLastParryBroadcastTime()
     return state.lastBroadcast
+end
+
+function AutoParry.getSmartPressState()
+    ensureInitialization()
+
+    local now = os.clock()
+    local snapshot = {
+        ballId = scheduledPressState.ballId,
+        pressAt = scheduledPressState.pressAt,
+        predictedImpact = scheduledPressState.predictedImpact,
+        lead = scheduledPressState.lead,
+        slack = scheduledPressState.slack,
+        reason = scheduledPressState.reason,
+        lastUpdate = scheduledPressState.lastUpdate,
+        sampleTime = now,
+        latency = activationLatencyEstimate,
+        remoteLatencyActive = state.remoteEstimatorActive,
+        latencySamples = cloneTable(latencySamples),
+        pendingLatencyPresses = cloneTable(pendingLatencyPresses),
+    }
+
+    if scheduledPressState.lastUpdate and scheduledPressState.lastUpdate > 0 then
+        snapshot.timeSinceUpdate = now - scheduledPressState.lastUpdate
+    end
+
+    local ballId = scheduledPressState.ballId
+    if ballId then
+        local telemetry = telemetryStates[ballId]
+        if telemetry then
+            snapshot.telemetry = {
+                lastUpdate = telemetry.lastUpdate,
+                triggerTime = telemetry.triggerTime,
+                latencySampled = telemetry.latencySampled,
+            }
+        end
+    end
+
+    if snapshot.pressAt and snapshot.pressAt > 0 then
+        snapshot.pressEta = math.max(snapshot.pressAt - now, 0)
+    else
+        snapshot.pressEta = nil
+    end
+
+    return snapshot
 end
 
 function AutoParry.onInitStatus(callback)
@@ -2456,9 +3412,7 @@ end
 function AutoParry.destroy()
     AutoParry.disable()
     AutoParry.setImmortalEnabled(false)
-    if immortalController then
-        immortalController:destroy()
-    end
+    callImmortalController("destroy")
 
     if loopConnection then
         loopConnection:Disconnect()
@@ -2485,7 +3439,7 @@ function AutoParry.destroy()
     initialization.token += 1
 
     destroyUi()
-    clearBallVisuals()
+    safeClearBallVisuals()
 
     initialization.started = false
     initialization.completed = false
@@ -2495,6 +3449,7 @@ function AutoParry.destroy()
     state.lastParry = 0
     state.lastSuccess = 0
     state.lastBroadcast = 0
+    clearScheduledPress(nil)
     releaseParry()
     telemetryStates = {}
     trackedBall = nil
@@ -2515,6 +3470,8 @@ function AutoParry.destroy()
     initProgress = { stage = "waiting-player" }
     applyInitStatus(cloneTable(initProgress))
 
+    GlobalEnv.Paws = nil
+
     initialization.destroyed = false
 end
 
@@ -2527,6 +3484,7 @@ return AutoParry
 
 ]===],
     ['src/core/immortal.lua'] = [===[
+-- src/core/immortal.lua (sha1: 33d8113542e8d65a94596a1983dce26485a046bb)
 -- mikkel32/AutoParry : src/core/immortal.lua
 -- Teleport-focused evasion controller that implements the "Immortal" mode
 -- described in the provided GodTeleportCore specification. The controller is
@@ -3357,6 +4315,7 @@ return Immortal
 
 ]===],
     ['src/core/verification.lua'] = [===[
+-- src/core/verification.lua (sha1: 8d31acf50e4ba8a9b6eb014fcea63d4c93361807)
 -- mikkel32/AutoParry : src/core/verification.lua
 -- Sequences verification steps for AutoParry startup, emitting granular
 -- status updates for observers and returning the discovered resources.
@@ -3806,6 +4765,7 @@ return Verification
 
 ]===],
     ['src/main.lua'] = [===[
+-- src/main.lua (sha1: c0be85af0331493c1a548e35f5eaea79d6edce04)
 -- mikkel32/AutoParry : src/main.lua
 -- selene: allow(global_usage)
 -- Bootstraps the AutoParry experience, wiring together the UI and core logic
@@ -5375,6 +6335,7 @@ end
 
 ]===],
     ['src/shared/util.lua'] = [===[
+-- src/shared/util.lua (sha1: 4feb5bb8ffd5e102e9ab622cd0b84166c8e5377f)
 -- mikkel32/AutoParry : src/shared/util.lua
 -- Shared helpers for table utilities and lightweight signals.
 
@@ -5475,10 +6436,41 @@ function Util.merge(into, from)
     return into
 end
 
+function Util.setConstraintSize(constraint, minSize, maxSize)
+    if typeof(constraint) ~= "Instance" then
+        return
+    end
+
+    if constraint.ClassName ~= "UISizeConstraint" and not constraint:IsA("UISizeConstraint") then
+        return
+    end
+
+    minSize = minSize or Vector2.new(0, 0)
+    maxSize = maxSize or Vector2.new(0, 0)
+
+    local minX = math.max(0, minSize.X or 0)
+    local minY = math.max(0, minSize.Y or 0)
+    local maxX = math.max(minX, maxSize.X or 0)
+    local maxY = math.max(minY, maxSize.Y or 0)
+
+    local currentMax = constraint.MaxSize or Vector2.new(math.huge, math.huge)
+    local newMin = Vector2.new(minX, minY)
+    local newMax = Vector2.new(maxX, maxY)
+
+    if currentMax.X < minX or currentMax.Y < minY then
+        constraint.MaxSize = newMax
+        constraint.MinSize = newMin
+    else
+        constraint.MinSize = newMin
+        constraint.MaxSize = newMax
+    end
+end
+
 return Util
 
 ]===],
     ['src/ui/diagnostics_panel.lua'] = [===[
+-- src/ui/diagnostics_panel.lua (sha1: 3d0ae73d30e2bd878f47b6341c35f76cbbf63719)
 -- mikkel32/AutoParry : src/ui/diagnostics_panel.lua
 -- Diagnostics side panel that visualises verification stages, loader/parry
 -- event history, and surfaced errors. Built to remain available after the
@@ -5554,6 +6546,11 @@ local DEFAULT_THEME = {
     eventStrokeColor = Color3.fromRGB(70, 106, 170),
     eventStrokeTransparency = 0.65,
     eventCorner = UDim.new(0, 10),
+    eventListHeight = 240,
+    eventListPadding = Vector2.new(10, 8),
+    eventScrollBarThickness = 6,
+    eventScrollBarColor = Color3.fromRGB(82, 156, 255),
+    eventScrollBarTransparency = 0.25,
     eventMessageFont = Enum.Font.Gotham,
     eventMessageSize = 14,
     eventDetailSize = 13,
@@ -5574,6 +6571,27 @@ local DEFAULT_THEME = {
         font = Enum.Font.GothamSemibold,
         textSize = 14,
         padding = Vector2.new(12, 8),
+    },
+    overview = {
+        backgroundColor = Color3.fromRGB(26, 30, 40),
+        backgroundTransparency = 0.08,
+        strokeColor = Color3.fromRGB(82, 156, 255),
+        strokeTransparency = 0.6,
+        accentColor = Color3.fromRGB(112, 198, 255),
+        successColor = Color3.fromRGB(118, 228, 182),
+        warningColor = Color3.fromRGB(255, 198, 110),
+        dangerColor = Color3.fromRGB(248, 110, 128),
+        headerFont = Enum.Font.GothamSemibold,
+        headerTextSize = 13,
+        headerColor = Color3.fromRGB(176, 192, 224),
+        valueFont = Enum.Font.GothamBlack,
+        valueTextSize = 24,
+        valueColor = Color3.fromRGB(232, 242, 255),
+        detailFont = Enum.Font.Gotham,
+        detailTextSize = 13,
+        detailColor = Color3.fromRGB(160, 176, 210),
+        chipCorner = UDim.new(0, 12),
+        padding = Vector2.new(18, 16),
     },
 }
 
@@ -5596,6 +6614,14 @@ local DEFAULT_STAGE_MAP = {}
 for _, definition in ipairs(DEFAULT_STAGES) do
     DEFAULT_STAGE_MAP[definition.id] = definition
 end
+
+local STAGE_STATUS_PRIORITY = {
+    failed = 5,
+    warning = 4,
+    active = 3,
+    pending = 2,
+    ok = 1,
+}
 
 local function deepCopy(data)
     if Util and Util.deepCopy then
@@ -5731,8 +6757,8 @@ local function createStageRow(theme, parent, definition)
     frame.BackgroundColor3 = theme.stageBackground
     frame.BackgroundTransparency = theme.stageTransparency
     frame.BorderSizePixel = 0
-    frame.AutomaticSize = Enum.AutomaticSize.Y
-    frame.Size = UDim2.new(1, 0, 0, 72)
+    frame.AutomaticSize = Enum.AutomaticSize.None
+    frame.Size = UDim2.new(1, 0, 0, 90)
     frame.Parent = parent
 
     local corner = Instance.new("UICorner")
@@ -5743,6 +6769,20 @@ local function createStageRow(theme, parent, definition)
     stroke.Color = theme.stageStrokeColor
     stroke.Transparency = theme.stageStrokeTransparency
     stroke.Parent = frame
+
+    local accent = Instance.new("Frame")
+    accent.Name = "Accent"
+    accent.AnchorPoint = Vector2.new(0, 0.5)
+    accent.Position = UDim2.new(0, -2, 0.5, 0)
+    accent.Size = UDim2.new(0, 6, 1, -24)
+    accent.BorderSizePixel = 0
+    accent.BackgroundColor3 = theme.statusColors.pending
+    accent.BackgroundTransparency = 0.35
+    accent.Parent = frame
+
+    local accentCorner = Instance.new("UICorner")
+    accentCorner.CornerRadius = UDim.new(1, 0)
+    accentCorner.Parent = accent
 
     local padding = Instance.new("UIPadding")
     padding.PaddingTop = UDim.new(0, theme.bodyPadding)
@@ -5801,6 +6841,7 @@ local function createStageRow(theme, parent, definition)
 
     return {
         frame = frame,
+        accent = accent,
         icon = icon,
         title = title,
         message = message,
@@ -5941,6 +6982,88 @@ local function createBadge(theme, parent, id)
     }
 end
 
+local function createOverviewCard(theme, parent, id, title)
+    local config = theme.overview or DEFAULT_THEME.overview
+
+    local frame = Instance.new("Frame")
+    frame.Name = string.format("Overview_%s", id or "Card")
+    frame.BackgroundColor3 = config.backgroundColor or DEFAULT_THEME.overview.backgroundColor
+    frame.BackgroundTransparency = config.backgroundTransparency or DEFAULT_THEME.overview.backgroundTransparency or 0.08
+    frame.BorderSizePixel = 0
+    frame.AutomaticSize = Enum.AutomaticSize.Y
+    frame.Size = UDim2.new(1, 0, 0, 0)
+    frame.Parent = parent
+
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = config.chipCorner or DEFAULT_THEME.overview.chipCorner or UDim.new(0, 12)
+    corner.Parent = frame
+
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = config.strokeColor or DEFAULT_THEME.overview.strokeColor
+    stroke.Transparency = config.strokeTransparency or DEFAULT_THEME.overview.strokeTransparency or 0.6
+    stroke.Thickness = 1.2
+    stroke.Parent = frame
+
+    local padding = config.padding or DEFAULT_THEME.overview.padding or Vector2.new(18, 16)
+    local contentPadding = Instance.new("UIPadding")
+    contentPadding.PaddingTop = UDim.new(0, padding.Y)
+    contentPadding.PaddingBottom = UDim.new(0, padding.Y)
+    contentPadding.PaddingLeft = UDim.new(0, padding.X)
+    contentPadding.PaddingRight = UDim.new(0, padding.X)
+    contentPadding.Parent = frame
+
+    local layout = Instance.new("UIListLayout")
+    layout.FillDirection = Enum.FillDirection.Vertical
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 6)
+    layout.Parent = frame
+
+    local header = Instance.new("TextLabel")
+    header.Name = "Label"
+    header.BackgroundTransparency = 1
+    header.Font = config.headerFont or DEFAULT_THEME.overview.headerFont
+    header.TextSize = config.headerTextSize or DEFAULT_THEME.overview.headerTextSize
+    header.TextColor3 = config.headerColor or DEFAULT_THEME.overview.headerColor
+    header.TextXAlignment = Enum.TextXAlignment.Left
+    header.Text = string.upper(title or id or "Overview")
+    header.Size = UDim2.new(1, 0, 0, math.max(20, (config.headerTextSize or DEFAULT_THEME.overview.headerTextSize) + 6))
+    header.LayoutOrder = 1
+    header.Parent = frame
+
+    local value = Instance.new("TextLabel")
+    value.Name = "Value"
+    value.BackgroundTransparency = 1
+    value.Font = config.valueFont or DEFAULT_THEME.overview.valueFont
+    value.TextSize = config.valueTextSize or DEFAULT_THEME.overview.valueTextSize
+    value.TextColor3 = config.valueColor or DEFAULT_THEME.overview.valueColor
+    value.TextXAlignment = Enum.TextXAlignment.Left
+    value.Text = "--"
+    value.Size = UDim2.new(1, 0, 0, value.TextSize + 6)
+    value.LayoutOrder = 2
+    value.Parent = frame
+
+    local detail = Instance.new("TextLabel")
+    detail.Name = "Detail"
+    detail.BackgroundTransparency = 1
+    detail.Font = config.detailFont or DEFAULT_THEME.overview.detailFont
+    detail.TextSize = config.detailTextSize or DEFAULT_THEME.overview.detailTextSize
+    detail.TextColor3 = config.detailColor or DEFAULT_THEME.overview.detailColor
+    detail.TextXAlignment = Enum.TextXAlignment.Left
+    detail.TextWrapped = true
+    detail.Text = "Awaiting data"
+    detail.Size = UDim2.new(1, 0, 0, math.max(18, detail.TextSize + 4))
+    detail.LayoutOrder = 3
+    detail.Parent = frame
+
+    return {
+        frame = frame,
+        stroke = stroke,
+        title = header,
+        value = value,
+        detail = detail,
+    }
+end
+
 function DiagnosticsPanel.new(options)
     options = options or {}
     local parent = assert(options.parent, "DiagnosticsPanel.new requires a parent")
@@ -5957,17 +7080,100 @@ function DiagnosticsPanel.new(options)
     local layout = Instance.new("UIListLayout")
     layout.FillDirection = Enum.FillDirection.Vertical
     layout.SortOrder = Enum.SortOrder.LayoutOrder
-    layout.Padding = UDim.new(0, theme.sectionSpacing)
+    layout.Padding = UDim.new(0, (theme.sectionSpacing or 12) + 4)
     layout.Parent = frame
 
-    local stagesSection = createSection(theme, frame, "Verification stages", 1)
-    local eventsSection = createSection(theme, frame, "Event history", 2)
-    local errorsSection = createSection(theme, frame, "Alerts", 3)
+    local overviewRow = Instance.new("Frame")
+    overviewRow.Name = "OverviewRow"
+    overviewRow.BackgroundTransparency = 1
+    overviewRow.Size = UDim2.new(1, 0, 0, 0)
+    overviewRow.AutomaticSize = Enum.AutomaticSize.Y
+    overviewRow.LayoutOrder = 1
+    overviewRow.Parent = frame
+
+    local overviewLayout = Instance.new("UIListLayout")
+    overviewLayout.FillDirection = Enum.FillDirection.Horizontal
+    overviewLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    overviewLayout.Padding = UDim.new(0, theme.sectionSpacing or 12)
+    overviewLayout.Parent = overviewRow
+
+    local overviewCards = {
+        status = createOverviewCard(theme, overviewRow, "status", "Verification"),
+        events = createOverviewCard(theme, overviewRow, "events", "Events"),
+        alerts = createOverviewCard(theme, overviewRow, "alerts", "Alerts"),
+    }
+    overviewCards.status.frame.LayoutOrder = 1
+    overviewCards.events.frame.LayoutOrder = 2
+    overviewCards.alerts.frame.LayoutOrder = 3
+
+    local contentRow = Instance.new("Frame")
+    contentRow.Name = "ContentRow"
+    contentRow.BackgroundTransparency = 1
+    contentRow.Size = UDim2.new(1, 0, 0, 0)
+    contentRow.AutomaticSize = Enum.AutomaticSize.Y
+    contentRow.LayoutOrder = 2
+    contentRow.Parent = frame
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Vertical
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    contentLayout.Padding = UDim.new(0, theme.sectionSpacing or 12)
+    contentLayout.Parent = contentRow
+
+    local primaryColumn = Instance.new("Frame")
+    primaryColumn.Name = "PrimaryColumn"
+    primaryColumn.BackgroundTransparency = 1
+    primaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    primaryColumn.LayoutOrder = 1
+    primaryColumn.Parent = contentRow
+
+    local primaryLayout = Instance.new("UIListLayout")
+    primaryLayout.FillDirection = Enum.FillDirection.Vertical
+    primaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    primaryLayout.Padding = UDim.new(0, theme.sectionSpacing)
+    primaryLayout.Parent = primaryColumn
+
+    local secondaryColumn = Instance.new("Frame")
+    secondaryColumn.Name = "SecondaryColumn"
+    secondaryColumn.BackgroundTransparency = 1
+    secondaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    secondaryColumn.LayoutOrder = 2
+    secondaryColumn.Parent = contentRow
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Vertical
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, theme.sectionSpacing)
+    secondaryLayout.Parent = secondaryColumn
+
+    local stagesSection = createSection(theme, primaryColumn, "Verification stages", 1)
+    local eventsSection = createSection(theme, secondaryColumn, "Event history", 1)
+    local errorsSection = createSection(theme, primaryColumn, "Alerts", 2)
+
+    local stageGrid = Instance.new("Frame")
+    stageGrid.Name = "StageGrid"
+    stageGrid.BackgroundTransparency = 1
+    stageGrid.Size = UDim2.new(1, 0, 0, 0)
+    stageGrid.AutomaticSize = Enum.AutomaticSize.Y
+    stageGrid.Parent = stagesSection.body
+
+    local stageLayout = Instance.new("UIGridLayout")
+    stageLayout.FillDirection = Enum.FillDirection.Horizontal
+    stageLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    stageLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    stageLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    stageLayout.CellPadding = UDim2.new(0, theme.sectionSpacing, 0, theme.sectionSpacing)
+    stageLayout.CellSize = UDim2.new(1, 0, 0, 90)
+    stageLayout.Parent = stageGrid
 
     local stageRows = {}
     local stageOrder = {}
     for index, definition in ipairs(DEFAULT_STAGES) do
-        local row = createStageRow(theme, stagesSection.body, definition)
+        local row = createStageRow(theme, stageGrid, definition)
         row.frame.LayoutOrder = index
         stageRows[definition.id] = row
         stageOrder[index] = definition.id
@@ -5988,12 +7194,75 @@ function DiagnosticsPanel.new(options)
 
     local filterButtons = {}
 
-    local eventList = Instance.new("Frame")
+    local eventBase = theme.eventBackground or DEFAULT_THEME.eventBackground
+    local accentColor = (theme.filterButton and theme.filterButton.activeColor)
+        or (theme.statusColors and theme.statusColors.active)
+        or (DEFAULT_THEME.statusColors and DEFAULT_THEME.statusColors.active)
+        or Color3.fromRGB(112, 198, 255)
+
+    local eventViewport = Instance.new("Frame")
+    eventViewport.Name = "EventViewport"
+    eventViewport.BackgroundColor3 = eventBase
+    eventViewport.BackgroundTransparency = theme.eventTransparency or DEFAULT_THEME.eventTransparency or 0.04
+    eventViewport.BorderSizePixel = 0
+    eventViewport.AutomaticSize = Enum.AutomaticSize.None
+    eventViewport.Size = UDim2.new(1, 0, 0, theme.eventListHeight or DEFAULT_THEME.eventListHeight)
+    eventViewport.ClipsDescendants = true
+    eventViewport.Parent = eventsSection.body
+
+    local eventViewportCorner = Instance.new("UICorner")
+    eventViewportCorner.CornerRadius = theme.eventCorner or DEFAULT_THEME.eventCorner or UDim.new(0, 10)
+    eventViewportCorner.Parent = eventViewport
+
+    local eventViewportStroke = Instance.new("UIStroke")
+    eventViewportStroke.Color = theme.eventStrokeColor or DEFAULT_THEME.eventStrokeColor
+    eventViewportStroke.Transparency = theme.eventStrokeTransparency or DEFAULT_THEME.eventStrokeTransparency or 0.4
+    eventViewportStroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    eventViewportStroke.Parent = eventViewport
+
+    local viewportGradient = Instance.new("UIGradient")
+    viewportGradient.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, eventBase:Lerp(accentColor, 0.08)),
+        ColorSequenceKeypoint.new(1, eventBase),
+    })
+    viewportGradient.Transparency = NumberSequence.new({
+        NumberSequenceKeypoint.new(0, math.clamp((theme.eventTransparency or 0.04) + 0.05, 0, 1)),
+        NumberSequenceKeypoint.new(1, 0.35),
+    })
+    viewportGradient.Rotation = 90
+    viewportGradient.Parent = eventViewport
+
+    local viewportPadding = Instance.new("UIPadding")
+    viewportPadding.PaddingTop = UDim.new(0, 6)
+    viewportPadding.PaddingBottom = UDim.new(0, 6)
+    viewportPadding.PaddingLeft = UDim.new(0, 6)
+    viewportPadding.PaddingRight = UDim.new(0, 6)
+    viewportPadding.Parent = eventViewport
+
+    local eventList = Instance.new("ScrollingFrame")
     eventList.Name = "Events"
+    eventList.Active = true
     eventList.BackgroundTransparency = 1
-    eventList.Size = UDim2.new(1, 0, 0, 0)
-    eventList.AutomaticSize = Enum.AutomaticSize.Y
-    eventList.Parent = eventsSection.body
+    eventList.BorderSizePixel = 0
+    eventList.AutomaticSize = Enum.AutomaticSize.None
+    eventList.Size = UDim2.new(1, 0, 1, 0)
+    eventList.CanvasSize = UDim2.new(0, 0, 0, 0)
+    eventList.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    eventList.ScrollBarThickness = theme.eventScrollBarThickness or DEFAULT_THEME.eventScrollBarThickness or 6
+    eventList.ScrollBarImageColor3 = theme.eventScrollBarColor or DEFAULT_THEME.eventScrollBarColor
+    eventList.ScrollBarImageTransparency = theme.eventScrollBarTransparency or DEFAULT_THEME.eventScrollBarTransparency or 0.2
+    eventList.ScrollingDirection = Enum.ScrollingDirection.Y
+    eventList.ElasticBehavior = Enum.ElasticBehavior.Never
+    eventList.Parent = eventViewport
+    eventsSection.list = eventList
+
+    local eventPadding = theme.eventListPadding or DEFAULT_THEME.eventListPadding or Vector2.new(10, 8)
+    local eventListPadding = Instance.new("UIPadding")
+    eventListPadding.PaddingTop = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingBottom = UDim.new(0, eventPadding.Y)
+    eventListPadding.PaddingLeft = UDim.new(0, eventPadding.X)
+    eventListPadding.PaddingRight = UDim.new(0, eventPadding.X)
+    eventListPadding.Parent = eventList
 
     local eventLayout = Instance.new("UIListLayout")
     eventLayout.FillDirection = Enum.FillDirection.Vertical
@@ -6022,15 +7291,47 @@ function DiagnosticsPanel.new(options)
             events = eventsSection,
             errors = errorsSection,
         },
+        _overviewRow = overviewRow,
+        _overviewLayout = overviewLayout,
+        _overviewCards = overviewCards,
+        _contentRow = contentRow,
+        _contentLayout = contentLayout,
+        _primaryColumn = primaryColumn,
+        _secondaryColumn = secondaryColumn,
+        _primaryLayout = primaryLayout,
+        _secondaryLayout = secondaryLayout,
+        _stageGrid = stageGrid,
+        _stageLayout = stageLayout,
         _stageRows = stageRows,
         _stageOrder = stageOrder,
         _events = {},
         _eventRows = {},
+        _eventsList = eventList,
         _filters = {},
         _filterButtons = filterButtons,
+        _filterRow = filterRow,
+        _filterLayout = filterLayout,
         _activeFilter = nil,
         _badges = {},
+        _badgesFrame = badges,
+        _badgesLayout = badgesLayout,
         _startClock = os.clock(),
+        _metrics = {
+            totalStages = #stageOrder,
+            readyStages = 0,
+            warningStages = 0,
+            failedStages = 0,
+            activeStage = nil,
+            events = 0,
+            loaderEvents = 0,
+            parryEvents = 0,
+            warnings = 0,
+            errors = 0,
+            activeAlerts = 0,
+            lastEvent = nil,
+        },
+        _connections = {},
+        _destroyed = false,
     }, DiagnosticsPanel)
 
     for _, filter in ipairs(DEFAULT_FILTERS) do
@@ -6059,6 +7360,8 @@ function DiagnosticsPanel.new(options)
     end
 
     self:setFilter("all")
+    self:_refreshOverview()
+    self:_installResponsiveHandlers()
 
     return self
 end
@@ -6084,6 +7387,337 @@ function DiagnosticsPanel:_styleStageRow(row, stage)
     row.title.TextColor3 = color
     row.message.TextColor3 = theme.statusTextColor
     row.detail.TextColor3 = theme.statusDetailColor
+
+    if row.accent then
+        row.accent.BackgroundColor3 = color
+        row.accent.BackgroundTransparency = (status == "pending" or status == "active") and 0.35 or 0.1
+    end
+
+    if row.frame then
+        local base = theme.stageBackground
+        local emphasis = status == "ok" and 0.08 or (status == "failed" and 0.2 or 0.14)
+        row.frame.BackgroundColor3 = base:Lerp(color, emphasis)
+    end
+end
+
+function DiagnosticsPanel:_updateStageMetrics(stageMap)
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    local ready = 0
+    local warning = 0
+    local failed = 0
+    local focusScore = -math.huge
+    local focusInfo = nil
+
+    for _, id in ipairs(self._stageOrder or {}) do
+        local stage = stageMap[id]
+        if stage then
+            local status = stage.status or "pending"
+            if status == "ok" then
+                ready += 1
+            elseif status == "warning" then
+                warning += 1
+            elseif status == "failed" then
+                failed += 1
+            end
+
+            local score = STAGE_STATUS_PRIORITY[status] or 0
+            if status ~= "ok" and score >= focusScore then
+                focusScore = score
+                local label = stage.title or stage.message or stage.description or stage.id or id
+                focusInfo = {
+                    id = id,
+                    title = label,
+                    status = status,
+                }
+            end
+        end
+    end
+
+    metrics.totalStages = #(self._stageOrder or {})
+    metrics.readyStages = ready
+    metrics.warningStages = warning
+    metrics.failedStages = failed
+    metrics.activeStage = focusInfo
+end
+
+function DiagnosticsPanel:_registerEventMetrics(event)
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    metrics.events = (metrics.events or 0) + 1
+    if event.kind == "loader" then
+        metrics.loaderEvents = (metrics.loaderEvents or 0) + 1
+    elseif event.kind == "parry" then
+        metrics.parryEvents = (metrics.parryEvents or 0) + 1
+    end
+
+    if event.severity == "warning" then
+        metrics.warnings = (metrics.warnings or 0) + 1
+    elseif event.severity == "error" then
+        metrics.errors = (metrics.errors or 0) + 1
+    end
+
+    metrics.lastEvent = {
+        kind = event.kind,
+        message = event.message,
+        detail = event.detail,
+        timestamp = event.timestamp,
+    }
+end
+
+function DiagnosticsPanel:_recountActiveAlerts()
+    local metrics = self._metrics
+    if not metrics then
+        return
+    end
+
+    local active = 0
+    for _, badge in pairs(self._badges) do
+        if badge.active then
+            active += 1
+        end
+    end
+
+    metrics.activeAlerts = active
+end
+
+function DiagnosticsPanel:_refreshOverview()
+    if self._destroyed then
+        return
+    end
+
+    local cards = self._overviewCards
+    if not cards then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local overviewTheme = theme.overview or DEFAULT_THEME.overview
+    local metrics = self._metrics or {}
+
+    local totalStages = metrics.totalStages or #(self._stageOrder or {})
+    local readyStages = metrics.readyStages or 0
+    local statusCard = cards.status
+    if statusCard then
+        statusCard.value.Text = string.format("%d/%d", readyStages, totalStages)
+        local focus = metrics.activeStage
+        if readyStages >= totalStages and totalStages > 0 then
+            statusCard.value.TextColor3 = overviewTheme.successColor or overviewTheme.valueColor
+            statusCard.detail.Text = "All verification stages passed"
+        else
+            statusCard.value.TextColor3 = overviewTheme.accentColor or overviewTheme.valueColor
+            if focus then
+                statusCard.detail.Text = string.format("Focus: %s", tostring(focus.title or focus.id or "stage"))
+            else
+                statusCard.detail.Text = "Awaiting verification data"
+            end
+        end
+    end
+
+    local eventsCard = cards.events
+    if eventsCard then
+        local eventsTotal = metrics.events or 0
+        eventsCard.value.Text = tostring(eventsTotal)
+        eventsCard.value.TextColor3 = overviewTheme.valueColor or Color3.new(1, 1, 1)
+        local loader = metrics.loaderEvents or 0
+        local parry = metrics.parryEvents or 0
+        local lastEvent = metrics.lastEvent
+        local summary = string.format("Loader %d • Parry %d", loader, parry)
+        if lastEvent then
+            local elapsed = formatElapsed(self._startClock, lastEvent.timestamp) or "now"
+            local label = lastEvent.message or lastEvent.detail or lastEvent.kind or "event"
+            summary = string.format("%s\nLast: %s (%s)", summary, label, elapsed)
+        elseif eventsTotal == 0 then
+            summary = string.format("%s\nNo events yet", summary)
+        end
+        eventsCard.detail.Text = summary
+    end
+
+    local alertsCard = cards.alerts
+    if alertsCard then
+        local active = metrics.activeAlerts or 0
+        local warnings = metrics.warnings or 0
+        local errors = metrics.errors or 0
+        if active > 0 or errors > 0 then
+            alertsCard.value.Text = tostring(active > 0 and active or errors)
+            alertsCard.value.TextColor3 = overviewTheme.dangerColor or overviewTheme.warningColor
+            if active > 0 then
+                alertsCard.detail.Text = string.format("%d alert%s requiring action", active, active == 1 and "" or "s")
+            else
+                alertsCard.detail.Text = string.format("%d error event%s logged", errors, errors == 1 and "" or "s")
+            end
+        elseif warnings > 0 then
+            alertsCard.value.Text = tostring(warnings)
+            alertsCard.value.TextColor3 = overviewTheme.warningColor or overviewTheme.accentColor
+            alertsCard.detail.Text = string.format("%d warning event%s logged", warnings, warnings == 1 and "" or "s")
+        else
+            alertsCard.value.Text = "0"
+            alertsCard.value.TextColor3 = overviewTheme.successColor or overviewTheme.valueColor
+            alertsCard.detail.Text = "No active alerts"
+        end
+    end
+end
+
+function DiagnosticsPanel:_installResponsiveHandlers()
+    if self._destroyed or not self.frame then
+        return
+    end
+
+    local connection = self.frame:GetPropertyChangedSignal("AbsoluteSize"):Connect(function()
+        if self._destroyed then
+            return
+        end
+        self:_applyResponsiveLayout(self.frame.AbsoluteSize.X)
+    end)
+    table.insert(self._connections, connection)
+
+    task.defer(function()
+        if self._destroyed then
+            return
+        end
+        self:_applyResponsiveLayout(self.frame.AbsoluteSize.X)
+    end)
+end
+
+function DiagnosticsPanel:_applyResponsiveLayout(width)
+    if self._destroyed then
+        return
+    end
+
+    width = tonumber(width) or 0
+    if width <= 0 and self.frame then
+        width = self.frame.AbsoluteSize.X
+    end
+    if width <= 0 then
+        return
+    end
+
+    local breakpoint
+    if width < 640 then
+        breakpoint = "small"
+    elseif width < 880 then
+        breakpoint = "medium"
+    else
+        breakpoint = "large"
+    end
+    self._currentBreakpoint = breakpoint
+
+    if self._overviewLayout then
+        if breakpoint == "small" then
+            self._overviewLayout.FillDirection = Enum.FillDirection.Vertical
+            self._overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._overviewLayout.Padding = UDim.new(0, 10)
+        else
+            self._overviewLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._overviewLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._overviewLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        end
+    end
+
+    local cards = self._overviewCards
+    if cards then
+        if breakpoint == "small" then
+            for _, card in pairs(cards) do
+                if card.frame then
+                    card.frame.Size = UDim2.new(1, 0, 0, 0)
+                end
+            end
+        elseif breakpoint == "medium" then
+            if cards.status and cards.status.frame then
+                cards.status.frame.Size = UDim2.new(0.5, -6, 0, 0)
+            end
+            if cards.events and cards.events.frame then
+                cards.events.frame.Size = UDim2.new(0.5, -6, 0, 0)
+            end
+            if cards.alerts and cards.alerts.frame then
+                cards.alerts.frame.Size = UDim2.new(1, 0, 0, 0)
+            end
+        else
+            local segments = 0
+            for _, card in pairs(cards) do
+                if card.frame then
+                    segments += 1
+                end
+            end
+            segments = math.max(segments, 1)
+            local widthScale = 1 / segments
+            for _, card in pairs(cards) do
+                if card.frame then
+                    card.frame.Size = UDim2.new(widthScale, -8, 0, 0)
+                end
+            end
+        end
+    end
+
+    if self._contentLayout then
+        if breakpoint == "large" then
+            self._contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        else
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, self._theme.sectionSpacing or DEFAULT_THEME.sectionSpacing or 12)
+        end
+    end
+
+    if self._primaryColumn and self._secondaryColumn then
+        if breakpoint == "large" then
+            self._primaryColumn.Size = UDim2.new(0.56, -8, 0, 0)
+            self._secondaryColumn.Size = UDim2.new(0.44, -8, 0, 0)
+        else
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+        end
+    end
+
+    if self._stageLayout then
+        if breakpoint == "large" then
+            self._stageLayout.CellSize = UDim2.new(0.5, -8, 0, 98)
+            self._stageLayout.CellPadding = UDim2.new(0, 12, 0, 12)
+        else
+            self._stageLayout.CellSize = UDim2.new(1, 0, 0, 98)
+            self._stageLayout.CellPadding = UDim2.new(0, 10, 0, 10)
+        end
+    end
+
+    if self._filterLayout then
+        local filterTheme = (self._theme and self._theme.filterButton) or DEFAULT_THEME.filterButton
+        if breakpoint == "small" then
+            self._filterLayout.FillDirection = Enum.FillDirection.Vertical
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._filterLayout.Padding = UDim.new(0, 6)
+            for _, button in pairs(self._filterButtons) do
+                button.Size = UDim2.new(1, 0, 0, 28)
+                button.TextXAlignment = Enum.TextXAlignment.Left
+            end
+        else
+            self._filterLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._filterLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._filterLayout.Padding = UDim.new(0, 8)
+            for _, button in pairs(self._filterButtons) do
+                local widthEstimate = math.max(60, button.TextBounds.X + filterTheme.padding.X * 2)
+                button.Size = UDim2.new(0, widthEstimate, 0, 26)
+                button.TextXAlignment = Enum.TextXAlignment.Center
+            end
+        end
+    end
+
+    if self._badgesLayout then
+        if breakpoint == "small" then
+            self._badgesLayout.FillDirection = Enum.FillDirection.Vertical
+            self._badgesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        else
+            self._badgesLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._badgesLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+    end
 end
 
 function DiagnosticsPanel:_updateEventRow(entry, event)
@@ -6186,6 +7820,9 @@ function DiagnosticsPanel:setStages(stages)
             end
         end
     end
+
+    self:_updateStageMetrics(map)
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:pushEvent(event)
@@ -6199,12 +7836,24 @@ function DiagnosticsPanel:pushEvent(event)
 
     table.insert(self._events, copied)
 
-    local entry = createEventRow(self._theme, self._sections.events.body.Events, copied, self._startClock)
+    local eventsList = self._eventsList
+    if not eventsList and self._sections and self._sections.events then
+        eventsList = self._sections.events.list
+        self._eventsList = eventsList
+    end
+
+    if not eventsList then
+        return
+    end
+
+    local entry = createEventRow(self._theme, eventsList, copied, self._startClock)
     entry.event = copied
     table.insert(self._eventRows, entry)
 
     self:_updateEventRow(entry, copied)
     self:_applyFilter()
+    self:_registerEventMetrics(copied)
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:showError(errorInfo)
@@ -6213,13 +7862,16 @@ function DiagnosticsPanel:showError(errorInfo)
             badge.frame:Destroy()
         end
         self._badges = {}
+        self:_recountActiveAlerts()
+        self:_refreshOverview()
         return
     end
 
     local id = tostring(errorInfo.id or errorInfo.kind or (#self._badges + 1))
     local badge = self._badges[id]
     if not badge then
-        badge = createBadge(self._theme, self._sections.errors.body.Badges, id)
+        local badgeParent = (self._badgesFrame and self._badgesFrame.Parent) and self._badgesFrame or (self._sections.errors and self._sections.errors.body and self._sections.errors.body.Badges)
+        badge = createBadge(self._theme, badgeParent, id)
         self._badges[id] = badge
     end
 
@@ -6234,6 +7886,8 @@ function DiagnosticsPanel:showError(errorInfo)
 
     badge.active = active
     badge.severity = severity
+    self:_recountActiveAlerts()
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:reset()
@@ -6247,6 +7901,20 @@ function DiagnosticsPanel:reset()
         badge.frame:Destroy()
     end
     self._badges = {}
+
+    if self._metrics then
+        self._metrics.events = 0
+        self._metrics.loaderEvents = 0
+        self._metrics.parryEvents = 0
+        self._metrics.warnings = 0
+        self._metrics.errors = 0
+        self._metrics.activeAlerts = 0
+        self._metrics.lastEvent = nil
+        self._metrics.readyStages = 0
+        self._metrics.warningStages = 0
+        self._metrics.failedStages = 0
+        self._metrics.activeStage = nil
+    end
 
     self._startClock = os.clock()
     self:setFilter("all")
@@ -6264,6 +7932,8 @@ function DiagnosticsPanel:reset()
             row.detail.Text = ""
         end
     end
+
+    self:_refreshOverview()
 end
 
 function DiagnosticsPanel:destroy()
@@ -6273,6 +7943,11 @@ function DiagnosticsPanel:destroy()
 
     self._destroyed = true
 
+    for _, connection in ipairs(self._connections or {}) do
+        connection:Disconnect()
+    end
+    self._connections = nil
+
     if self.frame then
         self.frame:Destroy()
         self.frame = nil
@@ -6281,6 +7956,7 @@ function DiagnosticsPanel:destroy()
     self._sections = nil
     self._stageRows = nil
     self._eventRows = nil
+    self._eventsList = nil
     self._badges = nil
 end
 
@@ -6288,6 +7964,7 @@ return DiagnosticsPanel
 
 ]===],
     ['src/ui/init.lua'] = [===[
+-- src/ui/init.lua (sha1: 4e0730c226ce2e2f7003a1800dc5b5716e9280e3)
 -- mikkel32/AutoParry : src/ui/init.lua
 -- selene: allow(global_usage)
 -- Professional dashboard controller for AutoParry with status, telemetry,
@@ -8447,6 +10124,7 @@ return UI
 
 ]===],
     ['src/ui/loading_overlay.lua'] = [===[
+-- src/ui/loading_overlay.lua (sha1: 5083ababdb30a04805bb33f5e6c05af90807122f)
 -- mikkel32/AutoParry : src/ui/loading_overlay.lua
 -- Full-screen loading overlay with spinner, progress bar, status text, and optional tips.
 --
@@ -8685,6 +10363,7 @@ local DEFAULT_THEME = {
     progressArcTransparency = 0.4,
     dashboardMountSize = UDim2.new(0.94, 0, 0, 0),
     dashboardMaxWidth = 760,
+    dashboardMinWidth = 360,
 }
 
 local activeOverlay
@@ -9471,11 +11150,16 @@ function LoadingOverlay.new(options)
     dashboardLayout.Parent = dashboardMount
 
     local dashboardMountConstraint = Instance.new("UISizeConstraint")
-    dashboardMountConstraint.MaxSize = Vector2.new(
-        theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760,
-        math.huge
+    local dashboardMinWidth = math.max(theme.dashboardMinWidth or DEFAULT_THEME.dashboardMinWidth or 360, 0)
+    local configuredDashboardMaxWidth = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or 760
+    -- Roblox errors when MaxSize < MinSize; clamp to keep constraints sane even
+    -- if a custom theme requests an unusually small dashboard width.
+    local dashboardMaxWidth = math.max(configuredDashboardMaxWidth, dashboardMinWidth)
+    Util.setConstraintSize(
+        dashboardMountConstraint,
+        Vector2.new(dashboardMinWidth, 0),
+        Vector2.new(dashboardMaxWidth, math.huge)
     )
-    dashboardMountConstraint.MinSize = Vector2.new(360, 0)
     dashboardMountConstraint.Parent = dashboardMount
 
     preloadAssets({
@@ -9527,6 +11211,7 @@ function LoadingOverlay.new(options)
         _actionsRow = actionsRow,
         _actionsLayout = actionsLayout,
         _dashboardMount = dashboardMount,
+        _dashboardMountConstraint = dashboardMountConstraint,
         _progressArc = progressArc,
         _progressArcGradient = arcGradient,
         _badge = badge,
@@ -9801,7 +11486,7 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
         infoSize = infoSize,
         dashboardSize = dashboardSize,
         viewportWidth = math.floor(viewportWidth + 0.5),
-        viewportHeight = (viewportSize and math.floor(viewportHeight + 0.5)) or scaledHeight,
+        viewportHeight = math.floor(viewportHeight + 0.5),
     }
 
     if contentLayout then
@@ -9883,7 +11568,7 @@ function LoadingOverlay:_applyResponsiveLayout(viewportSize)
         infoHeight = math.floor(target.infoHeight * scale + 0.5),
         contentHeight = math.floor(target.contentHeight * scale + 0.5),
         viewportWidth = viewportWidth and math.floor(viewportWidth + 0.5) or scaledWidth,
-        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or nil,
+        viewportHeight = viewportSize and math.floor(viewportHeight + 0.5) or scaledHeight,
         scale = scale,
         raw = target,
         rawWidth = target.width,
@@ -11007,6 +12692,14 @@ function LoadingOverlay:applyTheme(themeOverrides)
         self._dashboardGradient.Color = panelTheme.gradient or DEFAULT_THEME.dashboardPanel.gradient
         self._dashboardGradient.Transparency = panelTheme.gradientTransparency or DEFAULT_THEME.dashboardPanel.gradientTransparency
     end
+    if self._dashboardMountConstraint then
+        local minWidth = math.max(theme.dashboardMinWidth or DEFAULT_THEME.dashboardMinWidth or 360, 0)
+        local configuredMax = theme.dashboardMaxWidth or DEFAULT_THEME.dashboardMaxWidth or minWidth
+        local maxWidth = math.max(configuredMax, minWidth)
+        local minVector = Vector2.new(minWidth, 0)
+        local maxVector = Vector2.new(maxWidth, math.huge)
+        Util.setConstraintSize(self._dashboardMountConstraint, minVector, maxVector)
+    end
     if self._actions then
         self:setActions(self._actions)
     end
@@ -11202,6 +12895,7 @@ return Module
 
 ]===],
     ['src/ui/verification_dashboard.lua'] = [===[
+-- src/ui/verification_dashboard.lua (sha1: 88012866db3efe27938fc5dee5af622c07d20b27)
 -- mikkel32/AutoParry : src/ui/verification_dashboard.lua
 -- Futuristic verification dashboard used by the loading overlay. Renders a
 -- neon timeline that visualises the orchestrator's verification stages with
@@ -11341,10 +13035,40 @@ local DEFAULT_THEME = {
         glyphTransparency = 0.15,
     },
     layout = {
-        widthScale = 0.96,
-        maxWidth = 720,
-        minWidth = 420,
-        horizontalPadding = 16,
+        widthScale = 1,
+        maxWidth = 1100,
+        minWidth = 560,
+        horizontalPadding = 24,
+        contentSpacing = 20,
+        contentColumnPadding = 24,
+        primaryColumnRatio = 0.64,
+        primaryColumnMinWidth = 420,
+        secondaryColumnMinWidth = 320,
+    },
+    timeline = {
+        headerFont = Enum.Font.GothamSemibold,
+        headerTextSize = 18,
+        headerColor = Color3.fromRGB(226, 236, 252),
+        subtitleFont = Enum.Font.Gotham,
+        subtitleTextSize = 15,
+        subtitleColor = Color3.fromRGB(176, 192, 224),
+        subtitleTintMix = 0.22,
+        badgeFont = Enum.Font.GothamSemibold,
+        badgeTextSize = 13,
+        badgeTextColor = Color3.fromRGB(226, 236, 252),
+        badgeBackground = Color3.fromRGB(30, 36, 48),
+        badgeBackgroundTransparency = 0.18,
+        badgeBackgroundHighlight = 0.16,
+        badgeStrokeColor = Color3.fromRGB(88, 142, 218),
+        badgeStrokeTransparency = 0.28,
+        badgeStrokeMix = 0.18,
+        badgeAccentColor = Color3.fromRGB(112, 198, 255),
+        badgeAccentTransparency = 0,
+        badgeDefaultColor = Color3.fromRGB(112, 198, 255),
+        badgeActiveColor = Color3.fromRGB(112, 198, 255),
+        badgeSuccessColor = Color3.fromRGB(118, 228, 182),
+        badgeWarningColor = Color3.fromRGB(255, 198, 110),
+        badgeDangerColor = Color3.fromRGB(248, 110, 128),
     },
     iconography = {
         pending = "rbxassetid://6031071050",
@@ -12385,8 +14109,12 @@ function VerificationDashboard.new(options)
     canvasPadding.Parent = canvas
 
     local canvasConstraint = Instance.new("UISizeConstraint")
-    canvasConstraint.MaxSize = Vector2.new(layoutTheme.maxWidth or 720, math.huge)
-    canvasConstraint.MinSize = Vector2.new(layoutTheme.minWidth or 420, 0)
+    local initialMinWidth = math.max(0, layoutTheme.minWidth or 420)
+    local configuredMaxWidth = layoutTheme.maxWidth or 720
+    -- Guard against custom themes setting a max width smaller than the min
+    -- width, which would otherwise trigger Roblox constraint warnings.
+    local initialMaxWidth = math.max(configuredMaxWidth, initialMinWidth)
+    Util.setConstraintSize(canvasConstraint, Vector2.new(initialMinWidth, 0), Vector2.new(initialMaxWidth, math.huge))
     canvasConstraint.Parent = canvas
 
     local layout = Instance.new("UIListLayout")
@@ -12403,6 +14131,54 @@ function VerificationDashboard.new(options)
     header.Size = UDim2.new(1, 0, 0, 118)
     header.LayoutOrder = 1
     header.Parent = canvas
+
+    local contentRow = Instance.new("Frame")
+    contentRow.Name = "ContentRow"
+    contentRow.BackgroundTransparency = 1
+    contentRow.AutomaticSize = Enum.AutomaticSize.Y
+    contentRow.Size = UDim2.new(1, 0, 0, 0)
+    contentRow.LayoutOrder = 2
+    contentRow.Parent = canvas
+
+    local contentLayout = Instance.new("UIListLayout")
+    contentLayout.FillDirection = Enum.FillDirection.Vertical
+    contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    contentLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    contentLayout.Parent = contentRow
+
+    local primaryColumn = Instance.new("Frame")
+    primaryColumn.Name = "PrimaryColumn"
+    primaryColumn.BackgroundTransparency = 1
+    primaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    primaryColumn.LayoutOrder = 1
+    primaryColumn.Parent = contentRow
+
+    local primaryLayout = Instance.new("UIListLayout")
+    primaryLayout.FillDirection = Enum.FillDirection.Vertical
+    primaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    primaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    primaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    primaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    primaryLayout.Parent = primaryColumn
+
+    local secondaryColumn = Instance.new("Frame")
+    secondaryColumn.Name = "SecondaryColumn"
+    secondaryColumn.BackgroundTransparency = 1
+    secondaryColumn.AutomaticSize = Enum.AutomaticSize.Y
+    secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+    secondaryColumn.LayoutOrder = 2
+    secondaryColumn.Parent = contentRow
+
+    local secondaryLayout = Instance.new("UIListLayout")
+    secondaryLayout.FillDirection = Enum.FillDirection.Vertical
+    secondaryLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    secondaryLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    secondaryLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    secondaryLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+    secondaryLayout.Parent = secondaryColumn
 
     local headerLayout = Instance.new("UIListLayout")
     headerLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -12513,10 +14289,10 @@ function VerificationDashboard.new(options)
     insightsCard.BackgroundColor3 = insightsTheme.backgroundColor or theme.cardColor
     insightsCard.BackgroundTransparency = insightsTheme.backgroundTransparency or theme.cardTransparency
     insightsCard.BorderSizePixel = 0
-    insightsCard.LayoutOrder = 2
+    insightsCard.LayoutOrder = 1
     insightsCard.AutomaticSize = Enum.AutomaticSize.Y
     insightsCard.Size = UDim2.new(1, 0, 0, 0)
-    insightsCard.Parent = canvas
+    insightsCard.Parent = primaryColumn
 
     local insightsCorner = Instance.new("UICorner")
     insightsCorner.CornerRadius = UDim.new(0, 16)
@@ -12663,6 +14439,8 @@ function VerificationDashboard.new(options)
 
     local controlButtons = {}
 
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
+
     local timelineCard = Instance.new("Frame")
     timelineCard.Name = "TimelineCard"
     timelineCard.BackgroundColor3 = theme.cardColor
@@ -12670,8 +14448,8 @@ function VerificationDashboard.new(options)
     timelineCard.BorderSizePixel = 0
     timelineCard.AutomaticSize = Enum.AutomaticSize.Y
     timelineCard.Size = UDim2.new(1, 0, 0, 200)
-    timelineCard.LayoutOrder = 3
-    timelineCard.Parent = canvas
+    timelineCard.LayoutOrder = 2
+    timelineCard.Parent = secondaryColumn
 
     local timelineCorner = Instance.new("UICorner")
     timelineCorner.CornerRadius = UDim.new(0, 14)
@@ -12704,6 +14482,101 @@ function VerificationDashboard.new(options)
     timelineGradient.Rotation = 125
     timelineGradient.Parent = timelineCard
 
+    local timelineHeader = Instance.new("Frame")
+    timelineHeader.Name = "TimelineHeader"
+    timelineHeader.BackgroundTransparency = 1
+    timelineHeader.AutomaticSize = Enum.AutomaticSize.Y
+    timelineHeader.Size = UDim2.new(1, 0, 0, 0)
+    timelineHeader.LayoutOrder = 1
+    timelineHeader.Parent = timelineCard
+
+    local timelineHeaderLayout = Instance.new("UIListLayout")
+    timelineHeaderLayout.FillDirection = Enum.FillDirection.Vertical
+    timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+    timelineHeaderLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+    timelineHeaderLayout.SortOrder = Enum.SortOrder.LayoutOrder
+    timelineHeaderLayout.Padding = UDim.new(0, 6)
+    timelineHeaderLayout.Parent = timelineHeader
+
+    local headerRow = Instance.new("Frame")
+    headerRow.Name = "HeaderRow"
+    headerRow.BackgroundTransparency = 1
+    headerRow.Size = UDim2.new(1, 0, 0, 32)
+    headerRow.LayoutOrder = 1
+    headerRow.Parent = timelineHeader
+
+    local timelineTitle = Instance.new("TextLabel")
+    timelineTitle.Name = "Title"
+    timelineTitle.BackgroundTransparency = 1
+    timelineTitle.AnchorPoint = Vector2.new(0, 0.5)
+    timelineTitle.Position = UDim2.new(0, 0, 0.5, 0)
+    timelineTitle.Size = UDim2.new(1, -150, 0, 26)
+    timelineTitle.Text = "Verification timeline"
+    timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+    timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+    timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+    timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    timelineTitle.Parent = headerRow
+
+    local badgeContainer = Instance.new("Frame")
+    badgeContainer.Name = "StatusBadge"
+    badgeContainer.AnchorPoint = Vector2.new(1, 0.5)
+    badgeContainer.Position = UDim2.new(1, 0, 0.5, 0)
+    badgeContainer.AutomaticSize = Enum.AutomaticSize.XY
+    badgeContainer.Size = UDim2.new(0, 144, 0, 28)
+    badgeContainer.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+    badgeContainer.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    badgeContainer.BorderSizePixel = 0
+    badgeContainer.Parent = headerRow
+
+    local badgeCorner = Instance.new("UICorner")
+    badgeCorner.CornerRadius = UDim.new(0, 12)
+    badgeCorner.Parent = badgeContainer
+
+    local badgeStroke = Instance.new("UIStroke")
+    badgeStroke.Thickness = 1
+    badgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+    badgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    badgeStroke.Parent = badgeContainer
+
+    local badgeAccent = Instance.new("Frame")
+    badgeAccent.Name = "Accent"
+    badgeAccent.AnchorPoint = Vector2.new(0, 0.5)
+    badgeAccent.Position = UDim2.new(0, 0, 0.5, 0)
+    badgeAccent.Size = UDim2.new(0, 4, 1, 0)
+    badgeAccent.BorderSizePixel = 0
+    badgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+    badgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    badgeAccent.Parent = badgeContainer
+
+    local badgeLabel = Instance.new("TextLabel")
+    badgeLabel.Name = "Label"
+    badgeLabel.BackgroundTransparency = 1
+    badgeLabel.AnchorPoint = Vector2.new(0, 0.5)
+    badgeLabel.Position = UDim2.new(0, 8, 0.5, 0)
+    badgeLabel.Size = UDim2.new(1, -16, 0, 0)
+    badgeLabel.AutomaticSize = Enum.AutomaticSize.Y
+    badgeLabel.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+    badgeLabel.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    badgeLabel.TextXAlignment = Enum.TextXAlignment.Left
+    badgeLabel.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    badgeLabel.Text = "Preparing checks"
+    badgeLabel.Parent = badgeContainer
+
+    local timelineStatus = Instance.new("TextLabel")
+    timelineStatus.Name = "Status"
+    timelineStatus.BackgroundTransparency = 1
+    timelineStatus.AutomaticSize = Enum.AutomaticSize.Y
+    timelineStatus.Size = UDim2.new(1, 0, 0, 0)
+    timelineStatus.TextXAlignment = Enum.TextXAlignment.Left
+    timelineStatus.TextWrapped = true
+    timelineStatus.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+    timelineStatus.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    timelineStatus.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    timelineStatus.Text = "Awaiting verification updates."
+    timelineStatus.LayoutOrder = 2
+    timelineStatus.Parent = timelineHeader
+
     local timelineLayout = Instance.new("UIListLayout")
     timelineLayout.FillDirection = Enum.FillDirection.Vertical
     timelineLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
@@ -12719,7 +14592,7 @@ function VerificationDashboard.new(options)
     progressTrack.BackgroundTransparency = math.clamp((theme.cardTransparency or 0) + 0.12, 0, 1)
     progressTrack.BorderSizePixel = 0
     progressTrack.ZIndex = 2
-    progressTrack.LayoutOrder = 1
+    progressTrack.LayoutOrder = 2
     progressTrack.Parent = timelineCard
 
     local trackCorner = Instance.new("UICorner")
@@ -12760,7 +14633,7 @@ function VerificationDashboard.new(options)
     listFrame.BackgroundTransparency = 1
     listFrame.AutomaticSize = Enum.AutomaticSize.Y
     listFrame.Size = UDim2.new(1, 0, 0, 0)
-    listFrame.LayoutOrder = 2
+    listFrame.LayoutOrder = 3
     listFrame.Parent = timelineCard
 
     local listLayout = Instance.new("UIListLayout")
@@ -12783,7 +14656,7 @@ function VerificationDashboard.new(options)
     local actionsFrame = Instance.new("Frame")
     actionsFrame.Name = "Actions"
     actionsFrame.BackgroundTransparency = 1
-    actionsFrame.LayoutOrder = 4
+    actionsFrame.LayoutOrder = 3
     actionsFrame.Size = UDim2.new(1, 0, 0, theme.actionHeight + 12)
     actionsFrame.Visible = false
     actionsFrame.Parent = canvas
@@ -12794,6 +14667,44 @@ function VerificationDashboard.new(options)
     actionsLayout.SortOrder = Enum.SortOrder.LayoutOrder
     actionsLayout.Padding = UDim.new(0, 12)
     actionsLayout.Parent = actionsFrame
+
+    local contentDefaults = {
+        fillDirection = contentLayout.FillDirection,
+        horizontalAlignment = contentLayout.HorizontalAlignment,
+        verticalAlignment = contentLayout.VerticalAlignment,
+        padding = contentLayout.Padding,
+    }
+
+    local columnDefaults = {
+        primarySize = primaryColumn.Size,
+        primaryOrder = primaryColumn.LayoutOrder,
+        secondarySize = secondaryColumn.Size,
+        secondaryOrder = secondaryColumn.LayoutOrder,
+    }
+
+    local primaryLayoutDefaults = {
+        padding = primaryLayout.Padding,
+        horizontalAlignment = primaryLayout.HorizontalAlignment,
+    }
+
+    local secondaryLayoutDefaults = {
+        padding = secondaryLayout.Padding,
+        horizontalAlignment = secondaryLayout.HorizontalAlignment,
+    }
+
+    local timelineHeaderDefaults = {
+        horizontalAlignment = timelineHeaderLayout.HorizontalAlignment,
+        titleAlignment = timelineTitle.TextXAlignment,
+        statusAlignment = timelineStatus.TextXAlignment,
+    }
+
+    local timelineBadgeDefaults = {
+        anchorPoint = badgeContainer.AnchorPoint,
+        position = badgeContainer.Position,
+    }
+
+    local insightsCardSizeDefault = insightsCard.Size
+    local timelineCardSizeDefault = timelineCard.Size
 
     local headerDefaults = {
         fillDirection = headerLayout.FillDirection,
@@ -12866,11 +14777,22 @@ function VerificationDashboard.new(options)
         _headerLayout = headerLayout,
         _title = title,
         _subtitle = subtitle,
+        _contentRow = contentRow,
+        _contentLayout = contentLayout,
+        _contentDefaults = contentDefaults,
+        _primaryColumn = primaryColumn,
+        _secondaryColumn = secondaryColumn,
+        _primaryLayout = primaryLayout,
+        _secondaryLayout = secondaryLayout,
+        _columnDefaults = columnDefaults,
+        _primaryLayoutDefaults = primaryLayoutDefaults,
+        _secondaryLayoutDefaults = secondaryLayoutDefaults,
         _insightsCard = insightsCard,
         _insightsStroke = insightsStroke,
         _insightsGradient = insightsGradient,
         _insightsLayout = insightsLayout,
         _insightsPadding = insightsPadding,
+        _insightsSizeDefaults = insightsCardSizeDefault,
         _summaryFrame = summaryRow and summaryRow.frame or nil,
         _summaryLayout = summaryRow and summaryRow.layout or nil,
         _summaryChips = summaryRow and summaryRow.chips or nil,
@@ -12891,6 +14813,16 @@ function VerificationDashboard.new(options)
         _timelineCard = timelineCard,
         _timelineStroke = timelineStroke,
         _timelineGradient = timelineGradient,
+        _timelineHeader = timelineHeader,
+        _timelineHeaderLayout = timelineHeaderLayout,
+        _timelineHeaderDefaults = timelineHeaderDefaults,
+        _timelineTitle = timelineTitle,
+        _timelineStatusLabel = timelineStatus,
+        _timelineBadgeFrame = badgeContainer,
+        _timelineBadge = badgeLabel,
+        _timelineBadgeAccent = badgeAccent,
+        _timelineBadgeStroke = badgeStroke,
+        _timelineBadgeDefaults = timelineBadgeDefaults,
         _progressTrack = progressTrack,
         _progressFill = progressFill,
         _progressTrackStroke = trackStroke,
@@ -12898,6 +14830,7 @@ function VerificationDashboard.new(options)
         _stepsFrame = listFrame,
         _steps = steps,
         _stepStates = {},
+        _timelineSizeDefaults = timelineCardSizeDefault,
         _actionsFrame = actionsFrame,
         _actionsLayout = actionsLayout,
         _actionButtons = {},
@@ -12944,6 +14877,8 @@ function VerificationDashboard.new(options)
     self:setControls(options.controls)
     self:setTelemetry(options.telemetry)
     self:setProgress(0)
+
+    self:_updateTimelineBadge()
 
     self:_installResponsiveHandlers()
     self:updateLayout()
@@ -13000,8 +14935,9 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             maxWidth = math.min(maxWidth, width)
             minWidth = math.min(minWidth, maxWidth)
         end
-        canvasConstraint.MaxSize = Vector2.new(math.max(0, maxWidth), math.huge)
-        canvasConstraint.MinSize = Vector2.new(math.max(0, minWidth), 0)
+        local minVector = Vector2.new(math.max(0, minWidth), 0)
+        local maxVector = Vector2.new(math.max(0, maxWidth), math.huge)
+        Util.setConstraintSize(canvasConstraint, minVector, maxVector)
     end
 
     local canvasPadding = self._canvasPadding
@@ -13072,6 +15008,58 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         self._actionsFrame.Size = self._actionsFrameDefaults.size or self._actionsFrame.Size
     end
 
+    if self._contentLayout and self._contentDefaults then
+        self._contentLayout.FillDirection = self._contentDefaults.fillDirection
+        self._contentLayout.HorizontalAlignment = self._contentDefaults.horizontalAlignment
+        self._contentLayout.VerticalAlignment = self._contentDefaults.verticalAlignment
+        self._contentLayout.Padding = self._contentDefaults.padding or self._contentLayout.Padding
+    end
+
+    if self._primaryLayout and self._primaryLayoutDefaults then
+        self._primaryLayout.Padding = self._primaryLayoutDefaults.padding or self._primaryLayout.Padding
+        self._primaryLayout.HorizontalAlignment = self._primaryLayoutDefaults.horizontalAlignment or self._primaryLayout.HorizontalAlignment
+    end
+
+    if self._secondaryLayout and self._secondaryLayoutDefaults then
+        self._secondaryLayout.Padding = self._secondaryLayoutDefaults.padding or self._secondaryLayout.Padding
+        self._secondaryLayout.HorizontalAlignment = self._secondaryLayoutDefaults.horizontalAlignment or self._secondaryLayout.HorizontalAlignment
+    end
+
+    if self._primaryColumn and self._columnDefaults then
+        self._primaryColumn.Size = self._columnDefaults.primarySize
+        self._primaryColumn.LayoutOrder = self._columnDefaults.primaryOrder or self._primaryColumn.LayoutOrder
+    end
+
+    if self._secondaryColumn and self._columnDefaults then
+        self._secondaryColumn.Size = self._columnDefaults.secondarySize
+        self._secondaryColumn.LayoutOrder = self._columnDefaults.secondaryOrder or self._secondaryColumn.LayoutOrder
+    end
+
+    if self._timelineHeaderLayout and self._timelineHeaderDefaults then
+        self._timelineHeaderLayout.HorizontalAlignment = self._timelineHeaderDefaults.horizontalAlignment or self._timelineHeaderLayout.HorizontalAlignment
+    end
+
+    if self._timelineTitle and self._timelineHeaderDefaults then
+        self._timelineTitle.TextXAlignment = self._timelineHeaderDefaults.titleAlignment or self._timelineTitle.TextXAlignment
+    end
+
+    if self._timelineStatusLabel and self._timelineHeaderDefaults then
+        self._timelineStatusLabel.TextXAlignment = self._timelineHeaderDefaults.statusAlignment or self._timelineStatusLabel.TextXAlignment
+    end
+
+    if self._timelineBadgeFrame and self._timelineBadgeDefaults then
+        self._timelineBadgeFrame.AnchorPoint = self._timelineBadgeDefaults.anchorPoint or self._timelineBadgeFrame.AnchorPoint
+        self._timelineBadgeFrame.Position = self._timelineBadgeDefaults.position or self._timelineBadgeFrame.Position
+    end
+
+    if self._insightsCard and self._insightsSizeDefaults then
+        self._insightsCard.Size = self._insightsSizeDefaults
+    end
+
+    if self._timelineCard and self._timelineSizeDefaults then
+        self._timelineCard.Size = self._timelineSizeDefaults
+    end
+
     local logoDefaults = self._logoDefaults
     if logoDefaults then
         if self._logoContainer then
@@ -13130,6 +15118,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
             headerLayout.Padding = UDim.new(0, 12)
+        end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Center
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
         end
         if self._logoContainer then
             self._logoContainer.Size = UDim2.new(1, 0, 0, 112)
@@ -13201,6 +15221,38 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
             headerLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
             headerLayout.VerticalAlignment = Enum.VerticalAlignment.Center
         end
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Vertical
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+            self._contentLayout.Padding = UDim.new(0, layoutTheme.contentSpacing or 18)
+        end
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(1, 0, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
+        end
         if self._textLayout then
             self._textLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
         end
@@ -13244,6 +15296,71 @@ function VerificationDashboard:_applyResponsiveLayout(width, bounds)
         end
         if self._headerText then
             self._headerText.Size = UDim2.new(1, -logoWidth, 1, 0)
+        end
+
+        local columnPadding = (layoutTheme and layoutTheme.contentColumnPadding) or 24
+        if self._contentLayout then
+            self._contentLayout.FillDirection = Enum.FillDirection.Horizontal
+            self._contentLayout.HorizontalAlignment = Enum.HorizontalAlignment.Center
+            self._contentLayout.VerticalAlignment = Enum.VerticalAlignment.Top
+            self._contentLayout.Padding = UDim.new(0, columnPadding)
+        end
+
+        local horizontalPadding = (layoutTheme and layoutTheme.horizontalPadding) or 0
+        local estimatedWidth = dashboardWidth - (horizontalPadding * 2)
+        if bounds and bounds.contentWidth then
+            estimatedWidth = bounds.contentWidth
+        elseif self._contentRow and self._contentRow.AbsoluteSize.X > 0 then
+            estimatedWidth = self._contentRow.AbsoluteSize.X
+        end
+
+        local minPrimary = (layoutTheme and layoutTheme.primaryColumnMinWidth) or 420
+        local minSecondary = (layoutTheme and layoutTheme.secondaryColumnMinWidth) or 320
+        estimatedWidth = math.max(estimatedWidth, minPrimary + minSecondary + columnPadding)
+        local availableWidth = math.max(estimatedWidth - columnPadding, minPrimary + minSecondary)
+        local ratio = (layoutTheme and layoutTheme.primaryColumnRatio) or 0.64
+        ratio = math.clamp(ratio, 0.48, 0.75)
+        local desiredPrimary = math.floor(availableWidth * ratio + 0.5)
+        local maxPrimary = math.max(minPrimary, availableWidth - minSecondary)
+        local primaryWidth = math.clamp(desiredPrimary, minPrimary, maxPrimary)
+        local secondaryWidth = availableWidth - primaryWidth
+        if secondaryWidth < minSecondary then
+            secondaryWidth = minSecondary
+            primaryWidth = math.max(minPrimary, availableWidth - secondaryWidth)
+        end
+        primaryWidth = math.floor(primaryWidth + 0.5)
+        secondaryWidth = math.floor(secondaryWidth + 0.5)
+        if primaryWidth + secondaryWidth > availableWidth then
+            primaryWidth = math.max(minPrimary, availableWidth - minSecondary)
+            secondaryWidth = math.max(minSecondary, availableWidth - primaryWidth)
+        end
+
+        if self._primaryColumn then
+            self._primaryColumn.Size = UDim2.new(0, primaryWidth, 0, 0)
+            self._primaryColumn.LayoutOrder = 1
+        end
+        if self._secondaryColumn then
+            self._secondaryColumn.Size = UDim2.new(0, secondaryWidth, 0, 0)
+            self._secondaryColumn.LayoutOrder = 2
+        end
+        if self._insightsCard then
+            self._insightsCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineCard then
+            self._timelineCard.Size = UDim2.new(1, 0, 0, 0)
+        end
+        if self._timelineHeaderLayout then
+            self._timelineHeaderLayout.HorizontalAlignment = Enum.HorizontalAlignment.Left
+        end
+        if self._timelineTitle then
+            self._timelineTitle.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineStatusLabel then
+            self._timelineStatusLabel.TextXAlignment = Enum.TextXAlignment.Left
+        end
+        if self._timelineBadgeFrame then
+            self._timelineBadgeFrame.AnchorPoint = Vector2.new(1, 0.5)
+            self._timelineBadgeFrame.Position = UDim2.new(1, 0, 0.5, 0)
         end
         if self._summaryLayout then
             self._summaryLayout.FillDirection = Enum.FillDirection.Horizontal
@@ -13581,6 +15698,14 @@ function VerificationDashboard:applyTheme(theme)
     local currentTheme = self._theme
     self._layoutTheme = mergeTable(DEFAULT_THEME.layout or {}, currentTheme.layout or {})
 
+    if self._contentLayout then
+        local contentPadding = self._layoutTheme.contentSpacing or 18
+        self._contentLayout.Padding = UDim.new(0, contentPadding)
+        if self._contentDefaults then
+            self._contentDefaults.padding = UDim.new(0, contentPadding)
+        end
+    end
+
     self:_stopLogoShimmer()
     self:_applyLogoTheme()
     self:_applyInsightsTheme()
@@ -13611,6 +15736,35 @@ function VerificationDashboard:applyTheme(theme)
 
     if self._progressFill then
         self._progressFill.BackgroundColor3 = currentTheme.accentColor
+    end
+
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, currentTheme.timeline or {})
+    if self._timelineTitle then
+        self._timelineTitle.Font = timelineTheme.headerFont or DEFAULT_THEME.timeline.headerFont
+        self._timelineTitle.TextSize = timelineTheme.headerTextSize or DEFAULT_THEME.timeline.headerTextSize
+        self._timelineTitle.TextColor3 = timelineTheme.headerColor or DEFAULT_THEME.timeline.headerColor
+    end
+    if self._timelineStatusLabel then
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+        self._timelineStatusLabel.TextColor3 = timelineTheme.subtitleColor or DEFAULT_THEME.timeline.subtitleColor
+    end
+    if self._timelineBadge then
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or DEFAULT_THEME.timeline.badgeTextColor
+    end
+    if self._timelineBadgeFrame then
+        self._timelineBadgeFrame.BackgroundColor3 = timelineTheme.badgeBackground or DEFAULT_THEME.timeline.badgeBackground
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+    if self._timelineBadgeStroke then
+        self._timelineBadgeStroke.Color = timelineTheme.badgeStrokeColor or DEFAULT_THEME.timeline.badgeStrokeColor
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = timelineTheme.badgeAccentColor or DEFAULT_THEME.timeline.badgeAccentColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
     end
 
     if self._telemetryGrid or self._telemetryCards then
@@ -13763,6 +15917,8 @@ function VerificationDashboard:applyTheme(theme)
     if self._actions then
         self:setActions(self._actions)
     end
+
+    self:_updateTimelineBadge()
 
     self:updateLayout(self._lastLayoutBounds)
     self:_startLogoShimmer()
@@ -13943,6 +16099,8 @@ function VerificationDashboard:reset()
     self:setProgress(0)
     self:setHeaderSummary(nil)
     self:setStatusText("Initialising AutoParry suite…")
+
+    self:_updateTimelineBadge()
 end
 
 local function resolveStyle(theme, status)
@@ -13966,6 +16124,118 @@ function VerificationDashboard:_resolveStatusColor(status)
     end
 
     return nil
+end
+
+function VerificationDashboard:_updateTimelineBadge()
+    if self._destroyed then
+        return
+    end
+
+    if not (self._timelineBadge and self._timelineStatusLabel) then
+        return
+    end
+
+    local theme = self._theme or DEFAULT_THEME
+    local timelineTheme = mergeTable(DEFAULT_THEME.timeline or {}, theme.timeline or {})
+
+    local states = self._stepStates or {}
+    local worstStatus = "pending"
+    local worstPriority = -math.huge
+    local worstDefinition
+    local activeDefinition
+    local nextPending
+    local allOk = true
+
+    for _, definition in ipairs(STEP_DEFINITIONS) do
+        local state = states[definition.id]
+        local status = state and state.status or "pending"
+        local priority = STATUS_PRIORITY[status] or 0
+
+        if status ~= "ok" then
+            allOk = false
+        end
+
+        if status == "active" and not activeDefinition then
+            activeDefinition = definition
+        end
+
+        if status == "pending" and not nextPending then
+            nextPending = definition
+        end
+
+        if priority > worstPriority then
+            worstPriority = priority
+            worstStatus = status
+            worstDefinition = definition
+        end
+    end
+
+    local badgeColor
+    local badgeText
+    local statusText
+
+    if worstStatus == "failed" then
+        badgeText = "Failure detected"
+        badgeColor = timelineTheme.badgeDangerColor or theme.failedColor
+        statusText = string.format("%s needs attention immediately.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif worstStatus == "warning" then
+        badgeText = "Warnings active"
+        badgeColor = timelineTheme.badgeWarningColor or theme.warningColor
+        statusText = string.format("%s reported unusual data.", (worstDefinition and worstDefinition.title) or "A verification stage")
+    elseif allOk and worstPriority >= (STATUS_PRIORITY.ok or 2) then
+        badgeText = "All systems ready"
+        badgeColor = timelineTheme.badgeSuccessColor or theme.okColor
+        statusText = "Every verification check has passed."
+    elseif worstStatus == "active" then
+        local focus = activeDefinition or worstDefinition or nextPending or STEP_DEFINITIONS[1]
+        badgeText = "Verification running"
+        badgeColor = timelineTheme.badgeActiveColor or theme.accentColor
+        statusText = focus and string.format("Currently checking %s.", focus.title) or "Verification checks are in progress."
+    else
+        local upcoming = nextPending or worstDefinition or STEP_DEFINITIONS[1]
+        badgeText = "Preparing checks"
+        badgeColor = timelineTheme.badgeDefaultColor or theme.accentColor
+        statusText = upcoming and string.format("Next up: %s.", upcoming.title) or "Awaiting verification updates."
+    end
+
+    if self._timelineBadge then
+        self._timelineBadge.Text = badgeText
+        self._timelineBadge.TextColor3 = timelineTheme.badgeTextColor or self._timelineBadge.TextColor3
+        self._timelineBadge.Font = timelineTheme.badgeFont or DEFAULT_THEME.timeline.badgeFont
+        self._timelineBadge.TextSize = timelineTheme.badgeTextSize or DEFAULT_THEME.timeline.badgeTextSize
+    end
+
+    if self._timelineBadgeFrame then
+        local baseBackground = timelineTheme.badgeBackground or theme.cardColor
+        local highlight = timelineTheme.badgeBackgroundHighlight or 0.16
+        self._timelineBadgeFrame.BackgroundColor3 = baseBackground:Lerp(badgeColor, highlight)
+        self._timelineBadgeFrame.BackgroundTransparency = timelineTheme.badgeBackgroundTransparency or DEFAULT_THEME.timeline.badgeBackgroundTransparency
+    end
+
+    if self._timelineBadgeAccent then
+        self._timelineBadgeAccent.BackgroundColor3 = badgeColor
+        self._timelineBadgeAccent.BackgroundTransparency = timelineTheme.badgeAccentTransparency or DEFAULT_THEME.timeline.badgeAccentTransparency
+    end
+
+    if self._timelineBadgeStroke then
+        local mix = timelineTheme.badgeStrokeMix or 0.18
+        local strokeBase = timelineTheme.badgeStrokeColor or theme.cardStrokeColor or badgeColor
+        self._timelineBadgeStroke.Color = badgeColor:Lerp(strokeBase, mix)
+        self._timelineBadgeStroke.Transparency = timelineTheme.badgeStrokeTransparency or DEFAULT_THEME.timeline.badgeStrokeTransparency
+    end
+
+    if self._timelineStatusLabel then
+        local baseStatusColor = timelineTheme.subtitleColor or self._timelineStatusLabel.TextColor3
+        local tintMix = timelineTheme.subtitleTintMix or 0.22
+        self._timelineStatusLabel.Text = statusText
+        if typeof(baseStatusColor) == "Color3" then
+            self._timelineStatusLabel.TextColor3 = baseStatusColor:Lerp(badgeColor, tintMix)
+        else
+            self._timelineStatusLabel.TextColor3 = badgeColor
+        end
+        self._timelineStatusLabel.Font = timelineTheme.subtitleFont or DEFAULT_THEME.timeline.subtitleFont
+        self._timelineStatusLabel.TextSize = timelineTheme.subtitleTextSize or DEFAULT_THEME.timeline.subtitleTextSize
+    end
 end
 
 function VerificationDashboard:_applyStepState(id, status, message, tooltip)
@@ -14034,6 +16304,8 @@ function VerificationDashboard:_applyStepState(id, status, message, tooltip)
     end
 
     step.state = status
+
+    self:_updateTimelineBadge()
 end
 
 local function formatElapsed(seconds)
@@ -14459,6 +16731,7 @@ return VerificationDashboard
 
 ]===],
     ['loader.lua'] = [===[
+-- loader.lua (sha1: c36665c135075f84774e87d86018299db5172ba1)
 -- mikkel32/AutoParry : loader.lua  (Lua / Luau)
 -- selene: allow(global_usage)
 -- Remote bootstrapper that fetches repository modules, exposes a cached
@@ -14746,6 +17019,7 @@ return bootstrap(...)
 
 ]===],
     ['tests/perf/config.lua'] = [===[
+-- tests/perf/config.lua (sha1: f597fabeb13cfe072d0748b9fa004a3a31be6067)
 return {
     -- Number of frames to run before samples are collected.
     warmupFrames = 8,
@@ -14777,6 +17051,7 @@ return {
 
 ]===],
     ['tests/fixtures/ui_snapshot.json'] = [===[
+-- tests/fixtures/ui_snapshot.json (sha1: 5e0eec5321e9dc15c667ae7f755a4c59040ecc01)
 {
   "screenGui": {
     "name": "AutoParryUI",

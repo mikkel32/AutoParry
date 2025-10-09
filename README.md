@@ -301,18 +301,25 @@ possible so syntax or runtime issues surface during local development instead of
 in-game. To iterate confidently:
 
 1. **Install tooling** — ensure the [Rojo CLI](https://rojo.space/),
-   [`run-in-roblox`](https://github.com/rojo-rbx/run-in-roblox), Python 3.8+, and
-   a recent Rust toolchain (for the Selene linter) are available on your PATH.
-2. **Lint with Selene** — run `selene .` from the repository root to verify Luau
-   syntax and Roblox-specific globals using the stricter configuration provided
-   in `selene.toml`. The repository vendors the `lua51.yml` and `luau.yml`
-   standard library descriptions so Selene works offline.
-3. **Refresh the harness place** — execute `./tests/build-place.sh` to regenerate
-   `tests/fixtures/AutoParrySourceMap.lua` (pulling every module from `src/`) and
-   rebuild the automated Blade Ball test place.
-4. **Drive automation** — use `run-in-roblox --place tests/AutoParryHarness.rbxl
-   --script tests/spec.server.lua` to run the full spec suite, or switch the
-   script path for smoke/performance scenarios.
+   [`run-in-roblox`](https://github.com/rojo-rbx/run-in-roblox), Python 3.8+, the
+   [Stylua](https://github.com/JohnnyMorganz/StyLua) formatter, the
+   [Selene](https://github.com/Kampfkarren/selene) linter, and
+   [`luau-analyze`](https://github.com/Roblox/luau) are available on your PATH.
+2. **Run static quality gates** — execute
+   `python tests/run_harness.py --suite static` (or run `stylua --check`,
+   `selene`, and `luau-analyze` individually) to format-check, lint, and type
+   analyse the Luau sources. The repository vendors the `lua51.yml` and
+   `luau.yml` standard library descriptions so these tools work offline.
+3. **Refresh the harness place** — execute `./tests/build-place.sh` (or let
+   `python tests/run_harness.py` rebuild automatically) to regenerate
+   `tests/fixtures/AutoParrySourceMap.lua` and compile the Blade Ball test
+   place.
+4. **Drive automation** — call `python tests/run_harness.py --suite all` for the
+   orchestrated flow (optionally with `--repeat` to smoke out flaky specs), or
+   invoke `run-in-roblox --place tests/AutoParryHarness.rbxl --script
+   tests/spec.server.lua` directly when you need fine-grained control over the
+   script entrypoint.
 
-The CI workflow mirrors this process by running Selene before spinning up the
-Roblox automation harness, so local runs stay aligned with the gated checks.
+The CI workflow mirrors this process by running the static quality gates before
+spinning up the Roblox automation harness, so local runs stay aligned with the
+gated checks.

@@ -44,6 +44,9 @@
           "PingSpec": {
             "$path": "../autoparry/ping.spec.lua"
           },
+          "ParryLoopSpec": {
+            "$path": "../autoparry/parry_loop.spec.lua"
+          },
           "UiHotkeySpec": {
             "$path": "../ui/hotkey.spec.lua"
           },

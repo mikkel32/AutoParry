@@ -49,68 +49,6 @@ end
 
 Harness.Scheduler = Scheduler
 
-local function createContainer(scheduler, name)
-    local children = {}
-    local container = { Name = name }
-
-    function container:Add(child)
-        children[child.Name] = child
-        if type(child._mockSetParent) == "function" then
-            child:_mockSetParent(container)
-        else
-            child.Parent = container
-        end
-        return child
-    end
-
-    function container:Remove(childName)
-        local child = children[childName]
-        if not child then
-            return nil
-        end
-
-        children[childName] = nil
-
-        if type(child._mockSetParent) == "function" then
-            child:_mockSetParent(nil)
-        else
-            child.Parent = nil
-        end
-
-        return child
-    end
-
-    function container:FindFirstChild(childName)
-        return children[childName]
-    end
-
-    function container:WaitForChild(childName, timeout)
-        timeout = timeout or math.huge
-        local start = scheduler:clock()
-        local child = children[childName]
-        while not child do
-            if scheduler:clock() - start >= timeout then
-                break
-            end
-            scheduler:wait()
-            child = children[childName]
-        end
-        return child
-    end
-
-    function container:GetChildren()
-        local result = {}
-        for _, child in pairs(children) do
-            table.insert(result, child)
-        end
-        return result
-    end
-
-    return container
-end
-
-Harness.createContainer = createContainer
-
 local function createSignal()
     local handlers = {}
     local nextId = 0
@@ -144,6 +82,85 @@ local function createSignal()
 
     return signal
 end
+
+local function createContainer(scheduler, name)
+    local children = {}
+    local container = { Name = name }
+    local childAdded = createSignal()
+    local childRemoved = createSignal()
+    local destroyingSignal = createSignal()
+
+    container.ChildAdded = childAdded
+    container.ChildRemoved = childRemoved
+    container.Destroying = destroyingSignal
+
+    function container:Add(child)
+        children[child.Name] = child
+        if type(child._mockSetParent) == "function" then
+            child:_mockSetParent(container)
+        else
+            child.Parent = container
+        end
+        childAdded:Fire(child)
+        return child
+    end
+
+    function container:Remove(childName)
+        local child = children[childName]
+        if not child then
+            return nil
+        end
+
+        children[childName] = nil
+
+        if type(child._mockSetParent) == "function" then
+            child:_mockSetParent(nil)
+        else
+            child.Parent = nil
+        end
+
+        childRemoved:Fire(child)
+        return child
+    end
+
+    function container:FindFirstChild(childName)
+        return children[childName]
+    end
+
+    function container:WaitForChild(childName, timeout)
+        timeout = timeout or math.huge
+        local start = scheduler:clock()
+        local child = children[childName]
+        while not child do
+            if scheduler:clock() - start >= timeout then
+                break
+            end
+            scheduler:wait()
+            child = children[childName]
+        end
+        return child
+    end
+
+    function container:GetChildren()
+        local result = {}
+        for _, child in pairs(children) do
+            table.insert(result, child)
+        end
+        return result
+    end
+
+    function container:_mockDestroy()
+        destroyingSignal:Fire(container)
+        for key in pairs(children) do
+            children[key] = nil
+        end
+    end
+
+    return container
+end
+
+Harness.createContainer = createContainer
+Harness.createSignal = createSignal
 
 function Harness.createRemote(options)
     options = options or {}
@@ -287,18 +304,28 @@ function Harness.fireRemoteClient(remote, ...)
 end
 
 function Harness.createRunService()
-    local heartbeat = {}
+    local function createStubSignal()
+        local signal = {}
 
-    function heartbeat:Connect()
-        return {
-            Disconnect = function() end,
-            disconnect = function(connection)
-                connection:Disconnect()
-            end,
-        }
+        function signal:Connect()
+            local connection = {}
+
+            function connection:Disconnect() end
+
+            connection.disconnect = connection.Disconnect
+
+            return connection
+        end
+
+        function signal:Wait() end
+
+        return signal
     end
 
-    return { Heartbeat = heartbeat }
+    local heartbeat = createStubSignal()
+    local preRender = createStubSignal()
+
+    return { Heartbeat = heartbeat, PreRender = preRender }
 end
 
 local function copyResponse(response)
@@ -429,6 +456,7 @@ function Harness.loadAutoparry(options)
     local originalWait = task.wait
     local originalClock = os.clock
     local originalGetService = game.GetService
+    local originalFindService = game.FindService
     local previousRequire = rawget(_G, "ARequire")
 
     task.wait = function(duration)
@@ -448,6 +476,20 @@ function Harness.loadAutoparry(options)
         return originalGetService(self, name)
     end
 
+    game.FindService = function(self, name)
+        local stub = services[name]
+        if stub ~= nil then
+            return stub
+        end
+        if originalFindService then
+            local ok, result = pcall(originalFindService, self, name)
+            if ok then
+                return result
+            end
+        end
+        return nil
+    end
+
     rawset(_G, "ARequire", createVirtualRequire())
 
     local chunk, err = loadstring(SourceMap["src/core/autoparry.lua"], "=src/core/autoparry.lua")
@@ -458,6 +500,11 @@ function Harness.loadAutoparry(options)
         -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
         game.GetService = originalGetService
+        if originalFindService == nil then
+            game.FindService = nil
+        else
+            game.FindService = originalFindService
+        end
         if previousRequire == nil then
             rawset(_G, "ARequire", nil)
         else
