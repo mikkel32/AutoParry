@@ -172,6 +172,7 @@ class SuiteConfig:
     requires_place: Union[bool, Callable[[HarnessContext], bool]] = False
     repeatable: bool = True
     requires_source_map: Union[bool, Callable[[HarnessContext], bool]] = False
+    env_factory: Optional[Callable[[HarnessContext], Dict[str, str]]] = None
 
 
 def suite_requires_place(config: SuiteConfig, ctx: HarnessContext) -> bool:
@@ -221,6 +222,44 @@ def _spec_suite() -> SuiteConfig:
         command_factory=factory,
         requires_place=lambda ctx: ctx.spec_engine == "roblox",
         requires_source_map=True,
+    )
+
+
+def _telemetry_suite() -> SuiteConfig:
+
+    def factory(ctx: HarnessContext) -> Sequence[str]:
+        if ctx.spec_engine != "lune":
+            raise RuntimeError("telemetry suite requires --spec-engine lune")
+        exe = ctx.lune_executable or "lune"
+        return [exe, "run", str(SPEC_RUNNER_SCRIPT), "--root", str(ROOT)]
+
+    def env_factory(_ctx: HarnessContext) -> Dict[str, str]:
+        return {"SPEC_FILTER": "telemetry"}
+
+    return SuiteConfig(
+        description="Telemetry smoke test that captures schedule/press/latency timeline artifacts.",
+        command_factory=factory,
+        requires_source_map=True,
+        env_factory=env_factory,
+    )
+
+
+def _filtered_lune_suite(filter_name: str, description: str) -> SuiteConfig:
+
+    def factory(ctx: HarnessContext) -> Sequence[str]:
+        if ctx.spec_engine != "lune":
+            raise RuntimeError(f"{filter_name} suite requires --spec-engine lune")
+        exe = ctx.lune_executable or "lune"
+        return [exe, "run", str(SPEC_RUNNER_SCRIPT), "--root", str(ROOT)]
+
+    def env_factory(_ctx: HarnessContext) -> Dict[str, str]:
+        return {"SPEC_FILTER": filter_name}
+
+    return SuiteConfig(
+        description=description,
+        command_factory=factory,
+        requires_source_map=True,
+        env_factory=env_factory,
     )
 
 
@@ -282,6 +321,15 @@ SUITES: Dict[str, SuiteConfig] = {
     "smoke": _roblox_suite(
         TESTS_DIR / "init.server.lua",
         "Bootstrap smoke test to ensure the loader mounts correctly.",
+    ),
+    "telemetry": _telemetry_suite(),
+    "auto-tuning": _filtered_lune_suite(
+        "AutoTuning",
+        "Auto-tuning spec verifying adaptive telemetry configuration and dry-run behaviour.",
+    ),
+    "insights": _filtered_lune_suite(
+        "Insights",
+        "Telemetry insights spec exercising diagnostics summaries.",
     ),
     "spec": _spec_suite(),
     "perf": _roblox_suite(
@@ -517,10 +565,10 @@ class SuiteRunner:
         self._artifacts[name] = artifact_path
         print(f"[run-harness] Captured artifact {name} → {artifact_path.relative_to(ROOT)}")
 
-    def _handle_line(self, line: str) -> None:
+    def _handle_line(self, line: str) -> Optional[str]:
         stripped = line.strip()
         if not stripped:
-            return
+            return None
 
         for pattern, name_template in ARTIFACT_PATTERNS:
             match = pattern.match(stripped)
@@ -533,21 +581,26 @@ class SuiteRunner:
                 else:
                     artifact_name = name_template
                 self._write_artifact(artifact_name, payload)
-                return
+                return ""
 
         match = PASS_PATTERN.match(stripped)
         if match:
-            self._passed.append(match.group(1))
-            return
+            message = match.group(1)
+            self._passed.append(message)
+            return None
 
         match = FAIL_PATTERN.match(stripped)
         if match:
-            self._failed.append(match.group(1))
-            return
+            message = match.group(1)
+            self._failed.append(message)
+            return None
 
         match = SUMMARY_PATTERN.match(stripped)
         if match:
             self._summary.append(match.group(1))
+            return None
+
+        return None
 
     def run(self, env: Optional[Dict[str, str]] = None) -> SuiteResult:
         LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -570,8 +623,11 @@ class SuiteRunner:
             for raw_line in process.stdout:
                 log_file.write(raw_line)
                 log_file.flush()
-                print(raw_line, end="")
-                self._handle_line(raw_line)
+                replacement = self._handle_line(raw_line)
+                if replacement is None:
+                    print(raw_line, end="")
+                elif replacement:
+                    print(replacement, end="")
 
             process.wait()
             returncode = process.returncode or 0
@@ -582,6 +638,10 @@ class SuiteRunner:
         print(
             f"[run-harness] ◀ {self.display_name} {status} in {duration:.1f}s — captured {artifact_names}.\n"
         )
+
+        if not self._summary and (self._passed or self._failed):
+            total = len(self._passed) + len(self._failed)
+            self._summary.append(f"{len(self._passed)}/{total} test cases passed")
 
         return SuiteResult(
             name=self.base_name,
@@ -881,9 +941,91 @@ def summarise_accuracy_result(result: SuiteResult) -> None:
         result.summary_lines.extend(scenario_notes)
 
 
+def summarise_telemetry_result(result: SuiteResult) -> None:
+    if result.skipped:
+        return
+
+    artifact_path = result.artifacts.get("telemetry_timeline")
+    if not artifact_path:
+        return
+
+    try:
+        with artifact_path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except (OSError, json.JSONDecodeError) as err:
+        result.summary_lines.append(f"telemetry artifact parse failed: {err}")
+        return
+
+    if not isinstance(payload, dict):
+        result.summary_lines.append("telemetry artifact payload not a JSON object")
+        return
+
+    events = payload.get("events") or []
+
+    def find_event(event_type: str) -> Optional[Dict[str, Any]]:
+        for entry in events:
+            if isinstance(entry, dict) and entry.get("type") == event_type:
+                return entry
+        return None
+
+    schedule_event = find_event("schedule")
+    press_event = find_event("press")
+    latency_event = find_event("latency-sample")
+
+    if schedule_event and press_event:
+        lead = schedule_event.get("lead")
+        delta_ms = None
+        if isinstance(schedule_event.get("time"), (int, float)) and isinstance(
+            press_event.get("time"), (int, float)
+        ):
+            delta_ms = (press_event["time"] - schedule_event["time"]) * 1000
+
+        parts: List[str] = []
+        if isinstance(lead, (int, float)):
+            parts.append(f"lead {lead * 1000:.0f}ms")
+        if delta_ms is not None:
+            parts.append(f"press Δ {delta_ms:.0f}ms")
+        if parts:
+            result.summary_lines.append("Schedule vs press: " + ", ".join(parts))
+
+    if latency_event and isinstance(latency_event.get("value"), (int, float)):
+        latency_ms = latency_event["value"] * 1000
+        source = latency_event.get("source") or "unknown"
+        result.summary_lines.append(f"Latency sample: {latency_ms:.0f}ms ({source})")
+
+    parry_entry = payload.get("parry")
+    if isinstance(parry_entry, dict):
+        timestamp = parry_entry.get("timestamp")
+        if isinstance(timestamp, (int, float)):
+            ball_name = parry_entry.get("ballName") or "ball"
+            result.summary_lines.append(
+                f"Parry '{ball_name}' recorded at {timestamp:.3f}s"
+            )
+    else:
+        parry_log = payload.get("parryLog")
+        if isinstance(parry_log, list) and parry_log:
+            first = parry_log[0]
+            if isinstance(first, dict):
+                timestamp = first.get("timestamp")
+                ball = first.get("ball")
+                if isinstance(timestamp, (int, float)):
+                    if isinstance(ball, dict):
+                        ball_name = ball.get("name") or "ball"
+                    else:
+                        ball_name = "ball"
+                    result.summary_lines.append(
+                        f"Parry '{ball_name}' recorded at {timestamp:.3f}s"
+                    )
+
+    history = payload.get("snapshot", {}).get("history")
+    if isinstance(history, list):
+        result.summary_lines.append(f"Telemetry history captured {len(history)} event(s)")
+
+
 SUMMARY_HOOKS: Dict[str, Tuple[Callable[[SuiteResult], None], ...]] = {
     "perf": (summarise_perf_result,),
     "accuracy": (summarise_accuracy_result,),
+    "telemetry": (summarise_telemetry_result,),
 }
 
 
@@ -1099,8 +1241,46 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 )
                 continue
 
+            suite_env = env
+            if config.env_factory is not None:
+                try:
+                    overrides = config.env_factory(harness_ctx)
+                except Exception as err:
+                    print(
+                        f"[run-harness] Failed to resolve environment for {display_name}: {err}",
+                        file=sys.stderr,
+                    )
+                    results_by_suite.setdefault(suite_name, []).append(
+                        SuiteResult(
+                            name=suite_name,
+                            display_name=display_name,
+                            iteration=iteration,
+                            command=command,
+                            returncode=1,
+                            duration=0.0,
+                            log_path=None,
+                            artifacts={},
+                            summary_lines=[f"environment resolution failed: {err}"],
+                            skipped=True,
+                            optional=config.optional,
+                        )
+                    )
+                    continue
+
+                if overrides:
+                    suite_env = env.copy()
+                    for key, value in overrides.items():
+                        if value is None:
+                            suite_env.pop(key, None)
+                        else:
+                            suite_env[str(key)] = str(value)
+
             if args.dry_run:
-                print(f"[run-harness] Would run {display_name}:", " ".join(command))
+                env_note = ""
+                if suite_env is not env:
+                    diff_bits = [f"{k}={v}" for k, v in overrides.items()]
+                    env_note = f" with env {' '.join(diff_bits)}" if diff_bits else ""
+                print(f"[run-harness] Would run {display_name}{env_note}:", " ".join(command))
                 continue
 
             if not command:
@@ -1169,7 +1349,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                 optional=config.optional,
             )
             try:
-                result = runner.run(env=env)
+                result = runner.run(env=suite_env)
             except RuntimeError as err:
                 print(f"[run-harness] {err}", file=sys.stderr)
                 return 1

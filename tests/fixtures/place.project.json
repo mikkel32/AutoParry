@@ -21,6 +21,12 @@
         "Harness": {
           "$path": "../autoparry/harness.lua"
         },
+        "Context": {
+          "$path": "../autoparry/Context.lua"
+        },
+        "TelemetryTestUtils": {
+          "$path": "../autoparry/telemetry_test_utils.lua"
+        },
         "Specs": {
           "$className": "Folder",
           "ApiMainSpec": {
@@ -47,6 +53,12 @@
           "ParryLoopSpec": {
             "$path": "../autoparry/parry_loop.spec.lua"
           },
+          "SmartTuningSpec": {
+            "$path": "../autoparry/smart_tuning.spec.lua"
+          },
+          "DiagnosticsSpec": {
+            "$path": "../autoparry/diagnostics.spec.lua"
+          },
           "UiHotkeySpec": {
             "$path": "../ui/hotkey.spec.lua"
           },
@@ -55,6 +67,18 @@
           },
           "UiSnapshotSpec": {
             "$path": "../ui/snapshot.spec.lua"
+          },
+          "TelemetrySpec": {
+            "$path": "../autoparry/telemetry.spec.lua"
+          },
+          "TelemetryTuningSpec": {
+            "$path": "../autoparry/telemetry_tuning.spec.lua"
+          },
+          "TelemetryInsightsSpec": {
+            "$path": "../autoparry/telemetry_insights.spec.lua"
+          },
+          "AutoTuningSpec": {
+            "$path": "../autoparry/auto_tuning.spec.lua"
           }
         }
       }
