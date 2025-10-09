@@ -4,3 +4,5 @@ tests/artifacts/*.json
 tests/AutoParryHarness.rbxl
 # Spec output logs generated during CI
 tests/spec-output.log
+# Downloaded helper binaries
+tests/tools/bin/

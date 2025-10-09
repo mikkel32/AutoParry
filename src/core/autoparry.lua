@@ -22,6 +22,11 @@ local Verification = Require and Require("src/core/verification.lua") or require
 local ImmortalModule = Require and Require("src/core/immortal.lua") or require(script.Parent.immortal)
 
 local DEFAULT_CONFIG = {
+    cooldown = 0.1,
+    minSpeed = 10,
+    pingOffset = 0.05,
+    minTTI = 0.12,
+    maxTTI = 0.55,
     -- public API configuration that remains relevant for the PERFECT-PARRY rule
     safeRadius = 10,
     curvatureLeadScale = 0.12,
@@ -1547,14 +1552,24 @@ local function removePlayerGuiUi()
         return
     end
 
-    local playerGui = player:FindFirstChildOfClass("PlayerGui")
+    local playerGui
+    local finder = player.FindFirstChildOfClass or player.FindFirstChildWhichIsA
+    if typeof(finder) == "function" then
+        local ok, result = pcall(finder, player, "PlayerGui")
+        if ok then
+            playerGui = result
+        end
+    end
+
     if not playerGui then
         return
     end
 
-    local legacyScreen = playerGui:FindFirstChild("AutoParryF_UI")
-    if legacyScreen then
-        legacyScreen:Destroy()
+    if typeof(playerGui.FindFirstChild) == "function" then
+        local ok, legacyScreen = pcall(playerGui.FindFirstChild, playerGui, "AutoParryF_UI")
+        if ok and legacyScreen then
+            legacyScreen:Destroy()
+        end
     end
 end
 
@@ -1584,9 +1599,22 @@ local function ensureUi()
         return
     end
 
-    local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
-    if not playerGui then
-        playerGui = LocalPlayer:WaitForChild("PlayerGui", 5)
+    local playerGui
+    if LocalPlayer then
+        local finder = LocalPlayer.FindFirstChildOfClass or LocalPlayer.FindFirstChildWhichIsA
+        if typeof(finder) == "function" then
+            local ok, result = pcall(finder, LocalPlayer, "PlayerGui")
+            if ok then
+                playerGui = result
+            end
+        end
+
+        if not playerGui and typeof(LocalPlayer.WaitForChild) == "function" then
+            local okWait, result = pcall(LocalPlayer.WaitForChild, LocalPlayer, "PlayerGui", 5)
+            if okWait then
+                playerGui = result
+            end
+        end
     end
 
     if not playerGui then
@@ -2254,15 +2282,27 @@ local function beginInitialization()
             safeDisconnect(characterAddedConnection)
             safeDisconnect(characterRemovingConnection)
 
-            characterAddedConnection = LocalPlayer.CharacterAdded:Connect(handleCharacterAdded)
-            characterRemovingConnection = LocalPlayer.CharacterRemoving:Connect(handleCharacterRemoving)
+            local characterAddedSignal = LocalPlayer.CharacterAdded
+            local characterRemovingSignal = LocalPlayer.CharacterRemoving
+
+            if characterAddedSignal and typeof(characterAddedSignal.Connect) == "function" then
+                characterAddedConnection = characterAddedSignal:Connect(handleCharacterAdded)
+            else
+                characterAddedConnection = nil
+            end
+
+            if characterRemovingSignal and typeof(characterRemovingSignal.Connect) == "function" then
+                characterRemovingConnection = characterRemovingSignal:Connect(handleCharacterRemoving)
+            else
+                characterRemovingConnection = nil
+            end
 
             local currentCharacter = LocalPlayer.Character
             if currentCharacter then
                 updateCharacter(currentCharacter)
-            else
+            elseif characterAddedSignal and typeof(characterAddedSignal.Wait) == "function" then
                 local okChar, char = pcall(function()
-                    return LocalPlayer.CharacterAdded:Wait()
+                    return characterAddedSignal:Wait()
                 end)
                 if okChar and char then
                     updateCharacter(char)
@@ -3056,6 +3096,21 @@ local function ensureLoop()
 end
 
 local validators = {
+    cooldown = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    minSpeed = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    pingOffset = function(value)
+        return typeof(value) == "number"
+    end,
+    minTTI = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
+    maxTTI = function(value)
+        return typeof(value) == "number" and value >= 0
+    end,
     safeRadius = function(value)
         return typeof(value) == "number" and value >= 0
     end,
@@ -3258,6 +3313,50 @@ end
 
 function AutoParry.getLastParryBroadcastTime()
     return state.lastBroadcast
+end
+
+function AutoParry.getSmartPressState()
+    ensureInitialization()
+
+    local now = os.clock()
+    local snapshot = {
+        ballId = scheduledPressState.ballId,
+        pressAt = scheduledPressState.pressAt,
+        predictedImpact = scheduledPressState.predictedImpact,
+        lead = scheduledPressState.lead,
+        slack = scheduledPressState.slack,
+        reason = scheduledPressState.reason,
+        lastUpdate = scheduledPressState.lastUpdate,
+        sampleTime = now,
+        latency = activationLatencyEstimate,
+        remoteLatencyActive = state.remoteEstimatorActive,
+        latencySamples = cloneTable(latencySamples),
+        pendingLatencyPresses = cloneTable(pendingLatencyPresses),
+    }
+
+    if scheduledPressState.lastUpdate and scheduledPressState.lastUpdate > 0 then
+        snapshot.timeSinceUpdate = now - scheduledPressState.lastUpdate
+    end
+
+    local ballId = scheduledPressState.ballId
+    if ballId then
+        local telemetry = telemetryStates[ballId]
+        if telemetry then
+            snapshot.telemetry = {
+                lastUpdate = telemetry.lastUpdate,
+                triggerTime = telemetry.triggerTime,
+                latencySampled = telemetry.latencySampled,
+            }
+        end
+    end
+
+    if snapshot.pressAt and snapshot.pressAt > 0 then
+        snapshot.pressEta = math.max(snapshot.pressAt - now, 0)
+    else
+        snapshot.pressEta = nil
+    end
+
+    return snapshot
 end
 
 function AutoParry.onInitStatus(callback)
