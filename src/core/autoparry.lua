@@ -4831,6 +4831,229 @@ local function computeBallDebug(
     )
 end
 
+local function buildBallKinematics(ball, playerPosition, telemetry, safeRadius, now)
+    local context = {
+        safeRadius = safeRadius,
+    }
+
+    local previousUpdate = telemetry.lastUpdate or now
+    local dt = now - previousUpdate
+    if not isFiniteNumber(dt) or dt <= 0 then
+        dt = 1 / 240
+    end
+    dt = math.clamp(dt, 1 / 240, 0.5)
+    telemetry.lastUpdate = now
+    context.dt = dt
+
+    local ballPosition = ball.Position
+    local relative = ballPosition - playerPosition
+    local distance = relative.Magnitude
+    local unit = Vector3.zero
+    if distance > EPSILON then
+        unit = relative / distance
+    end
+
+    context.ballPosition = ballPosition
+    context.relative = relative
+    context.distance = distance
+    context.unit = unit
+
+    local d0 = distance - safeRadius
+    context.d0 = d0
+
+    local rawVelocity = Vector3.zero
+    local lastPosition = telemetry.lastPosition
+    if lastPosition then
+        rawVelocity = (ballPosition - lastPosition) / dt
+    end
+    telemetry.lastPosition = ballPosition
+    context.rawVelocity = rawVelocity
+
+    local rawAcceleration = Vector3.zero
+    local lastVelocity = telemetry.lastVelocity
+    if lastVelocity then
+        rawAcceleration = (rawVelocity - lastVelocity) / dt
+    end
+    telemetry.lastVelocity = rawVelocity
+    context.rawAcceleration = rawAcceleration
+
+    local rawJerk = Vector3.zero
+    local lastAcceleration = telemetry.lastAcceleration
+    if lastAcceleration then
+        rawJerk = (rawAcceleration - lastAcceleration) / dt
+    end
+    telemetry.lastAcceleration = rawAcceleration
+    context.rawJerk = rawJerk
+
+    local velocity = emaVector(telemetry.velocity, rawVelocity, SMOOTH_ALPHA)
+    telemetry.velocity = velocity
+    context.velocity = velocity
+    context.velocityMagnitude = velocity.Magnitude
+
+    local acceleration = emaVector(telemetry.acceleration, rawAcceleration, SMOOTH_ALPHA)
+    telemetry.acceleration = acceleration
+    context.acceleration = acceleration
+
+    local jerk = emaVector(telemetry.jerk, rawJerk, SMOOTH_ALPHA)
+    telemetry.jerk = jerk
+    context.jerk = jerk
+
+    local vNorm2 = velocity:Dot(velocity)
+    if vNorm2 < EPSILON then
+        vNorm2 = EPSILON
+    end
+    context.vNorm2 = vNorm2
+
+    local rawSpeedSq = rawVelocity:Dot(rawVelocity)
+    context.rawSpeedSq = rawSpeedSq
+
+    local rawSpeed = rawVelocity.Magnitude
+    context.rawSpeed = rawSpeed
+
+    local rawKappa = 0
+    if rawSpeed > EPSILON then
+        rawKappa = rawVelocity:Cross(rawAcceleration).Magnitude / math.max(rawSpeedSq * rawSpeed, EPSILON)
+    end
+    context.rawKappa = rawKappa
+
+    local filteredKappaRaw = emaScalar(telemetry.kappa, rawKappa, KAPPA_ALPHA)
+    local filteredKappa, kappaOverflow = clampWithOverflow(filteredKappaRaw, PHYSICS_LIMITS.curvature)
+    telemetry.kappa = filteredKappa
+    context.filteredKappa = filteredKappa
+    context.kappaOverflow = kappaOverflow
+
+    local dkappaRaw = 0
+    if telemetry.lastRawKappa ~= nil then
+        dkappaRaw = (rawKappa - telemetry.lastRawKappa) / math.max(dt, EPSILON)
+    end
+    telemetry.lastRawKappa = rawKappa
+    context.dkappaRaw = dkappaRaw
+
+    local filteredDkappaRaw = emaScalar(telemetry.dkappa, dkappaRaw, DKAPPA_ALPHA)
+    local filteredDkappa, dkappaOverflow = clampWithOverflow(filteredDkappaRaw, PHYSICS_LIMITS.curvatureRate)
+    telemetry.dkappa = filteredDkappa
+    context.filteredDkappa = filteredDkappa
+    context.dkappaOverflow = dkappaOverflow
+
+    local rawVr = -unit:Dot(rawVelocity)
+    context.rawVr = rawVr
+
+    local filteredVr = emaScalar(telemetry.filteredVr, -unit:Dot(velocity), SMOOTH_ALPHA)
+    telemetry.filteredVr = filteredVr
+    context.filteredVr = filteredVr
+
+    local vrSign = 0
+    if filteredVr > VR_SIGN_EPSILON then
+        vrSign = 1
+    elseif filteredVr < -VR_SIGN_EPSILON then
+        vrSign = -1
+    end
+    context.vrSign = vrSign
+
+    if vrSign ~= 0 then
+        local previousSign = telemetry.lastVrSign
+        if previousSign and previousSign ~= 0 and previousSign ~= vrSign then
+            local flips = telemetry.vrSignFlips
+            flips[#flips + 1] = { time = now, sign = vrSign }
+        end
+        telemetry.lastVrSign = vrSign
+    end
+    trimHistory(telemetry.vrSignFlips, now - OSCILLATION_HISTORY_SECONDS)
+
+    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
+    context.filteredArEstimate = filteredArEstimate
+    local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
+    local filteredAr, arOverflow = clampWithOverflow(filteredArRaw, PHYSICS_LIMITS.radialAcceleration)
+    telemetry.filteredAr = filteredAr
+    context.filteredAr = filteredAr
+    context.arOverflow = arOverflow
+
+    local dotVA = velocity:Dot(acceleration)
+    context.dotVA = dotVA
+
+    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
+    context.filteredJrEstimate = filteredJrEstimate
+    local filteredJrRaw = emaScalar(telemetry.filteredJr, filteredJrEstimate, SMOOTH_ALPHA)
+    local filteredJr, jrOverflow = clampWithOverflow(filteredJrRaw, PHYSICS_LIMITS.radialJerk)
+    telemetry.filteredJr = filteredJr
+    context.filteredJr = filteredJr
+    context.jrOverflow = jrOverflow
+
+    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
+    context.rawAr = rawAr
+
+    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
+    context.rawJr = rawJr
+
+    local filteredD = emaScalar(telemetry.filteredD, d0, SMOOTH_ALPHA)
+    telemetry.filteredD = filteredD
+    context.filteredD = filteredD
+
+    local d0Delta = 0
+    if telemetry.lastD0 ~= nil then
+        d0Delta = d0 - telemetry.lastD0
+    end
+    telemetry.lastD0 = d0
+    telemetry.lastD0Delta = d0Delta
+    local d0History = telemetry.d0DeltaHistory
+    d0History[#d0History + 1] = { time = now, delta = math.abs(d0Delta) }
+    trimHistory(d0History, now - OSCILLATION_HISTORY_SECONDS)
+    context.d0Delta = d0Delta
+
+    updateRollingStat(telemetry.statsD, d0 - filteredD)
+    updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
+    updateRollingStat(telemetry.statsAr, rawAr - filteredAr)
+    updateRollingStat(telemetry.statsJr, rawJr - filteredJr)
+
+    local sigmaD = getRollingStd(telemetry.statsD, SIGMA_FLOORS.d)
+    local sigmaVr = getRollingStd(telemetry.statsVr, SIGMA_FLOORS.vr)
+    local sigmaAr = getRollingStd(telemetry.statsAr, SIGMA_FLOORS.ar)
+    local sigmaJr = getRollingStd(telemetry.statsJr, SIGMA_FLOORS.jr)
+
+    local sigmaArExtraSq = 0
+    if arOverflow > 0 then
+        sigmaArExtraSq += arOverflow * arOverflow
+    end
+    if kappaOverflow and kappaOverflow > 0 then
+        local extra = kappaOverflow * vNorm2
+        sigmaArExtraSq += extra * extra
+    end
+
+    local sigmaArOverflow = 0
+    if sigmaArExtraSq > 0 then
+        sigmaArOverflow = math.sqrt(sigmaArExtraSq)
+        sigmaAr = math.sqrt(sigmaAr * sigmaAr + sigmaArExtraSq)
+    end
+
+    local sigmaJrExtraSq = 0
+    if jrOverflow > 0 then
+        sigmaJrExtraSq += jrOverflow * jrOverflow
+    end
+    if kappaOverflow and kappaOverflow > 0 then
+        local extra = 2 * kappaOverflow * math.abs(dotVA)
+        sigmaJrExtraSq += extra * extra
+    end
+    if dkappaOverflow and dkappaOverflow > 0 then
+        local extra = dkappaOverflow * vNorm2
+        sigmaJrExtraSq += extra * extra
+    end
+
+    local sigmaJrOverflow = 0
+    if sigmaJrExtraSq > 0 then
+        sigmaJrOverflow = math.sqrt(sigmaJrExtraSq)
+        sigmaJr = math.sqrt(sigmaJr * sigmaJr + sigmaJrExtraSq)
+    end
+
+    context.sigmaD = sigmaD
+    context.sigmaVr = sigmaVr
+    context.sigmaAr = sigmaAr
+    context.sigmaJr = sigmaJr
+    context.sigmaArOverflow = sigmaArOverflow
+    context.sigmaJrOverflow = sigmaJrOverflow
+
+    return context
+end
+
 local function renderLoop()
     if initialization.destroyed then
         clearScheduledPress(nil, "destroyed")
@@ -4899,175 +5122,23 @@ local function renderLoop()
     end
 
     local telemetry = ensureTelemetry(ballId, now)
-    local previousUpdate = telemetry.lastUpdate or now
-    local dt = now - previousUpdate
-    if not isFiniteNumber(dt) or dt <= 0 then
-        dt = 1 / 240
-    end
-    dt = math.clamp(dt, 1 / 240, 0.5)
-    telemetry.lastUpdate = now
-
-    local ballPosition = ball.Position
-    local playerPosition = RootPart.Position
-    local relative = ballPosition - playerPosition
-    local distance = relative.Magnitude
-    local unit = Vector3.zero
-    if distance > EPSILON then
-        unit = relative / distance
-    end
-
     local safeRadius = config.safeRadius or 0
-    local d0 = distance - safeRadius
-
-    local rawVelocity = Vector3.zero
-    if telemetry.lastPosition then
-        rawVelocity = (ballPosition - telemetry.lastPosition) / dt
-    end
-    telemetry.lastPosition = ballPosition
-
-    local rawAcceleration = Vector3.zero
-    if telemetry.lastVelocity then
-        rawAcceleration = (rawVelocity - telemetry.lastVelocity) / dt
-    end
-
-    local rawJerk = Vector3.zero
-    if telemetry.lastAcceleration then
-        rawJerk = (rawAcceleration - telemetry.lastAcceleration) / dt
-    end
-
-    telemetry.lastVelocity = rawVelocity
-    telemetry.lastAcceleration = rawAcceleration
-
-    local velocity = emaVector(telemetry.velocity, rawVelocity, SMOOTH_ALPHA)
-    telemetry.velocity = velocity
-    local acceleration = emaVector(telemetry.acceleration, rawAcceleration, SMOOTH_ALPHA)
-    telemetry.acceleration = acceleration
-    local jerk = emaVector(telemetry.jerk, rawJerk, SMOOTH_ALPHA)
-    telemetry.jerk = jerk
-
-    local vNorm2 = velocity:Dot(velocity)
-    if vNorm2 < EPSILON then
-        vNorm2 = EPSILON
-    end
-
-    local rawSpeed = rawVelocity.Magnitude
-    local rawSpeedSq = rawVelocity:Dot(rawVelocity)
-    local rawKappa = 0
-    if rawSpeed > EPSILON then
-        rawKappa = rawVelocity:Cross(rawAcceleration).Magnitude / math.max(rawSpeedSq * rawSpeed, EPSILON)
-    end
-
-    local filteredKappaRaw = emaScalar(telemetry.kappa, rawKappa, KAPPA_ALPHA)
-    local filteredKappa, kappaOverflow = clampWithOverflow(filteredKappaRaw, PHYSICS_LIMITS.curvature)
-    telemetry.kappa = filteredKappa
-
-    local dkappaRaw = 0
-    if telemetry.lastRawKappa ~= nil then
-        dkappaRaw = (rawKappa - telemetry.lastRawKappa) / math.max(dt, EPSILON)
-    end
-    telemetry.lastRawKappa = rawKappa
-
-    local filteredDkappaRaw = emaScalar(telemetry.dkappa, dkappaRaw, DKAPPA_ALPHA)
-    local filteredDkappa, dkappaOverflow = clampWithOverflow(filteredDkappaRaw, PHYSICS_LIMITS.curvatureRate)
-    telemetry.dkappa = filteredDkappa
-
-    local rawVr = -unit:Dot(rawVelocity)
-    local filteredVr = emaScalar(telemetry.filteredVr, -unit:Dot(velocity), SMOOTH_ALPHA)
-    telemetry.filteredVr = filteredVr
-    local vrSign = 0
-    if filteredVr > VR_SIGN_EPSILON then
-        vrSign = 1
-    elseif filteredVr < -VR_SIGN_EPSILON then
-        vrSign = -1
-    end
-    if vrSign ~= 0 then
-        local previousSign = telemetry.lastVrSign
-        if previousSign and previousSign ~= 0 and previousSign ~= vrSign then
-            local flips = telemetry.vrSignFlips
-            flips[#flips + 1] = { time = now, sign = vrSign }
-        end
-        telemetry.lastVrSign = vrSign
-    end
-    trimHistory(telemetry.vrSignFlips, now - OSCILLATION_HISTORY_SECONDS)
-
-    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
-    local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
-    local filteredAr, arOverflow = clampWithOverflow(filteredArRaw, PHYSICS_LIMITS.radialAcceleration)
-    telemetry.filteredAr = filteredAr
-
-    local dotVA = velocity:Dot(acceleration)
-    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
-    local filteredJrRaw = emaScalar(telemetry.filteredJr, filteredJrEstimate, SMOOTH_ALPHA)
-    local filteredJr, jrOverflow = clampWithOverflow(filteredJrRaw, PHYSICS_LIMITS.radialJerk)
-    telemetry.filteredJr = filteredJr
-
-    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
-    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
-
-    local filteredD = emaScalar(telemetry.filteredD, d0, SMOOTH_ALPHA)
-    telemetry.filteredD = filteredD
-    local d0Delta = 0
-    if telemetry.lastD0 ~= nil then
-        d0Delta = d0 - telemetry.lastD0
-    end
-    telemetry.lastD0 = d0
-    telemetry.lastD0Delta = d0Delta
-    local d0History = telemetry.d0DeltaHistory
-    d0History[#d0History + 1] = { time = now, delta = math.abs(d0Delta) }
-    trimHistory(d0History, now - OSCILLATION_HISTORY_SECONDS)
-
-    updateRollingStat(telemetry.statsD, d0 - filteredD)
-    updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
-    updateRollingStat(telemetry.statsAr, rawAr - filteredAr)
-    updateRollingStat(telemetry.statsJr, rawJr - filteredJr)
-
-    local sigmaD = getRollingStd(telemetry.statsD, SIGMA_FLOORS.d)
-    local sigmaVr = getRollingStd(telemetry.statsVr, SIGMA_FLOORS.vr)
-    local sigmaAr = getRollingStd(telemetry.statsAr, SIGMA_FLOORS.ar)
-    local sigmaJr = getRollingStd(telemetry.statsJr, SIGMA_FLOORS.jr)
-
-    local sigmaArExtraSq = 0
-    local sigmaArOverflow = 0
-    if arOverflow > 0 then
-        sigmaArExtraSq += arOverflow * arOverflow
-    end
-    if kappaOverflow and kappaOverflow > 0 then
-        local extra = kappaOverflow * vNorm2
-        sigmaArExtraSq += extra * extra
-    end
-    if sigmaArExtraSq > 0 then
-        sigmaArOverflow = math.sqrt(sigmaArExtraSq)
-        sigmaAr = math.sqrt(sigmaAr * sigmaAr + sigmaArExtraSq)
-    end
-
-    local sigmaJrExtraSq = 0
-    local sigmaJrOverflow = 0
-    if jrOverflow > 0 then
-        sigmaJrExtraSq += jrOverflow * jrOverflow
-    end
-    if kappaOverflow and kappaOverflow > 0 then
-        local extra = 2 * kappaOverflow * math.abs(dotVA)
-        sigmaJrExtraSq += extra * extra
-    end
-    if dkappaOverflow and dkappaOverflow > 0 then
-        local extra = dkappaOverflow * vNorm2
-        sigmaJrExtraSq += extra * extra
-    end
-    if sigmaJrExtraSq > 0 then
-        sigmaJrOverflow = math.sqrt(sigmaJrExtraSq)
-        sigmaJr = math.sqrt(sigmaJr * sigmaJr + sigmaJrExtraSq)
-    end
+    local kinematics = buildBallKinematics(ball, RootPart.Position, telemetry, safeRadius, now)
 
     local ping = getPingTime()
     local delta = 0.5 * ping + activationLatencyEstimate
 
     local delta2 = delta * delta
-    local mu = filteredD - filteredVr * delta - 0.5 * filteredAr * delta2 - (1 / 6) * filteredJr * delta2 * delta
+    local mu =
+        kinematics.filteredD
+        - kinematics.filteredVr * delta
+        - 0.5 * kinematics.filteredAr * delta2
+        - (1 / 6) * kinematics.filteredJr * delta2 * delta
 
-    local sigmaSquared = sigmaD * sigmaD
-    sigmaSquared += (delta2) * (sigmaVr * sigmaVr)
-    sigmaSquared += (0.25 * delta2 * delta2) * (sigmaAr * sigmaAr)
-    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (sigmaJr * sigmaJr)
+    local sigmaSquared = kinematics.sigmaD * kinematics.sigmaD
+    sigmaSquared += (delta2) * (kinematics.sigmaVr * kinematics.sigmaVr)
+    sigmaSquared += (0.25 * delta2 * delta2) * (kinematics.sigmaAr * kinematics.sigmaAr)
+    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (kinematics.sigmaJr * kinematics.sigmaJr)
     local sigma = math.sqrt(math.max(sigmaSquared, 0))
 
     local z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ
@@ -5109,17 +5180,18 @@ local function renderLoop()
     local fired = false
     local released = false
 
-    local approachSpeed = math.max(filteredVr, rawVr, 0)
+    local approachSpeed = math.max(kinematics.filteredVr, kinematics.rawVr, 0)
     local approaching = approachSpeed > EPSILON
     local timeToImpactFallback = math.huge
     local timeToImpactPolynomial: number?
     local timeToImpact = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToImpactFallback = distance / speed
+        timeToImpactFallback = kinematics.distance / speed
 
-        local impactRadial = filteredD
-        local polynomial = solveRadialImpactTime(impactRadial, filteredVr, filteredAr, filteredJr)
+        local impactRadial = kinematics.filteredD
+        local polynomial =
+            solveRadialImpactTime(impactRadial, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if polynomial and polynomial > EPSILON then
             timeToImpactPolynomial = polynomial
             timeToImpact = polynomial
@@ -5159,22 +5231,22 @@ local function renderLoop()
 
             local normalizedKappa = 0
             if kappaLimit > 0 then
-                normalizedKappa = math.clamp(math.abs(filteredKappa) / kappaLimit, 0, 1)
+                normalizedKappa = math.clamp(math.abs(kinematics.filteredKappa) / kappaLimit, 0, 1)
             end
 
             local normalizedDkappa = 0
             if dkappaLimit > 0 then
-                normalizedDkappa = math.clamp(math.abs(filteredDkappa) / dkappaLimit, 0, 1)
+                normalizedDkappa = math.clamp(math.abs(kinematics.filteredDkappa) / dkappaLimit, 0, 1)
             end
 
             local normalizedAr = 0
             if arLimit > 0 then
-                normalizedAr = math.clamp(math.max(filteredAr, 0) / arLimit, 0, 1)
+                normalizedAr = math.clamp(math.max(kinematics.filteredAr, 0) / arLimit, 0, 1)
             end
 
             local normalizedJerkOverflow = 0
             if jrLimit > 0 then
-                local overflow = math.max(jrOverflow or 0, sigmaJrOverflow or 0)
+                local overflow = math.max(kinematics.jrOverflow or 0, kinematics.sigmaJrOverflow or 0)
                 if overflow > 0 then
                     normalizedJerkOverflow = math.clamp(overflow / jrLimit, 0, 1)
                 end
@@ -5234,13 +5306,14 @@ local function renderLoop()
     local timeToHoldRadius = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToPressRadiusFallback = math.max(distance - pressRadius, 0) / speed
-        timeToHoldRadiusFallback = math.max(distance - holdRadius, 0) / speed
+        timeToPressRadiusFallback = math.max(kinematics.distance - pressRadius, 0) / speed
+        timeToHoldRadiusFallback = math.max(kinematics.distance - holdRadius, 0) / speed
 
-        local radialToPress = filteredD + safeRadius - pressRadius
-        local radialToHold = filteredD + safeRadius - holdRadius
+        local radialToPress = kinematics.filteredD + safeRadius - pressRadius
+        local radialToHold = kinematics.filteredD + safeRadius - holdRadius
 
-        local pressPolynomial = solveRadialImpactTime(radialToPress, filteredVr, filteredAr, filteredJr)
+        local pressPolynomial =
+            solveRadialImpactTime(radialToPress, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if pressPolynomial and pressPolynomial > EPSILON then
             timeToPressRadiusPolynomial = pressPolynomial
             timeToPressRadius = pressPolynomial
@@ -5248,7 +5321,8 @@ local function renderLoop()
             timeToPressRadius = timeToPressRadiusFallback
         end
 
-        local holdPolynomial = solveRadialImpactTime(radialToHold, filteredVr, filteredAr, filteredJr)
+        local holdPolynomial =
+            solveRadialImpactTime(radialToHold, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if holdPolynomial and holdPolynomial > EPSILON then
             timeToHoldRadiusPolynomial = holdPolynomial
             timeToHoldRadius = holdPolynomial
@@ -5394,12 +5468,20 @@ local function renderLoop()
     local proximityPress =
         targetingMe
         and approaching
-        and (distance <= pressRadius or timeToPressRadius <= responseWindow or timeToImpact <= responseWindow)
+        and (
+            kinematics.distance <= pressRadius
+            or timeToPressRadius <= responseWindow
+            or timeToImpact <= responseWindow
+        )
 
     local proximityHold =
         targetingMe
         and approaching
-        and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
+        and (
+            kinematics.distance <= holdRadius
+            or timeToHoldRadius <= holdWindow
+            or timeToImpact <= holdWindow
+        )
 
     local shouldPress = proximityPress or inequalityPress
 
@@ -5454,10 +5536,10 @@ local function renderLoop()
         if shouldSchedule then
             smartReason = string.format("impact %.3f > lead %.3f (press in %.3f)", predictedImpact, scheduleLead, math.max(timeUntilPress, 0))
             local scheduleContext = {
-                distance = distance,
+                distance = kinematics.distance,
                 timeToImpact = timeToImpact,
                 timeUntilPress = timeUntilPress,
-                speed = velocity.Magnitude,
+                speed = kinematics.velocityMagnitude,
                 pressRadius = pressRadius,
                 holdRadius = holdRadius,
                 confidencePress = confidencePress,
@@ -5550,8 +5632,8 @@ local function renderLoop()
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
-        string.format("d0: %.3f | vr: %.3f", filteredD, filteredVr),
-        string.format("ar: %.3f | jr: %.3f", filteredAr, filteredJr),
+        string.format("d0: %.3f | vr: %.3f", kinematics.filteredD, kinematics.filteredVr),
+        string.format("ar: %.3f | jr: %.3f", kinematics.filteredAr, kinematics.filteredJr),
         string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
         string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
         string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
@@ -5611,8 +5693,11 @@ local function renderLoop()
         table.insert(debugLines, "Smart press: idle")
     end
 
-    if sigmaArOverflow > 0 or sigmaJrOverflow > 0 then
-        table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
+    if kinematics.sigmaArOverflow > 0 or kinematics.sigmaJrOverflow > 0 then
+        table.insert(
+            debugLines,
+            string.format("σ infl.: ar %.2f | jr %.2f", kinematics.sigmaArOverflow, kinematics.sigmaJrOverflow)
+        )
     end
 
     if fired then
@@ -5627,8 +5712,8 @@ local function renderLoop()
     setBallVisuals(
         ball,
         computeBallDebug(
-            velocity.Magnitude,
-            distance,
+            kinematics.velocityMagnitude,
+            kinematics.distance,
             safeRadius,
             mu,
             sigma,
