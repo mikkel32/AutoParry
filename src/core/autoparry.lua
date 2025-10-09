@@ -119,6 +119,7 @@ local DKAPPA_ALPHA = 0.3
 local ACTIVATION_LATENCY_ALPHA = 0.2
 local VR_SIGN_EPSILON = 1e-3
 local OSCILLATION_HISTORY_SECONDS = 0.6
+local TARGETING_GRACE_SECONDS = 0.2
 local SIGMA_FLOORS = {
     d = 0.01,
     vr = 1.5,
@@ -140,6 +141,13 @@ local state = {
     lastBroadcast = 0,
     immortalEnabled = false,
     remoteEstimatorActive = false,
+    virtualInputRetry = {
+        failureCount = 0,
+        min = 0.05,
+        max = 0.25,
+        base = 0.12,
+        growth = 1.5,
+    },
 }
 
 local initialization = {
@@ -178,6 +186,7 @@ local remoteQueueGuardWatchers: { RBXScriptConnection? }?
 local restartPending = false
 local scheduleRestart
 local syncImmortalContext = function() end
+local targetingGraceUntil = 0
 
 local UiRoot: ScreenGui?
 local ToggleButton: TextButton?
@@ -198,6 +207,7 @@ local parryHeld = false
 local parryHeldBallId: string?
 local pendingParryRelease = false
 local sendParryKeyEvent
+local publishReadyStatus
 local scheduledPressState = {
     ballId = nil :: string?,
     pressAt = 0,
@@ -207,6 +217,7 @@ local scheduledPressState = {
     reason = nil :: string?,
     lastUpdate = 0,
     immediate = false,
+    lastSnapshot = nil,
 }
 local SMART_PRESS_TRIGGER_GRACE = 0.01
 local SMART_PRESS_STALE_SECONDS = 0.75
@@ -410,6 +421,9 @@ function TelemetryAnalytics.resetMetrics(resetCount)
             actualWait = newAggregate(),
             activationLatency = newAggregate(),
             adaptiveBias = newAggregate(),
+            reactionTime = newAggregate(),
+            decisionTime = newAggregate(),
+            decisionToPressTime = newAggregate(),
             immediateCount = 0,
             forcedCount = 0,
             scheduledCount = 0,
@@ -495,6 +509,9 @@ function TelemetryAnalytics.clone()
             actualWait = summariseAggregate(metrics.press.actualWait),
             activationLatency = summariseAggregate(metrics.press.activationLatency),
             adaptiveBias = summariseAggregate(metrics.press.adaptiveBias),
+            reactionTime = summariseAggregate(metrics.press.reactionTime),
+            decisionTime = summariseAggregate(metrics.press.decisionTime),
+            decisionToPressTime = summariseAggregate(metrics.press.decisionToPressTime),
             immediateCount = metrics.press.immediateCount,
             forcedCount = metrics.press.forcedCount,
             scheduledCount = metrics.press.scheduledCount,
@@ -646,6 +663,89 @@ function TelemetryAnalytics.recordScheduleCleared(event)
     end
 end
 
+function TelemetryAnalytics.formatLatencyText(seconds: number?, pending: boolean?)
+    if not isFiniteNumber(seconds) then
+        return "n/a"
+    end
+
+    local millis = math.floor(math.max(seconds, 0) * 1000 + 0.5)
+    if pending then
+        return string.format("%dms*", millis)
+    end
+
+    return string.format("%dms", millis)
+end
+
+function TelemetryAnalytics.computeLatencyReadouts(telemetry: TelemetryState?, now: number)
+    if not telemetry then
+        return "n/a", "n/a", "n/a"
+    end
+
+    local reactionLatency
+    local reactionPending = false
+    if telemetry.targetDetectedAt then
+        reactionLatency = math.max(now - telemetry.targetDetectedAt, 0)
+        reactionPending = true
+    elseif isFiniteNumber(telemetry.lastReactionLatency) then
+        reactionLatency = telemetry.lastReactionLatency
+    end
+
+    local decisionLatency
+    local decisionPending = false
+    if telemetry.targetDetectedAt and telemetry.decisionAt then
+        decisionLatency = math.max(telemetry.decisionAt - telemetry.targetDetectedAt, 0)
+        decisionPending = telemetry.lastDecisionLatency == nil
+    elseif isFiniteNumber(telemetry.lastDecisionLatency) then
+        decisionLatency = telemetry.lastDecisionLatency
+    end
+
+    local commitLatency
+    local commitPending = false
+    if telemetry.decisionAt then
+        commitLatency = math.max(now - telemetry.decisionAt, 0)
+        commitPending = telemetry.lastDecisionToPressLatency == nil
+    elseif isFiniteNumber(telemetry.lastDecisionToPressLatency) then
+        commitLatency = telemetry.lastDecisionToPressLatency
+    end
+
+    return TelemetryAnalytics.formatLatencyText(reactionLatency, reactionPending),
+        TelemetryAnalytics.formatLatencyText(decisionLatency, decisionPending),
+        TelemetryAnalytics.formatLatencyText(commitLatency, commitPending)
+end
+
+function TelemetryAnalytics.applyPressLatencyTelemetry(telemetry: TelemetryState?, pressEvent, now: number)
+    if not telemetry then
+        return
+    end
+
+    local detectionAt = telemetry.targetDetectedAt
+    local decisionAt = telemetry.decisionAt
+
+    local reactionLatency = 0
+    if detectionAt then
+        reactionLatency = math.max(now - detectionAt, 0)
+    end
+
+    telemetry.lastReactionLatency = reactionLatency
+    telemetry.lastReactionTimestamp = now
+    pressEvent.reactionTime = reactionLatency
+
+    if decisionAt and detectionAt then
+        local decisionLatency = math.max(decisionAt - detectionAt, 0)
+        telemetry.lastDecisionLatency = decisionLatency
+        pressEvent.decisionTime = decisionLatency
+    end
+
+    if decisionAt then
+        local decisionToPress = math.max(now - decisionAt, 0)
+        telemetry.lastDecisionToPressLatency = decisionToPress
+        pressEvent.decisionToPressTime = decisionToPress
+    end
+
+    telemetry.targetDetectedAt = nil
+    telemetry.decisionAt = nil
+end
+
 function TelemetryAnalytics.recordLatency(event)
     incrementCounter("latency", 1)
     local metrics = TelemetryAnalytics.metrics
@@ -777,6 +877,18 @@ function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
         updateAggregate(metrics.press.adaptiveBias, event.adaptiveBias)
     end
 
+    if isFiniteNumber(event.reactionTime) then
+        updateAggregate(metrics.press.reactionTime, event.reactionTime)
+    end
+
+    if isFiniteNumber(event.decisionTime) then
+        updateAggregate(metrics.press.decisionTime, event.decisionTime)
+    end
+
+    if isFiniteNumber(event.decisionToPressTime) then
+        updateAggregate(metrics.press.decisionToPressTime, event.decisionToPressTime)
+    end
+
     if typeof(event.smartTuning) == "table" then
         if isFiniteNumber(event.smartTuning.latency) then
             updateAggregate(metrics.press.smartLatency, event.smartTuning.latency)
@@ -832,6 +944,10 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.averageWaitDelta = TelemetryAnalytics.aggregateMean(stats.press and stats.press.waitDelta)
     summary.averageActivationLatency = TelemetryAnalytics.aggregateMean(stats.latency and stats.latency.activation)
     summary.averageLatency = TelemetryAnalytics.aggregateMean(stats.latency and stats.latency.accepted)
+    summary.averageReactionTime = TelemetryAnalytics.aggregateMean(stats.press and stats.press.reactionTime)
+    summary.averageDecisionTime = TelemetryAnalytics.aggregateMean(stats.press and stats.press.decisionTime)
+    summary.averageDecisionToPressTime =
+        TelemetryAnalytics.aggregateMean(stats.press and stats.press.decisionToPressTime)
     summary.leadDeltaMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.leadDelta)
     summary.achievedLeadMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.achievedLead)
     summary.scheduleLifetimeMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.scheduleLifetime)
@@ -1417,11 +1533,45 @@ end
 
 local function noteVirtualInputFailure(delay)
     virtualInputUnavailable = true
-    if typeof(delay) == "number" and delay > 0 then
-        virtualInputRetryAt = os.clock() + delay
-    else
-        virtualInputRetryAt = os.clock() + 1.5
+    local retry = state.virtualInputRetry
+    if typeof(retry) ~= "table" then
+        retry = { failureCount = 0, min = 0.05, max = 0.25, base = 0.12, growth = 1.5 }
+        state.virtualInputRetry = retry
     end
+
+    retry.failureCount = (retry.failureCount or 0) + 1
+
+    local requested = nil
+    if typeof(delay) == "number" and delay > 0 then
+        requested = delay
+    end
+
+    local base = retry.base or 0.12
+    if requested then
+        if requested > 1 then
+            base = requested * 0.05
+        else
+            base = requested
+        end
+    end
+
+    local minDelay = retry.min or 0.05
+    local maxDelay = retry.max or 0.25
+    base = math.clamp(base, minDelay, maxDelay)
+
+    local exponent = math.max((retry.failureCount or 0) - 1, 0)
+    local growth = minDelay * ((retry.growth or 1.5) ^ exponent)
+    local finalDelay = math.max(base, growth)
+
+    if finalDelay > maxDelay then
+        finalDelay = maxDelay
+    end
+
+    if finalDelay <= 0 then
+        finalDelay = minDelay
+    end
+
+    virtualInputRetryAt = os.clock() + finalDelay
 
     if state.enabled then
         setStage("waiting-input", { reason = "virtual-input" })
@@ -1433,6 +1583,10 @@ local function noteVirtualInputSuccess()
     if virtualInputUnavailable then
         virtualInputUnavailable = false
         virtualInputRetryAt = 0
+        local retry = state.virtualInputRetry
+        if typeof(retry) == "table" then
+            retry.failureCount = 0
+        end
 
         if state.enabled and initProgress.stage == "waiting-input" then
             publishReadyStatus()
@@ -1552,6 +1706,12 @@ type TelemetryState = {
     lastUpdate: number,
     triggerTime: number?,
     latencySampled: boolean?,
+    targetDetectedAt: number?,
+    decisionAt: number?,
+    lastReactionLatency: number?,
+    lastReactionTimestamp: number?,
+    lastDecisionLatency: number?,
+    lastDecisionToPressLatency: number?,
 }
 
 local telemetryStates: { [string]: TelemetryState } = {}
@@ -1999,6 +2159,12 @@ local function ensureTelemetry(ballId: string, now: number): TelemetryState
         lastUpdate = now,
         triggerTime = nil,
         latencySampled = true,
+        targetDetectedAt = nil,
+        decisionAt = nil,
+        lastReactionLatency = nil,
+        lastReactionTimestamp = nil,
+        lastDecisionLatency = nil,
+        lastDecisionToPressLatency = nil,
     }
 
     telemetryStates[ballId] = telemetry
@@ -2032,7 +2198,6 @@ end
 local AutoParry
 local updateCharacter
 local beginInitialization
-local publishReadyStatus
 local setBallsFolderWatcher
 local maybeRunAutoTuning
 
@@ -3330,6 +3495,7 @@ local function ensureUi()
     end)
 
     local status = Instance.new("TextLabel")
+    status.Name = "AutoParryStatus"
     status.Size = UDim2.fromOffset(320, 120)
     status.Position = UDim2.fromOffset(10, 132)
     status.BackgroundColor3 = Color3.fromRGB(25, 25, 25)
@@ -3430,13 +3596,17 @@ local function getPingTime()
     return seconds
 end
 
-local function isTargetingMe()
+local function isTargetingMe(now)
     if not Character then
+        targetingGraceUntil = 0
         return false
     end
 
     local highlightName = config.targetHighlightName
+    now = now or os.clock()
+
     if not highlightName or highlightName == "" then
+        targetingGraceUntil = math.max(targetingGraceUntil, now + TARGETING_GRACE_SECONDS)
         return true
     end
 
@@ -3444,7 +3614,16 @@ local function isTargetingMe()
         return Character:FindFirstChild(highlightName)
     end)
 
-    return ok and result ~= nil
+    if ok and result ~= nil then
+        targetingGraceUntil = now + TARGETING_GRACE_SECONDS
+        return true
+    end
+
+    if targetingGraceUntil > now then
+        return true
+    end
+
+    return false
 end
 
 local function findRealBall(folder)
@@ -3687,6 +3866,19 @@ local function clearScheduledPress(targetBallId: string?, reason: string?, metad
                 end
             end
         end
+
+        local snapshot = scheduledPressState.lastSnapshot
+        if snapshot and snapshot.ballId == previousBallId then
+            snapshot.clearedReason = event.reason
+            snapshot.clearedAt = now
+            if typeof(metadata) == "table" then
+                for key, value in pairs(metadata) do
+                    if snapshot[key] == nil then
+                        snapshot[key] = value
+                    end
+                end
+            end
+        end
         TelemetryAnalytics.recordScheduleCleared(event)
         pushTelemetryEvent("schedule-cleared", event)
     end
@@ -3751,6 +3943,8 @@ local function updateScheduledPress(
             end
         end
     end
+
+    scheduledPressState.lastSnapshot = cloneTable(event)
 
     if event.immediate == nil then
         event.immediate = scheduledPressState.immediate
@@ -3826,6 +4020,11 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     prunePendingLatencyPresses(now)
     pendingLatencyPresses[#pendingLatencyPresses + 1] = { time = now, ballId = ballId }
 
+    local telemetry = nil
+    if ballId then
+        telemetry = telemetryStates[ballId]
+    end
+
     local scheduledReason = nil
     if ballId and scheduledPressState.ballId == ballId then
         scheduledReason = scheduledPressState.reason
@@ -3877,8 +4076,9 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         pressEvent.immediate = true
     end
 
+    TelemetryAnalytics.applyPressLatencyTelemetry(telemetry, pressEvent, now)
+
     if ballId then
-        local telemetry = telemetryStates[ballId]
         if telemetry then
             pressEvent.telemetry = {
                 filteredD = telemetry.filteredD,
@@ -3892,12 +4092,9 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         clearScheduledPress(nil, "pressed", { pressedAt = now })
     end
 
-    if ballId then
-        local telemetry = telemetryStates[ballId]
-        if telemetry then
-            telemetry.triggerTime = now
-            telemetry.latencySampled = false
-        end
+    if telemetry then
+        telemetry.triggerTime = now
+        telemetry.latencySampled = false
     end
 
     TelemetryAnalytics.recordPress(pressEvent, scheduledSnapshot)
@@ -3948,6 +4145,7 @@ local function updateCharacter(character)
     Character = character
     RootPart = nil
     Humanoid = nil
+    targetingGraceUntil = 0
 
     if humanoidDiedConnection then
         humanoidDiedConnection:Disconnect()
@@ -4465,7 +4663,17 @@ local function renderLoop()
     perfectParrySnapshot.delta = delta
     perfectParrySnapshot.z = z
 
-    local targetingMe = isTargetingMe()
+    local targetingMe = isTargetingMe(now)
+    if telemetry then
+        if targetingMe then
+            if telemetry.targetDetectedAt == nil then
+                telemetry.targetDetectedAt = now
+            end
+        elseif not parryHeld or parryHeldBallId ~= ballId then
+            telemetry.targetDetectedAt = nil
+            telemetry.decisionAt = nil
+        end
+    end
     local fired = false
     local released = false
 
@@ -4752,6 +4960,14 @@ local function renderLoop()
 
     local shouldPress = proximityPress or inequalityPress
 
+    if telemetry then
+        if shouldPress then
+            telemetry.decisionAt = telemetry.decisionAt or now
+        elseif not targetingMe then
+            telemetry.decisionAt = nil
+        end
+    end
+
     local shouldHold = proximityHold
     if targetingMe and muValid and sigmaValid and muMinus < 0 then
         shouldHold = true
@@ -4921,6 +5137,10 @@ local function renderLoop()
         string.format("ParryHeld: %s", tostring(parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
+
+    local reactionLatencyText, decisionLatencyText, commitLatencyText =
+        TelemetryAnalytics.computeLatencyReadouts(telemetry, now)
+    table.insert(debugLines, string.format("React: %s | Decide: %s | Commit: %s", reactionLatencyText, decisionLatencyText, commitLatencyText))
 
     if scheduledPressState.ballId == ballId then
         local eta = math.max((scheduledPressState.pressAt or now) - now, 0)
@@ -5104,6 +5324,7 @@ function AutoParry.disable()
     end
 
     state.enabled = false
+    targetingGraceUntil = 0
     clearScheduledPress(nil, "disabled")
     releaseParry()
     telemetryStates = {}
@@ -5269,6 +5490,11 @@ function AutoParry.getSmartPressState()
                 lastUpdate = telemetry.lastUpdate,
                 triggerTime = telemetry.triggerTime,
                 latencySampled = telemetry.latencySampled,
+                targetDetectedAt = telemetry.targetDetectedAt,
+                decisionAt = telemetry.decisionAt,
+                lastReactionLatency = telemetry.lastReactionLatency,
+                lastDecisionLatency = telemetry.lastDecisionLatency,
+                lastDecisionToPressLatency = telemetry.lastDecisionToPressLatency,
             }
         end
     end
@@ -5281,6 +5507,12 @@ function AutoParry.getSmartPressState()
         snapshot.pressEta = math.max(snapshot.pressAt - now, 0)
     else
         snapshot.pressEta = nil
+    end
+
+    if snapshot.ballId then
+        scheduledPressState.lastSnapshot = cloneTable(snapshot)
+    elseif scheduledPressState.lastSnapshot then
+        snapshot.lastScheduled = cloneTable(scheduledPressState.lastSnapshot)
     end
 
     return snapshot
@@ -5777,6 +6009,7 @@ function AutoParry.destroy()
     GlobalEnv.Paws = nil
 
     initialization.destroyed = false
+    targetingGraceUntil = 0
 end
 
 ensureInitialization()
