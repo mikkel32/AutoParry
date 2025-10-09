@@ -48,6 +48,7 @@ SOURCE_MAP_SCRIPT = TESTS_DIR / "tools" / "generate_source_map.py"
 SPEC_RUNNER_SCRIPT = TESTS_DIR / "tools" / "run_specs.luau"
 PERF_BASELINE_PATH = TESTS_DIR / "perf" / "baseline.json"
 TOOLS_BIN_DIR = TESTS_DIR / "tools" / "bin"
+PYTHON_EXECUTABLE = sys.executable or "python3"
 
 LUNE_VERSION = "0.10.3"
 LUNE_RELEASE_URL = "https://github.com/lune-org/lune/releases/download/v{version}/{asset}"
@@ -318,6 +319,13 @@ SUITES: Dict[str, SuiteConfig] = {
         "Luau static analysis against src/ and tests/ fixtures.",
         optional=True,
     ),
+    "register-pressure": _cli_suite(
+        [
+            PYTHON_EXECUTABLE,
+            str(TESTS_DIR / "tools" / "check_register_pressure.py"),
+        ],
+        "Detect functions that risk Luau register overflow (limit 200 locals).",
+    ),
     "smoke": _roblox_suite(
         TESTS_DIR / "init.server.lua",
         "Bootstrap smoke test to ensure the loader mounts correctly.",
@@ -345,7 +353,7 @@ SUITES: Dict[str, SuiteConfig] = {
 
 SUITE_ALIASES: Dict[str, List[str]] = {
     "all": list(SUITES.keys()),
-    "static": ["format", "lint", "typecheck"],
+    "static": ["format", "lint", "typecheck", "register-pressure"],
     "roblox": ["smoke", "spec", "perf", "accuracy"],
 }
 
