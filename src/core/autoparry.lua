@@ -4800,7 +4800,13 @@ local function ensureInitialization()
     beginInitialization()
 end
 
-local function computeBallDebug(
+local BallKinematics = {}
+
+local PressDecision = {}
+
+local pressDecisionState = {}
+
+function BallKinematics.computeBallDebug(
     speed,
     distance,
     safeRadius,
@@ -4831,74 +4837,7 @@ local function computeBallDebug(
     )
 end
 
-local function renderLoop()
-    if initialization.destroyed then
-        clearScheduledPress(nil, "destroyed")
-        return
-    end
-
-    if not LocalPlayer then
-        clearScheduledPress(nil, "missing-player")
-        return
-    end
-
-    if not Character or not RootPart then
-        updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-character")
-        releaseParry()
-        return
-    end
-
-    ensureBallsFolder(false)
-    local folder = BallsFolder
-    if not folder then
-        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-balls-folder")
-        releaseParry()
-        return
-    end
-
-    if not state.enabled then
-        clearScheduledPress(nil, "disabled")
-        releaseParry()
-        updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
-        safeClearBallVisuals()
-        updateToggleButton()
-        return
-    end
-
-    local now = os.clock()
-    cleanupTelemetry(now)
-    prunePendingLatencyPresses(now)
-    maybeRunAutoTuning(now)
-
-    local ball = findRealBall(folder)
-    if not ball or not ball:IsDescendantOf(Workspace) then
-        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "no-ball")
-        releaseParry()
-        return
-    end
-
-    local ballId = getBallIdentifier(ball)
-    if not ballId then
-        updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-identifier")
-        releaseParry()
-        return
-    end
-
-    if scheduledPressState.ballId and scheduledPressState.ballId ~= ballId then
-        clearScheduledPress(nil, "ball-changed")
-    elseif scheduledPressState.ballId == ballId and now - scheduledPressState.lastUpdate > SMART_PRESS_STALE_SECONDS then
-        clearScheduledPress(ballId, "schedule-stale")
-    end
-
-    local telemetry = ensureTelemetry(ballId, now)
+function BallKinematics.computeUpdateTiming(telemetry, now)
     local previousUpdate = telemetry.lastUpdate or now
     local dt = now - previousUpdate
     if not isFiniteNumber(dt) or dt <= 0 then
@@ -4906,9 +4845,10 @@ local function renderLoop()
     end
     dt = math.clamp(dt, 1 / 240, 0.5)
     telemetry.lastUpdate = now
+    return dt
+end
 
-    local ballPosition = ball.Position
-    local playerPosition = RootPart.Position
+function BallKinematics.computeSpatialContext(context, ballPosition, playerPosition, safeRadius)
     local relative = ballPosition - playerPosition
     local distance = relative.Magnitude
     local unit = Vector3.zero
@@ -4916,70 +4856,163 @@ local function renderLoop()
         unit = relative / distance
     end
 
-    local safeRadius = config.safeRadius or 0
-    local d0 = distance - safeRadius
+    context.relative = relative
+    context.distance = distance
+    context.unit = unit
+    context.d0 = distance - safeRadius
+end
+
+function BallKinematics.computeRawMotion(context, telemetry, dt)
+    local position = context.ballPosition
 
     local rawVelocity = Vector3.zero
-    if telemetry.lastPosition then
-        rawVelocity = (ballPosition - telemetry.lastPosition) / dt
+    local lastPosition = telemetry.lastPosition
+    if lastPosition then
+        rawVelocity = (position - lastPosition) / dt
     end
-    telemetry.lastPosition = ballPosition
+    telemetry.lastPosition = position
+    context.rawVelocity = rawVelocity
 
     local rawAcceleration = Vector3.zero
-    if telemetry.lastVelocity then
-        rawAcceleration = (rawVelocity - telemetry.lastVelocity) / dt
+    local lastVelocity = telemetry.lastVelocity
+    if lastVelocity then
+        rawAcceleration = (rawVelocity - lastVelocity) / dt
     end
+    telemetry.lastVelocity = rawVelocity
+    context.rawAcceleration = rawAcceleration
 
     local rawJerk = Vector3.zero
-    if telemetry.lastAcceleration then
-        rawJerk = (rawAcceleration - telemetry.lastAcceleration) / dt
+    local lastAcceleration = telemetry.lastAcceleration
+    if lastAcceleration then
+        rawJerk = (rawAcceleration - lastAcceleration) / dt
     end
-
-    telemetry.lastVelocity = rawVelocity
     telemetry.lastAcceleration = rawAcceleration
+    context.rawJerk = rawJerk
+end
+
+function BallKinematics.computeFilteredMotion(context, telemetry)
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawJerk = context.rawJerk
 
     local velocity = emaVector(telemetry.velocity, rawVelocity, SMOOTH_ALPHA)
     telemetry.velocity = velocity
+    context.velocity = velocity
+    context.velocityMagnitude = velocity.Magnitude
+
     local acceleration = emaVector(telemetry.acceleration, rawAcceleration, SMOOTH_ALPHA)
     telemetry.acceleration = acceleration
+    context.acceleration = acceleration
+
     local jerk = emaVector(telemetry.jerk, rawJerk, SMOOTH_ALPHA)
     telemetry.jerk = jerk
+    context.jerk = jerk
 
     local vNorm2 = velocity:Dot(velocity)
     if vNorm2 < EPSILON then
         vNorm2 = EPSILON
     end
+    context.vNorm2 = vNorm2
 
-    local rawSpeed = rawVelocity.Magnitude
     local rawSpeedSq = rawVelocity:Dot(rawVelocity)
+    context.rawSpeedSq = rawSpeedSq
+
+    context.rawSpeed = rawVelocity.Magnitude
+end
+
+function BallKinematics.computeCurvature(context, telemetry, dt)
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawSpeed = context.rawSpeed
+    local rawSpeedSq = context.rawSpeedSq
+    local vNorm2 = context.vNorm2
+
     local rawKappa = 0
     if rawSpeed > EPSILON then
         rawKappa = rawVelocity:Cross(rawAcceleration).Magnitude / math.max(rawSpeedSq * rawSpeed, EPSILON)
     end
+    context.rawKappa = rawKappa
 
     local filteredKappaRaw = emaScalar(telemetry.kappa, rawKappa, KAPPA_ALPHA)
     local filteredKappa, kappaOverflow = clampWithOverflow(filteredKappaRaw, PHYSICS_LIMITS.curvature)
     telemetry.kappa = filteredKappa
+    context.filteredKappa = filteredKappa
+    context.kappaOverflow = kappaOverflow
 
     local dkappaRaw = 0
     if telemetry.lastRawKappa ~= nil then
         dkappaRaw = (rawKappa - telemetry.lastRawKappa) / math.max(dt, EPSILON)
     end
     telemetry.lastRawKappa = rawKappa
+    context.dkappaRaw = dkappaRaw
 
     local filteredDkappaRaw = emaScalar(telemetry.dkappa, dkappaRaw, DKAPPA_ALPHA)
     local filteredDkappa, dkappaOverflow = clampWithOverflow(filteredDkappaRaw, PHYSICS_LIMITS.curvatureRate)
     telemetry.dkappa = filteredDkappa
+    context.filteredDkappa = filteredDkappa
+    context.dkappaOverflow = dkappaOverflow
+end
+
+function BallKinematics.computeRadial(
+    context,
+    telemetry
+)
+    local unit = context.unit
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawJerk = context.rawJerk
+    local velocity = context.velocity
+    local acceleration = context.acceleration
+    local jerk = context.jerk
+    local vNorm2 = context.vNorm2
+    local rawKappa = context.rawKappa
+    local filteredKappa = context.filteredKappa
+    local dkappaRaw = context.dkappaRaw
+    local filteredDkappa = context.filteredDkappa
+    local rawSpeedSq = context.rawSpeedSq
 
     local rawVr = -unit:Dot(rawVelocity)
+    context.rawVr = rawVr
+
     local filteredVr = emaScalar(telemetry.filteredVr, -unit:Dot(velocity), SMOOTH_ALPHA)
     telemetry.filteredVr = filteredVr
+    context.filteredVr = filteredVr
+
     local vrSign = 0
     if filteredVr > VR_SIGN_EPSILON then
         vrSign = 1
     elseif filteredVr < -VR_SIGN_EPSILON then
         vrSign = -1
     end
+    context.vrSign = vrSign
+
+    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
+    context.filteredArEstimate = filteredArEstimate
+    local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
+    local filteredAr, arOverflow = clampWithOverflow(filteredArRaw, PHYSICS_LIMITS.radialAcceleration)
+    telemetry.filteredAr = filteredAr
+    context.filteredAr = filteredAr
+    context.arOverflow = arOverflow
+
+    local dotVA = velocity:Dot(acceleration)
+    context.dotVA = dotVA
+
+    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
+    context.filteredJrEstimate = filteredJrEstimate
+    local filteredJrRaw = emaScalar(telemetry.filteredJr, filteredJrEstimate, SMOOTH_ALPHA)
+    local filteredJr, jrOverflow = clampWithOverflow(filteredJrRaw, PHYSICS_LIMITS.radialJerk)
+    telemetry.filteredJr = filteredJr
+    context.filteredJr = filteredJr
+    context.jrOverflow = jrOverflow
+
+    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
+    context.rawAr = rawAr
+
+    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
+    context.rawJr = rawJr
+end
+
+function BallKinematics.trackVrSignHistory(telemetry, now, vrSign)
     if vrSign ~= 0 then
         local previousSign = telemetry.lastVrSign
         if previousSign and previousSign ~= 0 and previousSign ~= vrSign then
@@ -4989,32 +5022,44 @@ local function renderLoop()
         telemetry.lastVrSign = vrSign
     end
     trimHistory(telemetry.vrSignFlips, now - OSCILLATION_HISTORY_SECONDS)
+end
 
-    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
-    local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
-    local filteredAr, arOverflow = clampWithOverflow(filteredArRaw, PHYSICS_LIMITS.radialAcceleration)
-    telemetry.filteredAr = filteredAr
-
-    local dotVA = velocity:Dot(acceleration)
-    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
-    local filteredJrRaw = emaScalar(telemetry.filteredJr, filteredJrEstimate, SMOOTH_ALPHA)
-    local filteredJr, jrOverflow = clampWithOverflow(filteredJrRaw, PHYSICS_LIMITS.radialJerk)
-    telemetry.filteredJr = filteredJr
-
-    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
-    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
-
+function BallKinematics.updateDistanceHistory(context, telemetry, now)
+    local d0 = context.d0
     local filteredD = emaScalar(telemetry.filteredD, d0, SMOOTH_ALPHA)
     telemetry.filteredD = filteredD
+    context.filteredD = filteredD
+
     local d0Delta = 0
-    if telemetry.lastD0 ~= nil then
-        d0Delta = d0 - telemetry.lastD0
+    local lastD0 = telemetry.lastD0
+    if lastD0 ~= nil then
+        d0Delta = d0 - lastD0
     end
     telemetry.lastD0 = d0
     telemetry.lastD0Delta = d0Delta
+
     local d0History = telemetry.d0DeltaHistory
     d0History[#d0History + 1] = { time = now, delta = math.abs(d0Delta) }
     trimHistory(d0History, now - OSCILLATION_HISTORY_SECONDS)
+    context.d0Delta = d0Delta
+
+end
+
+function BallKinematics.updateVariance(context, telemetry)
+    local d0 = context.d0
+    local filteredD = context.filteredD
+    local rawVr = context.rawVr
+    local filteredVr = context.filteredVr
+    local rawAr = context.rawAr
+    local filteredAr = context.filteredAr
+    local rawJr = context.rawJr
+    local filteredJr = context.filteredJr
+    local vNorm2 = context.vNorm2
+    local dotVA = context.dotVA
+    local kappaOverflow = context.kappaOverflow
+    local dkappaOverflow = context.dkappaOverflow
+    local arOverflow = context.arOverflow
+    local jrOverflow = context.jrOverflow
 
     updateRollingStat(telemetry.statsD, d0 - filteredD)
     updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
@@ -5027,7 +5072,6 @@ local function renderLoop()
     local sigmaJr = getRollingStd(telemetry.statsJr, SIGMA_FLOORS.jr)
 
     local sigmaArExtraSq = 0
-    local sigmaArOverflow = 0
     if arOverflow > 0 then
         sigmaArExtraSq += arOverflow * arOverflow
     end
@@ -5035,13 +5079,14 @@ local function renderLoop()
         local extra = kappaOverflow * vNorm2
         sigmaArExtraSq += extra * extra
     end
+
+    local sigmaArOverflow = 0
     if sigmaArExtraSq > 0 then
         sigmaArOverflow = math.sqrt(sigmaArExtraSq)
         sigmaAr = math.sqrt(sigmaAr * sigmaAr + sigmaArExtraSq)
     end
 
     local sigmaJrExtraSq = 0
-    local sigmaJrOverflow = 0
     if jrOverflow > 0 then
         sigmaJrExtraSq += jrOverflow * jrOverflow
     end
@@ -5053,21 +5098,72 @@ local function renderLoop()
         local extra = dkappaOverflow * vNorm2
         sigmaJrExtraSq += extra * extra
     end
+
+    local sigmaJrOverflow = 0
     if sigmaJrExtraSq > 0 then
         sigmaJrOverflow = math.sqrt(sigmaJrExtraSq)
         sigmaJr = math.sqrt(sigmaJr * sigmaJr + sigmaJrExtraSq)
     end
 
+    context.sigmaD = sigmaD
+    context.sigmaVr = sigmaVr
+    context.sigmaAr = sigmaAr
+    context.sigmaJr = sigmaJr
+    context.sigmaArOverflow = sigmaArOverflow
+    context.sigmaJrOverflow = sigmaJrOverflow
+end
+
+function BallKinematics.build(ball, playerPosition, telemetry, safeRadius, now)
+    local context = {
+        safeRadius = safeRadius,
+    }
+
+    context.dt = BallKinematics.computeUpdateTiming(telemetry, now)
+
+    context.ballPosition = ball.Position
+
+    BallKinematics.computeSpatialContext(context, context.ballPosition, playerPosition, safeRadius)
+
+    BallKinematics.computeRawMotion(context, telemetry, context.dt)
+
+    BallKinematics.computeFilteredMotion(context, telemetry)
+
+    BallKinematics.computeCurvature(context, telemetry, context.dt)
+
+    BallKinematics.computeRadial(context, telemetry)
+
+    BallKinematics.trackVrSignHistory(telemetry, now, context.vrSign)
+
+    BallKinematics.updateDistanceHistory(context, telemetry, now)
+
+    BallKinematics.updateVariance(context, telemetry)
+
+    return context
+end
+
+function PressDecision.evaluate(params)
+    local decision = params.decision or {}
+    local config = params.config
+    local kinematics = params.kinematics
+    local telemetry = params.telemetry
+    local safeRadius = params.safeRadius
+    local now = params.now
+    local ballId = params.ballId
+
     local ping = getPingTime()
     local delta = 0.5 * ping + activationLatencyEstimate
 
     local delta2 = delta * delta
-    local mu = filteredD - filteredVr * delta - 0.5 * filteredAr * delta2 - (1 / 6) * filteredJr * delta2 * delta
+    local mu =
+        kinematics.filteredD
+        - kinematics.filteredVr * delta
+        - 0.5 * kinematics.filteredAr * delta2
+        - (1 / 6) * kinematics.filteredJr * delta2 * delta
 
-    local sigmaSquared = sigmaD * sigmaD
-    sigmaSquared += (delta2) * (sigmaVr * sigmaVr)
-    sigmaSquared += (0.25 * delta2 * delta2) * (sigmaAr * sigmaAr)
-    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (sigmaJr * sigmaJr)
+    local sigmaSquared = kinematics.sigmaD * kinematics.sigmaD
+    sigmaSquared += (delta2) * (kinematics.sigmaVr * kinematics.sigmaVr)
+    sigmaSquared += (0.25 * delta2 * delta2) * (kinematics.sigmaAr * kinematics.sigmaAr)
+    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (kinematics.sigmaJr * kinematics.sigmaJr)
     local sigma = math.sqrt(math.max(sigmaSquared, 0))
 
     local z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ
@@ -5106,20 +5202,19 @@ local function renderLoop()
             telemetry.decisionAt = nil
         end
     end
-    local fired = false
-    local released = false
 
-    local approachSpeed = math.max(filteredVr, rawVr, 0)
+    local approachSpeed = math.max(kinematics.filteredVr, kinematics.rawVr, 0)
     local approaching = approachSpeed > EPSILON
     local timeToImpactFallback = math.huge
-    local timeToImpactPolynomial: number?
+    local timeToImpactPolynomial
     local timeToImpact = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToImpactFallback = distance / speed
+        timeToImpactFallback = kinematics.distance / speed
 
-        local impactRadial = filteredD
-        local polynomial = solveRadialImpactTime(impactRadial, filteredVr, filteredAr, filteredJr)
+        local impactRadial = kinematics.filteredD
+        local polynomial =
+            solveRadialImpactTime(impactRadial, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if polynomial and polynomial > EPSILON then
             timeToImpactPolynomial = polynomial
             timeToImpact = polynomial
@@ -5159,49 +5254,42 @@ local function renderLoop()
 
             local normalizedKappa = 0
             if kappaLimit > 0 then
-                normalizedKappa = math.clamp(math.abs(filteredKappa) / kappaLimit, 0, 1)
+                normalizedKappa = math.clamp(math.abs(kinematics.filteredKappa) / kappaLimit, 0, 1)
             end
 
             local normalizedDkappa = 0
             if dkappaLimit > 0 then
-                normalizedDkappa = math.clamp(math.abs(filteredDkappa) / dkappaLimit, 0, 1)
+                normalizedDkappa = math.clamp(math.abs(kinematics.filteredDkappa) / dkappaLimit, 0, 1)
             end
 
             local normalizedAr = 0
             if arLimit > 0 then
-                normalizedAr = math.clamp(math.max(filteredAr, 0) / arLimit, 0, 1)
+                normalizedAr = math.clamp(math.abs(kinematics.filteredAr) / arLimit, 0, 1)
             end
 
-            local normalizedJerkOverflow = 0
+            local normalizedJr = 0
             if jrLimit > 0 then
-                local overflow = math.max(jrOverflow or 0, sigmaJrOverflow or 0)
-                if overflow > 0 then
-                    normalizedJerkOverflow = math.clamp(overflow / jrLimit, 0, 1)
-                end
+                normalizedJr = math.clamp(math.abs(kinematics.filteredJr) / jrLimit, 0, 1)
             end
 
-            curveSeverity = math.max(normalizedKappa, normalizedDkappa, normalizedAr)
-            if normalizedJerkOverflow > 0 then
-                curveJerkSeverity = normalizedJerkOverflow
-                curveSeverity = math.clamp(curveSeverity + normalizedJerkOverflow, 0, 1)
-            end
+            curveSeverity = math.max(normalizedKappa, normalizedDkappa)
+            curveJerkSeverity = math.max(normalizedAr, normalizedJr)
 
-            if curveSeverity > 0 then
-                curveLeadTime = curvatureLeadScale * curveSeverity
-                if curveLeadTime > 0 then
-                    responseWindow += curveLeadTime
-                    curveLeadDistance = approachSpeed * curveLeadTime
-                    if curvatureHoldBoost and curvatureHoldBoost > 0 then
-                        curveHoldDistance = curveLeadDistance * curvatureHoldBoost
-                    end
-                end
+            local severityBoost = math.max(curveSeverity * curvatureLeadScale, curveJerkSeverity * curvatureHoldBoost)
+            if severityBoost > 0 then
+                curveLeadTime = severityBoost * responseWindowBase
+                curveLeadDistance = math.max(severityBoost * kinematics.filteredVr * responseWindowBase, 0)
+                curveHoldDistance = math.max(curveJerkSeverity * kinematics.filteredVr * PROXIMITY_HOLD_GRACE, 0)
+                responseWindow = responseWindow + curveLeadTime
             end
         end
     end
 
     local dynamicLeadBase = 0
     if approaching then
-        dynamicLeadBase = math.max(approachSpeed * responseWindowBase, 0)
+        dynamicLeadBase = math.max(approachSpeed * PROXIMITY_PRESS_GRACE, safeRadius * 0.1)
+    else
+        dynamicLeadBase = safeRadius * 0.1
     end
     dynamicLeadBase = math.min(dynamicLeadBase, safeRadius * 0.5)
 
@@ -5228,19 +5316,20 @@ local function renderLoop()
 
     local timeToPressRadiusFallback = math.huge
     local timeToHoldRadiusFallback = math.huge
-    local timeToPressRadiusPolynomial: number?
-    local timeToHoldRadiusPolynomial: number?
+    local timeToPressRadiusPolynomial
+    local timeToHoldRadiusPolynomial
     local timeToPressRadius = math.huge
     local timeToHoldRadius = math.huge
     if approaching then
         local speed = math.max(approachSpeed, EPSILON)
-        timeToPressRadiusFallback = math.max(distance - pressRadius, 0) / speed
-        timeToHoldRadiusFallback = math.max(distance - holdRadius, 0) / speed
+        timeToPressRadiusFallback = math.max(kinematics.distance - pressRadius, 0) / speed
+        timeToHoldRadiusFallback = math.max(kinematics.distance - holdRadius, 0) / speed
 
-        local radialToPress = filteredD + safeRadius - pressRadius
-        local radialToHold = filteredD + safeRadius - holdRadius
+        local radialToPress = kinematics.filteredD + safeRadius - pressRadius
+        local radialToHold = kinematics.filteredD + safeRadius - holdRadius
 
-        local pressPolynomial = solveRadialImpactTime(radialToPress, filteredVr, filteredAr, filteredJr)
+        local pressPolynomial =
+            solveRadialImpactTime(radialToPress, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if pressPolynomial and pressPolynomial > EPSILON then
             timeToPressRadiusPolynomial = pressPolynomial
             timeToPressRadius = pressPolynomial
@@ -5248,7 +5337,8 @@ local function renderLoop()
             timeToPressRadius = timeToPressRadiusFallback
         end
 
-        local holdPolynomial = solveRadialImpactTime(radialToHold, filteredVr, filteredAr, filteredJr)
+        local holdPolynomial =
+            solveRadialImpactTime(radialToHold, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
         if holdPolynomial and holdPolynomial > EPSILON then
             timeToHoldRadiusPolynomial = holdPolynomial
             timeToHoldRadius = holdPolynomial
@@ -5394,12 +5484,20 @@ local function renderLoop()
     local proximityPress =
         targetingMe
         and approaching
-        and (distance <= pressRadius or timeToPressRadius <= responseWindow or timeToImpact <= responseWindow)
+        and (
+            kinematics.distance <= pressRadius
+            or timeToPressRadius <= responseWindow
+            or timeToImpact <= responseWindow
+        )
 
     local proximityHold =
         targetingMe
         and approaching
-        and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
+        and (
+            kinematics.distance <= holdRadius
+            or timeToHoldRadius <= holdWindow
+            or timeToImpact <= holdWindow
+        )
 
     local shouldPress = proximityPress or inequalityPress
 
@@ -5418,6 +5516,144 @@ local function renderLoop()
     if shouldPress then
         shouldHold = true
     end
+
+    decision.ping = ping
+    decision.delta = delta
+    decision.mu = mu
+    decision.sigma = sigma
+    decision.z = z
+    decision.muPlus = muPlus
+    decision.muMinus = muMinus
+    decision.muValid = muValid
+    decision.sigmaValid = sigmaValid
+    decision.targetingMe = targetingMe
+    decision.approachSpeed = approachSpeed
+    decision.approaching = approaching
+    decision.timeToImpact = timeToImpact
+    decision.timeToImpactFallback = timeToImpactFallback
+    decision.timeToImpactPolynomial = timeToImpactPolynomial
+    decision.responseWindow = responseWindow
+    decision.curveLeadTime = curveLeadTime
+    decision.curveLeadDistance = curveLeadDistance
+    decision.curveHoldDistance = curveHoldDistance
+    decision.curveSeverity = curveSeverity
+    decision.curveJerkSeverity = curveJerkSeverity
+    decision.curveLeadApplied = curveLeadApplied
+    decision.curveHoldApplied = curveHoldApplied
+    decision.pressRadius = pressRadius
+    decision.holdRadius = holdRadius
+    decision.timeToPressRadius = timeToPressRadius
+    decision.timeToPressRadiusPolynomial = timeToPressRadiusPolynomial
+    decision.timeToPressRadiusFallback = timeToPressRadiusFallback
+    decision.timeToHoldRadius = timeToHoldRadius
+    decision.timeToHoldRadiusPolynomial = timeToHoldRadiusPolynomial
+    decision.timeToHoldRadiusFallback = timeToHoldRadiusFallback
+    decision.holdWindow = holdWindow
+    decision.predictedImpact = predictedImpact
+    decision.reactionBias = reactionBias
+    decision.scheduleSlack = scheduleSlack
+    decision.maxLookahead = maxLookahead
+    decision.lookaheadGoal = lookaheadGoal
+    decision.confidencePadding = confidencePadding
+    decision.smartTelemetry = smartTelemetry
+    decision.scheduleLead = scheduleLead
+    decision.inequalityPress = inequalityPress
+    decision.confidencePress = confidencePress
+    decision.timeUntilPress = timeUntilPress
+    decision.shouldDelay = shouldDelay
+    decision.withinLookahead = withinLookahead
+    decision.shouldSchedule = shouldSchedule
+    decision.proximityPress = proximityPress
+    decision.proximityHold = proximityHold
+    decision.shouldPress = shouldPress
+    decision.shouldHold = shouldHold
+
+    return decision
+end
+
+local function renderLoop()
+    if initialization.destroyed then
+        clearScheduledPress(nil, "destroyed")
+        return
+    end
+
+    if not LocalPlayer then
+        clearScheduledPress(nil, "missing-player")
+        return
+    end
+
+    if not Character or not RootPart then
+        updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
+        safeClearBallVisuals()
+        clearScheduledPress(nil, "missing-character")
+        releaseParry()
+        return
+    end
+
+    ensureBallsFolder(false)
+    local folder = BallsFolder
+    if not folder then
+        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
+        safeClearBallVisuals()
+        clearScheduledPress(nil, "missing-balls-folder")
+        releaseParry()
+        return
+    end
+
+    if not state.enabled then
+        clearScheduledPress(nil, "disabled")
+        releaseParry()
+        updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
+        safeClearBallVisuals()
+        updateToggleButton()
+        return
+    end
+
+    local now = os.clock()
+    cleanupTelemetry(now)
+    prunePendingLatencyPresses(now)
+    maybeRunAutoTuning(now)
+
+    local ball = findRealBall(folder)
+    if not ball or not ball:IsDescendantOf(Workspace) then
+        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
+        safeClearBallVisuals()
+        clearScheduledPress(nil, "no-ball")
+        releaseParry()
+        return
+    end
+
+    local ballId = getBallIdentifier(ball)
+    if not ballId then
+        updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
+        safeClearBallVisuals()
+        clearScheduledPress(nil, "missing-identifier")
+        releaseParry()
+        return
+    end
+
+    if scheduledPressState.ballId and scheduledPressState.ballId ~= ballId then
+        clearScheduledPress(nil, "ball-changed")
+    elseif scheduledPressState.ballId == ballId and now - scheduledPressState.lastUpdate > SMART_PRESS_STALE_SECONDS then
+        clearScheduledPress(ballId, "schedule-stale")
+    end
+
+    local telemetry = ensureTelemetry(ballId, now)
+    local safeRadius = config.safeRadius or 0
+    local kinematics = BallKinematics.build(ball, RootPart.Position, telemetry, safeRadius, now)
+
+    local decision = PressDecision.evaluate({
+        config = config,
+        kinematics = kinematics,
+        telemetry = telemetry,
+        safeRadius = safeRadius,
+        now = now,
+        ballId = ballId,
+        decision = pressDecisionState,
+    })
+
+    local fired = false
+    local released = false
 
     local oscillationTriggered = false
     local spamFallback = false
@@ -5441,46 +5677,59 @@ local function renderLoop()
     local existingSchedule = nil
     if scheduledPressState.ballId == ballId then
         existingSchedule = scheduledPressState
-        scheduledPressState.lead = scheduleLead
-        scheduledPressState.slack = scheduleSlack
-        if smartTelemetry then
-            scheduledPressState.smartTuning = smartTelemetry
+        scheduledPressState.lead = decision.scheduleLead
+        scheduledPressState.slack = decision.scheduleSlack
+        if decision.smartTelemetry then
+            scheduledPressState.smartTuning = decision.smartTelemetry
         end
     end
 
     local smartReason = nil
 
-    if shouldPress then
-        if shouldSchedule then
-            smartReason = string.format("impact %.3f > lead %.3f (press in %.3f)", predictedImpact, scheduleLead, math.max(timeUntilPress, 0))
+    if decision.shouldPress then
+        if decision.shouldSchedule then
+            smartReason = string.format(
+                "impact %.3f > lead %.3f (press in %.3f)",
+                decision.predictedImpact,
+                decision.scheduleLead,
+                math.max(decision.timeUntilPress, 0)
+            )
             local scheduleContext = {
-                distance = distance,
-                timeToImpact = timeToImpact,
-                timeUntilPress = timeUntilPress,
-                speed = velocity.Magnitude,
-                pressRadius = pressRadius,
-                holdRadius = holdRadius,
-                confidencePress = confidencePress,
-                targeting = targetingMe,
+                distance = kinematics.distance,
+                timeToImpact = decision.timeToImpact,
+                timeUntilPress = decision.timeUntilPress,
+                speed = kinematics.velocityMagnitude,
+                pressRadius = decision.pressRadius,
+                holdRadius = decision.holdRadius,
+                confidencePress = decision.confidencePress,
+                targeting = decision.targetingMe,
                 adaptiveBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or nil,
-                lookaheadGoal = lookaheadGoal,
+                lookaheadGoal = decision.lookaheadGoal,
             }
-            if smartTelemetry then
-                scheduleContext.smartTuning = smartTelemetry
+            if decision.smartTelemetry then
+                scheduleContext.smartTuning = decision.smartTelemetry
             end
-            updateScheduledPress(ballId, predictedImpact, scheduleLead, scheduleSlack, smartReason, now, scheduleContext)
+            updateScheduledPress(
+                ballId,
+                decision.predictedImpact,
+                decision.scheduleLead,
+                decision.scheduleSlack,
+                smartReason,
+                now,
+                scheduleContext
+            )
             existingSchedule = scheduledPressState
-        elseif existingSchedule and not shouldDelay then
+        elseif existingSchedule and not decision.shouldDelay then
             clearScheduledPress(ballId, "ready-to-press")
             existingSchedule = nil
-        elseif existingSchedule and shouldDelay and not withinLookahead then
+        elseif existingSchedule and decision.shouldDelay and not decision.withinLookahead then
             clearScheduledPress(ballId, "outside-lookahead")
             existingSchedule = nil
         end
 
-        local activeSlack = (existingSchedule and existingSchedule.slack) or scheduleSlack
-        local readyToPress = confidencePress or not shouldDelay
-        if not readyToPress and predictedImpact <= scheduleLead + activeSlack then
+        local activeSlack = (existingSchedule and existingSchedule.slack) or decision.scheduleSlack
+        local readyToPress = decision.confidencePress or not decision.shouldDelay
+        if not readyToPress and decision.predictedImpact <= decision.scheduleLead + activeSlack then
             readyToPress = true
         end
 
@@ -5517,7 +5766,7 @@ local function renderLoop()
     end
 
     if parryHeld then
-        if (not shouldHold) or (parryHeldBallId and parryHeldBallId ~= ballId) then
+        if (not decision.shouldHold) or (parryHeldBallId and parryHeldBallId ~= ballId) then
             releaseParry()
             released = true
         end
@@ -5539,37 +5788,54 @@ local function renderLoop()
     end
 
     local timeToImpactPolyText = "n/a"
-    if timeToImpactPolynomial then
-        timeToImpactPolyText = string.format("%.3f", timeToImpactPolynomial)
+    if decision.timeToImpactPolynomial then
+        timeToImpactPolyText = string.format("%.3f", decision.timeToImpactPolynomial)
     end
     local timeToImpactFallbackText = "n/a"
-    if isFiniteNumber(timeToImpactFallback) and timeToImpactFallback < math.huge then
-        timeToImpactFallbackText = string.format("%.3f", timeToImpactFallback)
+    if
+        isFiniteNumber(decision.timeToImpactFallback)
+        and decision.timeToImpactFallback < math.huge
+    then
+        timeToImpactFallbackText = string.format("%.3f", decision.timeToImpactFallback)
     end
 
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
-        string.format("d0: %.3f | vr: %.3f", filteredD, filteredVr),
-        string.format("ar: %.3f | jr: %.3f", filteredAr, filteredJr),
-        string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
-        string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
-        string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
+        string.format("d0: %.3f | vr: %.3f", kinematics.filteredD, kinematics.filteredVr),
+        string.format("ar: %.3f | jr: %.3f", kinematics.filteredAr, kinematics.filteredJr),
+        string.format("μ: %.3f | σ: %.3f | z: %.2f", decision.mu, decision.sigma, decision.z),
+        string.format("μ+zσ: %.3f | μ−zσ: %.3f", decision.muPlus, decision.muMinus),
+        string.format("Δ: %.3f | ping: %.3f | act: %.3f", decision.delta, decision.ping, activationLatencyEstimate),
         string.format("Latency sample: %s | remoteActive: %s", latencyText, tostring(state.remoteEstimatorActive)),
         string.format("TTI(poly|fb): %s | %s", timeToImpactPolyText, timeToImpactFallbackText),
-        string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
+        string.format(
+            "TTI: %.3f | TTpress: %.3f | TThold: %.3f",
+            decision.timeToImpact,
+            decision.timeToPressRadius,
+            decision.timeToHoldRadius
+        ),
         string.format(
             "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
-            curveSeverity,
-            curveJerkSeverity,
-            curveLeadTime,
-            curveLeadDistance,
-            curveLeadApplied,
-            curveHoldApplied
+            decision.curveSeverity,
+            decision.curveJerkSeverity,
+            decision.curveLeadTime,
+            decision.curveLeadDistance,
+            decision.curveLeadApplied,
+            decision.curveHoldApplied
         ),
-        string.format("Rad: safe %.2f | press %.2f | hold %.2f", safeRadius, pressRadius, holdRadius),
-        string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
-        string.format("Targeting: %s", tostring(targetingMe)),
+        string.format(
+            "Rad: safe %.2f | press %.2f | hold %.2f",
+            safeRadius,
+            decision.pressRadius,
+            decision.holdRadius
+        ),
+        string.format(
+            "Prox: press %s | hold %s",
+            tostring(decision.proximityPress),
+            tostring(decision.proximityHold)
+        ),
+        string.format("Targeting: %s", tostring(decision.targetingMe)),
         string.format(
             "Osc: trig %s | flips %d | freq %.2f | dΔ %.3f | spam %s",
             tostring(telemetry.oscillationActive),
@@ -5598,21 +5864,24 @@ local function renderLoop()
                 scheduledPressState.reason or "?"
             )
         )
-    elseif shouldPress and shouldDelay then
+    elseif decision.shouldPress and decision.shouldDelay then
         table.insert(
             debugLines,
             string.format(
                 "Smart press: delaying %.3f | lookahead %.3f",
-                math.max(timeUntilPress, 0),
-                maxLookahead
+                math.max(decision.timeUntilPress, 0),
+                decision.maxLookahead
             )
         )
     else
         table.insert(debugLines, "Smart press: idle")
     end
 
-    if sigmaArOverflow > 0 or sigmaJrOverflow > 0 then
-        table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
+    if kinematics.sigmaArOverflow > 0 or kinematics.sigmaJrOverflow > 0 then
+        table.insert(
+            debugLines,
+            string.format("σ infl.: ar %.2f | jr %.2f", kinematics.sigmaArOverflow, kinematics.sigmaJrOverflow)
+        )
     end
 
     if fired then
@@ -5626,19 +5895,19 @@ local function renderLoop()
     updateStatusLabel(debugLines)
     setBallVisuals(
         ball,
-        computeBallDebug(
-            velocity.Magnitude,
-            distance,
+        BallKinematics.computeBallDebug(
+            kinematics.velocityMagnitude,
+            kinematics.distance,
             safeRadius,
-            mu,
-            sigma,
-            muPlus,
-            delta,
-            timeToImpact,
-            timeToPressRadius,
-            timeToHoldRadius,
-            pressRadius,
-            holdRadius
+            decision.mu,
+            decision.sigma,
+            decision.muPlus,
+            decision.delta,
+            decision.timeToImpact,
+            decision.timeToPressRadius,
+            decision.timeToHoldRadius,
+            decision.pressRadius,
+            decision.holdRadius
         )
     )
 end
