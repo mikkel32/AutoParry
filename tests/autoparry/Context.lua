@@ -498,6 +498,24 @@ local function createContext(options)
         setHighlightEnabled = function(_, flag)
             highlightEnabled = flag
         end,
+        getStatusText = function()
+            local playerGui = player.PlayerGui
+            if not playerGui then
+                return nil
+            end
+
+            local screen = playerGui:FindFirstChild("AutoParryF_UI")
+            if not screen then
+                return nil
+            end
+
+            local status = screen:FindFirstChild("AutoParryStatus", true)
+            if status and status:IsA("TextLabel") then
+                return status.Text
+            end
+
+            return nil
+        end,
     }
 
     function context:_advanceBalls(deltaTime)

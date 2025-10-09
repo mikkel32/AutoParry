@@ -377,11 +377,58 @@ local function createContext(options)
         stats = stats,
     })
 
-    services.VirtualInputManager = {
-        SendKeyEvent = function(_, _isPressed, _keyCode, _isRepeat, _target)
-            return true
-        end,
-    }
+    local virtualInputLog = {}
+    local virtualInputOptions = options.virtualInput or {}
+    local virtualInputManager = virtualInputOptions.manager
+
+    if not virtualInputManager then
+        local pressFailuresRemaining = tonumber(virtualInputOptions.failPressCount) or 0
+        local releaseFailuresRemaining = tonumber(virtualInputOptions.failReleaseCount) or 0
+        local failureMessage = virtualInputOptions.failureMessage or "virtual input failure"
+        local returnValue = virtualInputOptions.returnValue
+        local callback = virtualInputOptions.onEvent
+
+        virtualInputManager = {
+            SendKeyEvent = function(_, isPressed, keyCode, isRepeat, target)
+                local entry = {
+                    isPressed = isPressed,
+                    keyCode = keyCode,
+                    isRepeat = isRepeat,
+                    target = target,
+                    time = scheduler:clock(),
+                }
+
+                if callback then
+                    local success, err = pcall(callback, entry)
+                    if not success then
+                        warn("Virtual input callback failed:", err)
+                    end
+                end
+
+                if isPressed and pressFailuresRemaining > 0 then
+                    pressFailuresRemaining -= 1
+                    entry.failed = true
+                    entry.error = failureMessage
+                    table.insert(virtualInputLog, entry)
+                    error(failureMessage)
+                elseif (not isPressed) and releaseFailuresRemaining > 0 then
+                    releaseFailuresRemaining -= 1
+                    entry.failed = true
+                    entry.error = failureMessage
+                    table.insert(virtualInputLog, entry)
+                    error(failureMessage)
+                end
+
+                table.insert(virtualInputLog, entry)
+                if returnValue ~= nil then
+                    return returnValue
+                end
+                return true
+            end,
+        }
+    end
+
+    services.VirtualInputManager = virtualInputManager
 
     local remoteOptions = options.remote or {}
     local parryContainer, remote = Harness.createParryButtonPress({
@@ -491,11 +538,32 @@ local function createContext(options)
         remotes = remotes,
         remoteLog = remoteLog,
         parryLog = parryLog,
+        virtualInputLog = virtualInputLog,
         ballsFolder = ballsFolder,
         rootPart = rootPart,
         character = character,
+        highlightEnabled = highlightEnabled,
         setHighlightEnabled = function(_, flag)
             highlightEnabled = flag
+            context.highlightEnabled = flag
+        end,
+        getStatusText = function()
+            local playerGui = player.PlayerGui
+            if not playerGui then
+                return nil
+            end
+
+            local screen = playerGui:FindFirstChild("AutoParryF_UI")
+            if not screen then
+                return nil
+            end
+
+            local status = screen:FindFirstChild("AutoParryStatus", true)
+            if status and status:IsA("TextLabel") then
+                return status.Text
+            end
+
+            return nil
         end,
     }
 
@@ -756,6 +824,68 @@ return function(t)
         context:destroy()
     end)
 
+    t.test("parry loop tolerates highlight flicker during final approach", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "HighlightFlickerThreat",
+            position = Vector3.new(0, 0, 56),
+            velocity = Vector3.new(0, 0, -180),
+        })
+
+        autoparry.setEnabled(true)
+
+        local scheduleSample
+        for _ = 1, 600 do
+            context:step(1 / 240)
+            if #context.parryLog > 0 then
+                break
+            end
+
+            local smart = context:getSmartPressState()
+            if smart.ballId then
+                scheduleSample = smart
+                break
+            end
+
+            local last = smart.lastScheduled
+            if last and last.ballId then
+                scheduleSample = last
+                break
+            end
+        end
+
+        expect(#context.parryLog):toEqual(0)
+        expect(scheduleSample):toBeTruthy()
+
+        context:setHighlightEnabled(false)
+        expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
+
+        local remaining = 0.12
+        while remaining > 0 and #context.parryLog == 0 do
+            local dt = math.min(remaining, 1 / 240)
+            context:step(dt)
+            remaining -= dt
+        end
+
+        expect(#context.parryLog > 0):toEqual(true)
+        expect(context.highlightEnabled):toEqual(false)
+        expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
+        expect(#context.parryLog):toEqual(1)
+        expect(context.parryLog[1].ball):toEqual(ball)
+        expect(autoparry.getLastParryTime()):toBeCloseTo(context.parryLog[1].timestamp, 1e-3)
+
+        context:destroy()
+    end)
+
     t.test("parry loop keeps firing when the parry remote is missing and recovers once replaced", function(expect)
         local context = createContext()
         local autoparry = context.autoparry
@@ -837,6 +967,92 @@ return function(t)
         context:destroy()
     end)
 
+    t.test("parry loop still fires after a long frame hitch", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "FrameHitchThreat",
+            position = Vector3.new(0, 0, 80),
+            velocity = Vector3.new(0, 0, -220),
+        })
+
+        autoparry.setEnabled(true)
+
+        context:advance(0.08, { step = 1 / 240 })
+        expect(#context.parryLog):toEqual(0)
+
+        context:step(0.18)
+
+        expect(#context.parryLog > 0):toEqual(true)
+        expect(context.parryLog[1].ball):toEqual(ball)
+        expect(autoparry.getLastParryTime()):toBeCloseTo(context.parryLog[1].timestamp, 1e-3)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop retries quickly after a transient virtual input failure", function(expect)
+        local context = createContext({
+            virtualInput = {
+                failPressCount = 1,
+            },
+        })
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
+        local ball = context:addBall({
+            name = "VirtualInputTransient",
+            position = Vector3.new(0, 0, 40),
+            velocity = Vector3.new(0, 0, -160),
+        })
+
+        autoparry.setEnabled(true)
+        context:advance(0.45, { step = 1 / 240 })
+
+        expect(#context.parryLog):toEqual(1)
+        expect(context.parryLog[1].ball):toEqual(ball)
+
+        local failureEntry
+        local recoveryEntry
+        local pressCount = 0
+        for _, entry in ipairs(context.virtualInputLog) do
+            if entry.isPressed then
+                pressCount += 1
+                if entry.failed then
+                    if not failureEntry then
+                        failureEntry = entry
+                    end
+                else
+                    recoveryEntry = entry
+                end
+            end
+        end
+
+        expect(pressCount >= 2):toEqual(true)
+        expect(failureEntry ~= nil):toEqual(true)
+        expect(recoveryEntry ~= nil):toEqual(true)
+        expect(recoveryEntry.failed == true):toEqual(false)
+        expect(failureEntry.failed == true):toEqual(true)
+
+        local delay = recoveryEntry.time - failureEntry.time
+        expect(delay < 0.4):toEqual(true)
+
+        context:destroy()
+    end)
+
     t.test("parry loop surfaces smart press telemetry for scheduled threats", function(expect)
         local context = createContext()
         local autoparry = context.autoparry
@@ -862,8 +1078,12 @@ return function(t)
         for _ = 1, maxSteps do
             context:step(1 / 240)
             local smart = context:getSmartPressState()
-            if smart.ballId and not scheduleSample then
-                scheduleSample = smart
+            if not scheduleSample then
+                if smart.ballId then
+                    scheduleSample = smart
+                elseif smart.lastScheduled then
+                    scheduleSample = smart.lastScheduled
+                end
             end
             if #context.parryLog > 0 then
                 break
@@ -877,7 +1097,7 @@ return function(t)
         expect(parryEntry.ball):toEqual(ball)
         expect(parryEntry.timestamp):toBeCloseTo(scheduleSample.pressAt, 2e-2)
 
-        local sampleTime = scheduleSample.sampleTime or scheduleSample.lastUpdate or 0
+        local sampleTime = scheduleSample.sampleTime or scheduleSample.time or scheduleSample.lastUpdate or 0
         local predictedImpact = scheduleSample.predictedImpact or 0
         local lead = scheduleSample.lead or 0
         local observedDelay = (scheduleSample.pressAt or 0) - sampleTime
@@ -921,6 +1141,40 @@ return function(t)
             },
             remoteCalls = summariseRemoteLogs(context.remoteLog),
         })
+
+        context:destroy()
+    end)
+
+    t.test("parry loop status panel surfaces reaction metrics", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0,
+            activationLatency = 0.08,
+        })
+
+        context:addBall({
+            name = "UiTelemetryBall",
+            position = Vector3.new(0, 0, 150),
+            velocity = Vector3.new(0, 0, -140),
+        })
+
+        autoparry.setEnabled(true)
+
+        local uiReady = context:stepUntil(function()
+            local text = context:getStatusText()
+            return type(text) == "string" and text:find("React:") ~= nil and text:find("Decide:") ~= nil
+        end, { step = 1 / 240, maxSteps = 720 })
+
+        expect(uiReady):toEqual(true)
+
+        local statusText = context:getStatusText() or ""
+        expect(statusText:find("React:")):toBeTruthy()
+        expect(statusText:find("Decide:")):toBeTruthy()
 
         context:destroy()
     end)
