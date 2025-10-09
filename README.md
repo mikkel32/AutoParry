@@ -118,6 +118,138 @@ end)
 Signals fire for every loader request, including cache hits, and `onAllComplete`
 emits whenever `progress.started == progress.finished + progress.failed`.
 
+### Parry telemetry timeline
+
+Developers can subscribe to a dedicated telemetry stream to understand how the
+smart press loop schedules, fires, and measures each parry attempt. Two helpers
+are available:
+
+- `AutoParry.onTelemetry(callback)` — receives immutable event tables whenever
+  the scheduler updates. Events include smart press schedules, parry presses,
+  schedule clearances, and both local and remote latency samples.
+- `AutoParry.getTelemetrySnapshot()` — returns the current history buffer along
+  with the latest activation latency estimate and whether remote confirmation is
+  active.
+
+Each telemetry event carries a `type` field (`"schedule"`, `"press"`,
+`"schedule-cleared"`, `"latency-sample"`, or `"success"`) alongside rich
+metadata such as predicted impact time, press lead/slack, captured ball metrics,
+and measured latency values. This makes it straightforward to reconstruct a
+timeline of why AutoParry pressed when it did and how those decisions map to the
+resulting parry outcome. The new `tests/autoparry/telemetry.spec.lua` suite
+exercises the API end-to-end and generates an artifact summarising the captured
+timeline for further inspection.
+
+### Smart press tuning
+
+The smart press scheduler now adapts in real time using the same telemetry
+statistics that power the timeline feed. Whenever AutoParry tracks a projectile
+it computes a rolling estimate of the uncertainty (`σ`), latency budget, and
+radial drift, then smooths those values into an internal tuning state. That
+state drives the effective reaction bias, schedule slack, and confidence padding
+so presses are timed relative to the observed jitter instead of the static
+defaults.
+
+- `AutoParry.getSmartTuningSnapshot()` returns the full adaptive state,
+  including the latest EMA values, base configuration, and the applied schedule
+  lead. The snapshot is also exposed via `AutoParry.getSmartPressState()` and
+  the telemetry schedule/press events under the `smartTuning` key.
+- The `smartTuning` configuration block lets you clamp ranges and smoothing
+  factors. Disable the adaptive layer entirely with `smartTuning = false`, or
+  override the targets (for example, increasing `sigmaLead` to expand the
+  schedule slack) without touching the legacy config fields.
+
+The dedicated `tests/autoparry/smart_tuning.spec.lua` spec exercises the tuning
+pipeline end-to-end, verifying that deterministic targets are reached and that
+the adaptive state is published through the developer APIs.
+
+### Telemetry metrics & diagnostics
+
+Every telemetry event now feeds into a lightweight metrics engine so you can
+track how the scheduler behaves over time. The aggregated stats are exposed via
+`AutoParry.getTelemetryStats()` and surfaced in the telemetry snapshot. They
+include counts for schedule/press/success events, average wait deltas, achieved
+lead, cancellation breakdowns, and the adaptive reaction bias that powers the
+new fallback tuning path.
+
+- `AutoParry.getTelemetryStats()` returns a structured summary of the current
+  telemetry run. The result mirrors the raw counts as well as smoothed
+  aggregates (mean/min/max/std) so you can quickly spot late presses or jittery
+  latency samples.
+- `AutoParry.getDiagnosticsReport()` turns those stats into actionable
+  recommendations. It highlights problematic wait deltas, high immediate-press
+  ratios, slow activation latency, and surfaces the most common cancellation
+  reasons so you know exactly where to tweak the configuration.
+- When smart tuning is disabled the diagnostics layer feeds a small adaptive
+  bias back into the scheduler, nudging the reaction timing based on the
+  measured lead error without enabling the full smart-tuning stack. The active
+  bias is published alongside the telemetry metrics and diagnostics report.
+- The new `tests/autoparry/diagnostics.spec.lua` suite locks in the behaviour,
+  asserting that metrics are collected, the report renders, and the adaptive
+  bias converges deterministically for repeated parries.
+
+### Telemetry-driven adjustments
+
+Telemetry insights can now flow directly back into the configuration. Call
+`AutoParry.buildTelemetryAdjustments()` to receive a structured plan containing
+proposed config deltas, per-field deltas in milliseconds, and the reasoning that
+triggered each suggestion. You can feed cached stats and summaries into the
+helper (for example, results captured from CI) or let it fetch the current
+telemetry snapshot automatically.
+
+`AutoParry.applyTelemetryAdjustments()` wraps the builder and updates
+`pressReactionBias`, `pressScheduleSlack`, and `activationLatency` when the
+aggregated wait/lead/latency metrics drift beyond configurable tolerances. Dry
+run mode lets you preview adjustments without mutating the runtime, and every
+applied change emits a `config-adjustment` telemetry event so the timeline makes
+it obvious which run performed the tweak. The new
+`tests/autoparry/telemetry_tuning.spec.lua` suite exercises both the
+recommendation flow and the application path, asserting that insufficient sample
+counts are rejected while deterministic stats converge on the expected updates.
+
+### Auto tuning
+
+If you prefer AutoParry to keep the configuration fresh automatically, enable
+the new `autoTuning` block. The runtime will periodically build telemetry
+adjustments, filter out negligible deltas, and apply the remaining updates
+without interrupting gameplay.
+
+```lua
+autoparry.configure({
+    autoTuning = {
+        enabled = true,
+        intervalSeconds = 30,
+        minSamples = 12,
+        minDelta = 0.001,
+        maxAdjustmentsPerRun = 2,
+    },
+})
+```
+
+- `AutoParry.getAutoTuningState()` returns the scheduler snapshot (last run
+  time, applied status, dry-run flag, and the most recent adjustment payload).
+- `AutoParry.runAutoTuning({ force = true })` executes the tuning pass
+  immediately, optionally overriding the interval, min sample count, or dry-run
+  behaviour.
+- All automatic changes still emit `config-adjustment` telemetry events so the
+  timeline and diagnostics reflect the new settings.
+
+The `tests/autoparry/auto_tuning.spec.lua` suite covers both real and dry-run
+paths to ensure the filter, telemetry plumbing, and state snapshots stay stable.
+
+### Telemetry insights
+
+`AutoParry.getTelemetryInsights()` distils the telemetry stats, adjustments, and
+auto-tuning state into a single consumable payload. It captures the active
+sample sizes, success and cancellation rates, latency health, per-field status
+labels, and the recommendations derived from the metrics engine. Diagnostics and
+tooling can lean on these insights to render dashboards or suggest next steps
+without reimplementing the aggregation logic.
+
+The companion `tests/autoparry/telemetry_insights.spec.lua` exercise ensures the
+insight payload stays stable, surfaces dataset warnings when sample sizes are
+thin, and mirrors the telemetry-driven adjustments that would be applied.
+
 ### Loading overlay options
 
 The bootstrap overlay subscribes to both `AutoParryLoader.context.signals` and
@@ -319,6 +451,13 @@ in-game. To iterate confidently:
    invoke `run-in-roblox --place tests/AutoParryHarness.rbxl --script
    tests/spec.server.lua` directly when you need fine-grained control over the
    script entrypoint.
+5. **Inspect telemetry** — run `python tests/run_harness.py --suite telemetry
+   --spec-engine lune` to execute the focused telemetry smoke test. The harness
+   reports the schedule/press/latency summary and stores the raw timeline in
+   `tests/artifacts/telemetry/` for deeper analysis. Pair it with
+   `--suite auto-tuning` to validate the adaptive configuration loop or
+   `--suite insights` to capture the aggregated health report without running
+   the entire spec corpus.
 
 The CI workflow mirrors this process by running the static quality gates before
 spinning up the Roblox automation harness, so local runs stay aligned with the

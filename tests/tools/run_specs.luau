@@ -984,12 +984,16 @@ end
 
 local sourceMapModule = ModuleScript.new("AutoParrySourceMap", joinPath(fixturesDir, "AutoParrySourceMap.lua"))
 local harnessModule = ModuleScript.new("Harness", joinPath(testsDir, "autoparry/harness.lua"))
+local contextModule = ModuleScript.new("Context", joinPath(testsDir, "autoparry/Context.lua"))
+local telemetryUtilsModule = ModuleScript.new("TelemetryTestUtils", joinPath(testsDir, "autoparry/telemetry_test_utils.lua"))
 
 local TestHarness = createFolder("TestHarness")
 local SpecsFolder = createFolder("Specs")
 TestHarness:Add(SpecsFolder)
 TestHarness:Add(sourceMapModule)
 TestHarness:Add(harnessModule)
+TestHarness:Add(contextModule)
+TestHarness:Add(telemetryUtilsModule)
 
 local ReplicatedStorageStub = createFolder("ReplicatedStorage")
 setGlobal("ReplicatedStorage", ReplicatedStorageStub)
@@ -1009,6 +1013,8 @@ end
 
 sourceMapModule:_mockSetParent(TestHarness)
 harnessModule:_mockSetParent(TestHarness)
+contextModule:_mockSetParent(TestHarness)
+telemetryUtilsModule:_mockSetParent(TestHarness)
 
 local Harness = require(harnessModule)
 local SourceMap = require(sourceMapModule)
