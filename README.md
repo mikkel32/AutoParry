@@ -118,6 +118,114 @@ end)
 Signals fire for every loader request, including cache hits, and `onAllComplete`
 emits whenever `progress.started == progress.finished + progress.failed`.
 
+### Parry telemetry timeline
+
+Developers can subscribe to a dedicated telemetry stream to understand how the
+smart press loop schedules, fires, and measures each parry attempt. Two helpers
+are available:
+
+- `AutoParry.onTelemetry(callback)` — receives immutable event tables whenever
+  the scheduler updates. Events include smart press schedules, parry presses,
+  schedule clearances, and both local and remote latency samples.
+- `AutoParry.getTelemetrySnapshot()` — returns the current history buffer along
+  with the latest activation latency estimate and whether remote confirmation is
+  active.
+
+Each telemetry event carries a `type` field (`"schedule"`, `"press"`,
+`"schedule-cleared"`, `"latency-sample"`, or `"success"`) alongside rich
+metadata such as predicted impact time, press lead/slack, captured ball metrics,
+and measured latency values. This makes it straightforward to reconstruct a
+timeline of why AutoParry pressed when it did and how those decisions map to the
+resulting parry outcome. The new `tests/autoparry/telemetry.spec.lua` suite
+exercises the API end-to-end and generates an artifact summarising the captured
+timeline for further inspection.
+
+### Smart press tuning
+
+The smart press scheduler now adapts in real time using the same telemetry
+statistics that power the timeline feed. Whenever AutoParry tracks a projectile
+it computes a rolling estimate of the uncertainty (`σ`), latency budget, and
+radial drift, then smooths those values into an internal tuning state. That
+state drives the effective reaction bias, schedule slack, and confidence padding
+so presses are timed relative to the observed jitter instead of the static
+defaults.
+
+- `AutoParry.getSmartTuningSnapshot()` returns the full adaptive state,
+  including the latest EMA values, base configuration, and the applied schedule
+  lead. The snapshot is also exposed via `AutoParry.getSmartPressState()` and
+  the telemetry schedule/press events under the `smartTuning` key.
+- The `smartTuning` configuration block lets you clamp ranges and smoothing
+  factors. Disable the adaptive layer entirely with `smartTuning = false`, or
+  override the targets (for example, increasing `sigmaLead` to expand the
+  schedule slack) without touching the legacy config fields.
+
+### Telemetry-driven insights
+
+The telemetry pipeline now exposes higher-level health reporting so you can
+translate raw stats into actionable tuning steps without manual spreadsheets:
+
+- `AutoParry.getTelemetryInsights()` returns a structured snapshot that blends
+  the latest stats, success rates, cancellation data, and latency acceptance
+  into a single table. The payload includes a `healthScore`, a severity-ranked
+  list of `flags`, and a curated set of `focusAreas` that highlight whether you
+  should bias toward confidence padding, reaction bias, or schedule slack
+  adjustments.
+- Insight snapshots include the same recommendation strings as the diagnostics
+  report plus the `buildTelemetryAdjustments()` result so you can apply the
+  suggested config updates immediately.
+- The new `tests/autoparry/telemetry_insights.spec.lua` spec emits a
+  `telemetry-insights` artifact, which the harness captures to
+  `tests/artifacts/insights/telemetry-insights.json`. This makes it trivial to
+  compare tuning health across branches or CI runs.
+
+The dedicated `tests/autoparry/smart_tuning.spec.lua` spec exercises the tuning
+pipeline end-to-end, verifying that deterministic targets are reached and that
+the adaptive state is published through the developer APIs.
+
+### Telemetry metrics & diagnostics
+
+Every telemetry event now feeds into a lightweight metrics engine so you can
+track how the scheduler behaves over time. The aggregated stats are exposed via
+`AutoParry.getTelemetryStats()` and surfaced in the telemetry snapshot. They
+include counts for schedule/press/success events, average wait deltas, achieved
+lead, cancellation breakdowns, and the adaptive reaction bias that powers the
+new fallback tuning path.
+
+- `AutoParry.getTelemetryStats()` returns a structured summary of the current
+  telemetry run. The result mirrors the raw counts as well as smoothed
+  aggregates (mean/min/max/std) so you can quickly spot late presses or jittery
+  latency samples.
+- `AutoParry.getDiagnosticsReport()` turns those stats into actionable
+  recommendations. It highlights problematic wait deltas, high immediate-press
+  ratios, slow activation latency, and surfaces the most common cancellation
+  reasons so you know exactly where to tweak the configuration.
+- When smart tuning is disabled the diagnostics layer feeds a small adaptive
+  bias back into the scheduler, nudging the reaction timing based on the
+  measured lead error without enabling the full smart-tuning stack. The active
+  bias is published alongside the telemetry metrics and diagnostics report.
+- The new `tests/autoparry/diagnostics.spec.lua` suite locks in the behaviour,
+  asserting that metrics are collected, the report renders, and the adaptive
+  bias converges deterministically for repeated parries.
+
+### Telemetry-driven adjustments
+
+Telemetry insights can now flow directly back into the configuration. Call
+`AutoParry.buildTelemetryAdjustments()` to receive a structured plan containing
+proposed config deltas, per-field deltas in milliseconds, and the reasoning that
+triggered each suggestion. You can feed cached stats and summaries into the
+helper (for example, results captured from CI) or let it fetch the current
+telemetry snapshot automatically.
+
+`AutoParry.applyTelemetryAdjustments()` wraps the builder and updates
+`pressReactionBias`, `pressScheduleSlack`, and `activationLatency` when the
+aggregated wait/lead/latency metrics drift beyond configurable tolerances. Dry
+run mode lets you preview adjustments without mutating the runtime, and every
+applied change emits a `config-adjustment` telemetry event so the timeline makes
+it obvious which run performed the tweak. The new
+`tests/autoparry/telemetry_tuning.spec.lua` suite exercises both the
+recommendation flow and the application path, asserting that insufficient sample
+counts are rejected while deterministic stats converge on the expected updates.
+
 ### Loading overlay options
 
 The bootstrap overlay subscribes to both `AutoParryLoader.context.signals` and
@@ -319,6 +427,10 @@ in-game. To iterate confidently:
    invoke `run-in-roblox --place tests/AutoParryHarness.rbxl --script
    tests/spec.server.lua` directly when you need fine-grained control over the
    script entrypoint.
+5. **Inspect telemetry** — run `python tests/run_harness.py --suite telemetry
+   --spec-engine lune` to execute the focused telemetry smoke test. The harness
+   reports the schedule/press/latency summary and stores the raw timeline in
+   `tests/artifacts/telemetry/` for deeper analysis.
 
 The CI workflow mirrors this process by running the static quality gates before
 spinning up the Roblox automation harness, so local runs stay aligned with the
