@@ -23,23 +23,30 @@ local ImmortalModule = Require and Require("src/core/immortal.lua") or require(s
 
 local DEFAULT_SMART_TUNING = {
     enabled = true,
-    minSlack = 0.01,
-    maxSlack = 0.045,
-    sigmaLead = 1.25,
-    slackAlpha = 0.35,
-    minConfidence = 0.03,
-    maxConfidence = 0.28,
+    minSlack = 0.008,
+    maxSlack = 0.04,
+    sigmaLead = 1.15,
+    slackAlpha = 0.5,
+    minConfidence = 0.025,
+    maxConfidence = 0.26,
     sigmaConfidence = 0.85,
-    confidenceAlpha = 0.3,
-    reactionLatencyShare = 0.4,
-    overshootShare = 0.22,
-    reactionAlpha = 0.25,
-    minReactionBias = 0.01,
-    maxReactionBias = 0.12,
-    deltaAlpha = 0.2,
-    pingAlpha = 0.3,
-    overshootAlpha = 0.25,
-    sigmaFloor = 0.003,
+    confidenceAlpha = 0.45,
+    reactionLatencyShare = 0.5,
+    overshootShare = 0.28,
+    reactionAlpha = 0.45,
+    minReactionBias = 0.008,
+    maxReactionBias = 0.16,
+    deltaAlpha = 0.35,
+    pingAlpha = 0.45,
+    overshootAlpha = 0.4,
+    sigmaFloor = 0.0025,
+    commitP99Target = 0.01,
+    commitReactionGain = 1.35,
+    commitSlackGain = 0.85,
+    lookaheadGoal = 0.9,
+    lookaheadQuantile = 0.1,
+    lookaheadReactionGain = 0.65,
+    lookaheadSlackGain = 0.4,
     enforceBaseSlack = true,
     enforceBaseConfidence = true,
     enforceBaseReaction = true,
@@ -47,20 +54,20 @@ local DEFAULT_SMART_TUNING = {
 
 local DEFAULT_AUTO_TUNING = {
     enabled = false,
-    intervalSeconds = 45,
-    minSamples = 12,
+    intervalSeconds = 30,
+    minSamples = 9,
     allowWhenSmartTuning = false,
     dryRun = false,
-    leadGain = 0.6,
-    slackGain = 0.5,
-    latencyGain = 0.5,
+    leadGain = 0.75,
+    slackGain = 0.65,
+    latencyGain = 0.65,
     leadTolerance = 0.004,
-    waitTolerance = 0.003,
+    waitTolerance = 0.0025,
     maxReactionBias = 0.24,
     maxScheduleSlack = 0.08,
     maxActivationLatency = 0.35,
-    minDelta = 0.0005,
-    maxAdjustmentsPerRun = 2,
+    minDelta = 0.0003,
+    maxAdjustmentsPerRun = 3,
 }
 
 local DEFAULT_CONFIG = {
@@ -77,7 +84,8 @@ local DEFAULT_CONFIG = {
     activationLatency = 0.12,
     pressReactionBias = 0.02,
     pressScheduleSlack = 0.015,
-    pressMaxLookahead = 0.75,
+    pressMaxLookahead = 1.2,
+    pressLookaheadGoal = 0.9,
     pressConfidencePadding = 0.08,
     targetHighlightName = "Highlight",
     ballsFolderName = "Balls",
@@ -290,6 +298,149 @@ local function summariseAggregate(source)
     }
 end
 
+local function newQuantileEstimator(targetQuantile, maxSamples)
+    local quantile = targetQuantile
+    if not isFiniteNumber(quantile) then
+        quantile = 0.5
+    end
+    quantile = math.clamp(quantile, 0, 1)
+
+    local capacity = maxSamples
+    if not isFiniteNumber(capacity) or capacity < 3 then
+        capacity = 256
+    end
+    capacity = math.floor(capacity + 0.5)
+    if capacity < 3 then
+        capacity = 3
+    end
+
+    return {
+        quantile = quantile,
+        maxSamples = capacity,
+        samples = {},
+        queue = {},
+    }
+end
+
+local function quantileBinaryInsert(samples, value)
+    local low = 1
+    local high = #samples
+    while low <= high do
+        local mid = math.floor((low + high) / 2)
+        local current = samples[mid]
+        if value < current then
+            high = mid - 1
+        else
+            low = mid + 1
+        end
+    end
+
+    table.insert(samples, low, value)
+end
+
+local function quantileRemoveValue(samples, value)
+    local low = 1
+    local high = #samples
+    while low <= high do
+        local mid = math.floor((low + high) / 2)
+        local current = samples[mid]
+        if math.abs(current - value) <= 1e-9 then
+            table.remove(samples, mid)
+            return true
+        elseif value < current then
+            high = mid - 1
+        else
+            low = mid + 1
+        end
+    end
+
+    for index = 1, #samples do
+        if math.abs(samples[index] - value) <= 1e-9 then
+            table.remove(samples, index)
+            return true
+        end
+    end
+
+    return false
+end
+
+local function updateQuantileEstimator(estimator, value)
+    if typeof(estimator) ~= "table" or not isFiniteNumber(value) then
+        return
+    end
+
+    local samples = estimator.samples
+    if typeof(samples) ~= "table" then
+        samples = {}
+        estimator.samples = samples
+    end
+
+    local queue = estimator.queue
+    if typeof(queue) ~= "table" then
+        queue = {}
+        estimator.queue = queue
+    end
+
+    quantileBinaryInsert(samples, value)
+    queue[#queue + 1] = value
+
+    local capacity = estimator.maxSamples
+    if not isFiniteNumber(capacity) or capacity < 3 then
+        capacity = 256
+        estimator.maxSamples = capacity
+    end
+
+    capacity = math.floor(capacity + 0.5)
+    if capacity < 3 then
+        capacity = 3
+        estimator.maxSamples = capacity
+    end
+
+    while #queue > capacity do
+        local oldest = table.remove(queue, 1)
+        if oldest ~= nil then
+            quantileRemoveValue(samples, oldest)
+        end
+    end
+end
+
+local function summariseQuantileEstimator(estimator)
+    if typeof(estimator) ~= "table" then
+        return { count = 0 }
+    end
+
+    local samples = estimator.samples
+    if typeof(samples) ~= "table" or #samples == 0 then
+        return { count = 0 }
+    end
+
+    local count = #samples
+    local quantile = estimator.quantile
+    if not isFiniteNumber(quantile) then
+        quantile = 0.5
+    end
+    quantile = math.clamp(quantile, 0, 1)
+
+    local index = math.floor(quantile * (count - 1) + 1.5)
+    index = math.clamp(index, 1, count)
+
+    return {
+        count = count,
+        value = samples[index],
+        min = samples[1],
+        max = samples[count],
+    }
+end
+
+local function getQuantileValue(estimator)
+    local summary = summariseQuantileEstimator(estimator)
+    if typeof(summary) ~= "table" then
+        return nil
+    end
+
+    return summary.value
+end
+
 local function cloneCounts(source)
     local result = {}
     if typeof(source) ~= "table" then
@@ -332,7 +483,7 @@ end
 
 local TelemetryAnalytics = {}
 
-local TELEMETRY_ADAPTIVE_ALPHA = 0.25
+local TELEMETRY_ADAPTIVE_ALPHA = 0.45
 local TELEMETRY_ADAPTIVE_MIN = -0.03
 local TELEMETRY_ADAPTIVE_MAX = 0.08
 
@@ -454,6 +605,10 @@ function TelemetryAnalytics.resetMetrics(resetCount)
             achievedLead = newAggregate(),
             leadDelta = newAggregate(),
         },
+        quantiles = {
+            commitLatency = newQuantileEstimator(0.99, 512),
+            scheduleLookahead = newQuantileEstimator(DEFAULT_SMART_TUNING.lookaheadQuantile or 0.1, 512),
+        },
         inFlight = {},
     }
 end
@@ -550,6 +705,10 @@ function TelemetryAnalytics.clone()
             achievedLead = summariseAggregate(metrics.timeline.achievedLead),
             leadDelta = summariseAggregate(metrics.timeline.leadDelta),
         },
+        quantiles = {
+            commitLatency = summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.commitLatency),
+            scheduleLookahead = summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.scheduleLookahead),
+        },
         adaptiveState = {
             reactionBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or 0,
             lastUpdate = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.lastUpdate or 0,
@@ -589,6 +748,10 @@ function TelemetryAnalytics.recordSchedule(event)
     updateAggregate(metrics.schedule.eta, event.eta)
     updateAggregate(metrics.schedule.predictedImpact, event.predictedImpact)
     updateAggregate(metrics.schedule.adaptiveBias, event.adaptiveBias)
+
+    if metrics.quantiles then
+        updateQuantileEstimator(metrics.quantiles.scheduleLookahead, event.eta)
+    end
 
     if event.reason then
         incrementCount(metrics.schedule.reasons, event.reason, 1)
@@ -889,6 +1052,10 @@ function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
         updateAggregate(metrics.press.decisionToPressTime, event.decisionToPressTime)
     end
 
+    if metrics.quantiles and isFiniteNumber(event.decisionToPressTime) then
+        updateQuantileEstimator(metrics.quantiles.commitLatency, event.decisionToPressTime)
+    end
+
     if typeof(event.smartTuning) == "table" then
         if isFiniteNumber(event.smartTuning.latency) then
             updateAggregate(metrics.press.smartLatency, event.smartTuning.latency)
@@ -954,6 +1121,22 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.adaptiveBias = stats.adaptiveState and stats.adaptiveState.reactionBias or 0
     summary.cancellationCount = stats.cancellations and stats.cancellations.total or 0
     summary.topCancellationReason, summary.topCancellationCount = TelemetryAnalytics.selectTopReason(stats.cancellations and stats.cancellations.reasonCounts)
+
+    if stats.quantiles then
+        local commit = stats.quantiles.commitLatency
+        if typeof(commit) == "table" then
+            summary.commitLatencyP99 = commit.value
+            summary.commitLatencySampleCount = commit.count
+        end
+
+        local lookahead = stats.quantiles.scheduleLookahead
+        if typeof(lookahead) == "table" then
+            summary.scheduleLookaheadP10 = lookahead.value
+            summary.scheduleLookaheadMin = lookahead.min
+            summary.scheduleLookaheadSampleCount = lookahead.count
+        end
+    end
+
     return summary
 end
 
@@ -995,6 +1178,32 @@ function TelemetryAnalytics.buildRecommendations(stats, summary)
             string.format(
                 "%.0f%% of presses were immediate; consider expanding pressMaxLookahead or tuning detection thresholds.",
                 immediateRate * 100
+            )
+        )
+    end
+
+    local commitP99 = summary.commitLatencyP99
+    local commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
+    if isFiniteNumber(commitP99) and commitP99 > commitTarget then
+        table.insert(
+            recommendations,
+            string.format(
+                "Commit latency P99 is %.1f ms (target %.0f ms); tighten pressScheduleSlack or increase reaction bias.",
+                commitP99 * 1000,
+                commitTarget * 1000
+            )
+        )
+    end
+
+    local lookaheadGoal = DEFAULT_SMART_TUNING.lookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or 0
+    local lookaheadP10 = summary.scheduleLookaheadP10
+    if isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
+        table.insert(
+            recommendations,
+            string.format(
+                "Lookahead P10 is %.1f ms below the %.0f ms target; expand pressMaxLookahead or ease reaction bias.",
+                (lookaheadGoal - lookaheadP10) * 1000,
+                lookaheadGoal * 1000
             )
         )
     end
@@ -1086,6 +1295,9 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
             cancellationCount = summary.cancellationCount or 0,
             cancellationRate = cancellationRate,
             successRate = successRate,
+            commitLatencyP99 = summary.commitLatencyP99,
+            scheduleLookaheadP10 = summary.scheduleLookaheadP10,
+            scheduleLookaheadMin = summary.scheduleLookaheadMin,
         },
         statuses = {},
         severity = "info",
@@ -1205,6 +1417,41 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
             "warning",
             string.format("%.0f%% of presses fired immediately; consider increasing lookahead.", summary.immediateRate * 100),
             { immediateRate = summary.immediateRate }
+        )
+    end
+
+    local commitTarget = options.commitTarget or DEFAULT_SMART_TUNING.commitP99Target or 0.01
+    local commitSamples = summary.commitLatencySampleCount or 0
+    local commitP99 = summary.commitLatencyP99
+    if commitSamples > 0 and isFiniteNumber(commitP99) and commitTarget > 0 then
+        local level = "info"
+        local message = string.format("Commit latency P99 is %.0f ms (target %.0f ms).", commitP99 * 1000, commitTarget * 1000)
+        if commitP99 > commitTarget then
+            level = "warning"
+            if commitP99 >= commitTarget * 1.8 then
+                level = "critical"
+            end
+        end
+        addStatus("commit-latency", level, message, { commitP99 = commitP99, target = commitTarget, samples = commitSamples })
+    end
+
+    local lookaheadGoal = options.lookaheadGoal or DEFAULT_SMART_TUNING.lookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or 0
+    local lookaheadSamples = summary.scheduleLookaheadSampleCount or 0
+    local lookaheadP10 = summary.scheduleLookaheadP10
+    if lookaheadSamples > 0 and isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and isFiniteNumber(lookaheadP10) then
+        local level = "info"
+        local message = string.format("Lookahead P10 is %.0f ms (goal %.0f ms).", lookaheadP10 * 1000, lookaheadGoal * 1000)
+        if lookaheadP10 < lookaheadGoal then
+            level = "warning"
+            if lookaheadP10 <= lookaheadGoal * 0.7 then
+                level = "critical"
+            end
+        end
+        addStatus(
+            "lookahead",
+            level,
+            message,
+            { goal = lookaheadGoal, lookaheadP10 = lookaheadP10, samples = lookaheadSamples }
         )
     end
 
@@ -1462,6 +1709,10 @@ function TelemetryAnalytics.computeAdjustments(stats, summary, configSnapshot, o
         end
     end
 
+    if updates.pressReactionBias ~= nil then
+        currentReaction = updates.pressReactionBias
+    end
+
     local currentSlack = resolveConfig("pressScheduleSlack", DEFAULT_CONFIG.pressScheduleSlack or 0)
     currentSlack = math.max(currentSlack, 0)
     local waitDelta = summary.averageWaitDelta
@@ -1481,6 +1732,103 @@ function TelemetryAnalytics.computeAdjustments(stats, summary, configSnapshot, o
                         "Adjusted schedule slack by %.1f ms based on the %.1f ms average wait delta.",
                         (deltas.pressScheduleSlack or 0) * 1000,
                         waitDelta * 1000
+                    )
+                )
+            end
+        end
+    end
+
+    if updates.pressScheduleSlack ~= nil then
+        currentSlack = updates.pressScheduleSlack
+    end
+
+    local commitTarget = options.commitTarget
+    if not isFiniteNumber(commitTarget) or commitTarget <= 0 then
+        commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
+    end
+    local commitMinSamples = options.commitMinSamples or 6
+    local commitSamples = summary.commitLatencySampleCount or 0
+    local commitP99 = summary.commitLatencyP99
+    if commitSamples >= commitMinSamples and isFiniteNumber(commitP99) and commitTarget > 0 then
+        local overshoot = commitP99 - commitTarget
+        if overshoot > 0 then
+            local reactionGain = options.commitReactionGain or DEFAULT_SMART_TUNING.commitReactionGain or 0
+            if reactionGain > 0 then
+                local maxReaction = options.maxReactionBias or math.max(TELEMETRY_ADJUSTMENT_MAX_REACTION, DEFAULT_CONFIG.pressReactionBias or 0)
+                maxReaction = math.max(maxReaction, currentReaction)
+                local boost = clampNumber(overshoot * reactionGain, 0, maxReaction - currentReaction)
+                if boost and boost >= 1e-4 then
+                    local newReaction = clampNumber(currentReaction + boost, 0, maxReaction)
+                    if newReaction and math.abs(newReaction - currentReaction) >= 1e-4 then
+                        updates.pressReactionBias = newReaction
+                        deltas.pressReactionBias = newReaction - currentReaction
+                        currentReaction = newReaction
+                        table.insert(
+                            adjustments.reasons,
+                            string.format(
+                                "Raised reaction bias by %.1f ms to chase the %.0f ms commit target (P99=%.1f ms).",
+                                (deltas.pressReactionBias or 0) * 1000,
+                                commitTarget * 1000,
+                                commitP99 * 1000
+                            )
+                        )
+                    end
+                end
+            end
+
+            local slackGain = options.commitSlackGain or DEFAULT_SMART_TUNING.commitSlackGain or 0
+            if slackGain > 0 then
+                local maxSlack = options.maxScheduleSlack or math.max(TELEMETRY_ADJUSTMENT_MAX_SLACK, DEFAULT_CONFIG.pressScheduleSlack or 0)
+                maxSlack = math.max(maxSlack, currentSlack)
+                local minSlack = options.minScheduleSlack or 0
+                local newSlack = clampNumber(currentSlack - overshoot * slackGain, minSlack, maxSlack)
+                if newSlack and math.abs(newSlack - currentSlack) >= 1e-4 then
+                    updates.pressScheduleSlack = newSlack
+                    deltas.pressScheduleSlack = newSlack - currentSlack
+                    table.insert(
+                        adjustments.reasons,
+                        string.format(
+                            "Adjusted schedule slack by %.1f ms to curb commit latency overshoot (P99 %.1f ms).",
+                            (deltas.pressScheduleSlack or 0) * 1000,
+                            commitP99 * 1000
+                        )
+                    )
+                    currentSlack = newSlack
+                end
+            end
+        end
+    end
+
+    local lookaheadGoal = options.lookaheadGoal
+    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
+        lookaheadGoal = configSnapshot.pressLookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or DEFAULT_SMART_TUNING.lookaheadGoal or 0
+    end
+    local lookaheadMinSamples = options.lookaheadMinSamples or 4
+    local lookaheadSamples = summary.scheduleLookaheadSampleCount or 0
+    local lookaheadP10 = summary.scheduleLookaheadP10
+    if
+        lookaheadGoal > 0
+        and lookaheadSamples >= lookaheadMinSamples
+        and isFiniteNumber(lookaheadP10)
+        and lookaheadP10 < lookaheadGoal
+    then
+        local currentLookahead = resolveConfig("pressMaxLookahead", DEFAULT_CONFIG.pressMaxLookahead or lookaheadGoal)
+        currentLookahead = math.max(currentLookahead, lookaheadGoal)
+        local gain = options.lookaheadGain or 0.5
+        local delta = clampNumber((lookaheadGoal - lookaheadP10) * gain, 0, options.maxPressLookaheadDelta or 0.75)
+        if delta and delta >= 1e-4 then
+            local maxLookahead = options.maxPressLookahead or math.max(currentLookahead, lookaheadGoal) + 0.6
+            local newLookahead = clampNumber(currentLookahead + delta, lookaheadGoal, maxLookahead)
+            if newLookahead and newLookahead - currentLookahead >= 1e-4 then
+                updates.pressMaxLookahead = newLookahead
+                deltas.pressMaxLookahead = newLookahead - currentLookahead
+                table.insert(
+                    adjustments.reasons,
+                    string.format(
+                        "Raised pressMaxLookahead by %.0f ms to meet the %.0f ms lookahead goal (P10=%.0f ms).",
+                        (deltas.pressMaxLookahead or 0) * 1000,
+                        lookaheadGoal * 1000,
+                        lookaheadP10 * 1000
                     )
                 )
             end
@@ -2370,6 +2718,34 @@ local function getSmartTuningConfig()
     return DEFAULT_CONFIG.smartTuning
 end
 
+local function resolvePerformanceTargets()
+    local smartConfig = getSmartTuningConfig()
+
+    local commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
+    if smartConfig and smartConfig ~= false and isFiniteNumber(smartConfig.commitP99Target) then
+        commitTarget = smartConfig.commitP99Target
+    end
+    if not isFiniteNumber(commitTarget) or commitTarget <= 0 then
+        commitTarget = 0.01
+    end
+
+    local lookaheadGoal = config.pressLookaheadGoal
+    if lookaheadGoal == nil then
+        lookaheadGoal = DEFAULT_CONFIG.pressLookaheadGoal
+    end
+    if smartConfig and smartConfig ~= false and isFiniteNumber(smartConfig.lookaheadGoal) then
+        lookaheadGoal = smartConfig.lookaheadGoal
+    end
+    if not isFiniteNumber(lookaheadGoal) then
+        lookaheadGoal = DEFAULT_SMART_TUNING.lookaheadGoal or 0
+    end
+    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal < 0 then
+        lookaheadGoal = 0
+    end
+
+    return commitTarget, lookaheadGoal
+end
+
 local function applySmartTuning(params)
     local tuning = getSmartTuningConfig()
     local now = params.now or os.clock()
@@ -2430,12 +2806,46 @@ local function applySmartTuning(params)
     local overshootAlpha = math.clamp(tuning.overshootAlpha or 0.25, 0, 1)
     smartTuningState.overshoot = emaScalar(smartTuningState.overshoot, overshoot, overshootAlpha)
 
+    local metrics = TelemetryAnalytics.metrics
+    local commitSummary
+    local lookaheadSummary
+    if typeof(metrics) == "table" and typeof(metrics.quantiles) == "table" then
+        commitSummary = summariseQuantileEstimator(metrics.quantiles.commitLatency)
+        lookaheadSummary = summariseQuantileEstimator(metrics.quantiles.scheduleLookahead)
+    end
+
+    local commitP99 = commitSummary and commitSummary.value or nil
+    local commitSamples = commitSummary and commitSummary.count or 0
+    local lookaheadP10 = lookaheadSummary and lookaheadSummary.value or nil
+    local lookaheadSamples = lookaheadSummary and lookaheadSummary.count or 0
+    local commitTarget, lookaheadGoal = resolvePerformanceTargets()
+    if params and isFiniteNumber(params.lookaheadGoal) and params.lookaheadGoal > 0 then
+        lookaheadGoal = params.lookaheadGoal
+    end
+
     local minSlack = math.max(tuning.minSlack or 0, 0)
     local maxSlack = tuning.maxSlack or math.max(minSlack, 0.08)
     if maxSlack < minSlack then
         maxSlack = minSlack
     end
     local slackTarget = math.clamp(sigma * (tuning.sigmaLead or 1), minSlack, maxSlack)
+
+    if commitTarget > 0 and commitSamples >= 6 and isFiniteNumber(commitP99) and commitP99 > commitTarget then
+        local overshoot = commitP99 - commitTarget
+        local slackGain = math.max(tuning.commitSlackGain or 0, 0)
+        if slackGain > 0 then
+            slackTarget = math.max(slackTarget - overshoot * slackGain, minSlack)
+        end
+    end
+
+    if lookaheadGoal > 0 and lookaheadSamples >= 4 and isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
+        local deficit = lookaheadGoal - lookaheadP10
+        local slackGain = math.max(tuning.lookaheadSlackGain or 0, 0)
+        if slackGain > 0 then
+            slackTarget = math.min(math.max(slackTarget + deficit * slackGain, minSlack), maxSlack)
+        end
+    end
+
     if tuning.enforceBaseSlack ~= false then
         slackTarget = math.max(slackTarget, baseScheduleSlack)
     end
@@ -2468,6 +2878,28 @@ local function applySmartTuning(params)
     local reactionTarget = smartTuningState.delta * (tuning.reactionLatencyShare or 0.4)
     reactionTarget += smartTuningState.overshoot * (tuning.overshootShare or 0.2)
     reactionTarget = math.clamp(reactionTarget, minReaction, maxReaction)
+
+    if commitTarget > 0 and commitSamples >= 6 and isFiniteNumber(commitP99) then
+        local overshoot = commitP99 - commitTarget
+        local reactionGain = math.max(tuning.commitReactionGain or 0, 0)
+        if overshoot > 0 and reactionGain > 0 then
+            reactionTarget = math.min(reactionTarget + overshoot * reactionGain, maxReaction)
+        elseif overshoot < -commitTarget * 0.4 and reactionGain > 0 then
+            local relief = math.min(-overshoot, commitTarget) * reactionGain * 0.5
+            reactionTarget = math.max(reactionTarget - relief, minReaction)
+        end
+    end
+
+    if lookaheadGoal > 0 and lookaheadSamples >= 4 and isFiniteNumber(lookaheadP10) then
+        local deficit = lookaheadGoal - lookaheadP10
+        local lookaheadGain = math.max(tuning.lookaheadReactionGain or 0, 0)
+        if deficit > 0 and lookaheadGain > 0 then
+            reactionTarget = math.max(reactionTarget - deficit * lookaheadGain, minReaction)
+        elseif deficit < -lookaheadGoal * 0.5 and lookaheadGain > 0 then
+            reactionTarget = math.min(reactionTarget + (-deficit) * lookaheadGain * 0.5, maxReaction)
+        end
+    end
+
     if tuning.enforceBaseReaction ~= false then
         reactionTarget = math.max(reactionTarget, baseReactionBias)
     end
@@ -4876,6 +5308,16 @@ local function renderLoop()
         maxLookahead = PROXIMITY_PRESS_GRACE
     end
 
+    local lookaheadGoal = config.pressLookaheadGoal
+    if lookaheadGoal == nil then
+        lookaheadGoal = DEFAULT_CONFIG.pressLookaheadGoal
+    end
+    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
+        lookaheadGoal = 0
+    elseif maxLookahead < lookaheadGoal then
+        maxLookahead = lookaheadGoal
+    end
+
     local confidencePadding = config.pressConfidencePadding
     if confidencePadding == nil then
         confidencePadding = DEFAULT_CONFIG.pressConfidencePadding
@@ -4897,6 +5339,7 @@ local function renderLoop()
         muMinus = muMinus,
         delta = delta,
         ping = ping,
+        lookaheadGoal = lookaheadGoal,
     })
 
     if smartTuningApplied then
@@ -5020,6 +5463,7 @@ local function renderLoop()
                 confidencePress = confidencePress,
                 targeting = targetingMe,
                 adaptiveBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or nil,
+                lookaheadGoal = lookaheadGoal,
             }
             if smartTelemetry then
                 scheduleContext.smartTuning = smartTelemetry
@@ -5247,6 +5691,9 @@ local validators = {
     end,
     pressMaxLookahead = function(value)
         return typeof(value) == "number" and value > 0
+    end,
+    pressLookaheadGoal = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
     end,
     pressConfidencePadding = function(value)
         return typeof(value) == "number" and value >= 0
@@ -5641,6 +6088,8 @@ function AutoParry.buildTelemetryAdjustments(options)
 
     local configSnapshot = cloneTable(config)
 
+    local defaultCommitTarget, defaultLookaheadGoal = resolvePerformanceTargets()
+
     local computeOptions = {
         minSamples = options.minSamples,
         allowWhenSmartTuning = options.allowWhenSmartTuning,
@@ -5652,6 +6101,16 @@ function AutoParry.buildTelemetryAdjustments(options)
         maxReactionBias = options.maxReactionBias,
         maxScheduleSlack = options.maxScheduleSlack,
         maxActivationLatency = options.maxActivationLatency,
+        minScheduleSlack = options.minScheduleSlack,
+        commitTarget = options.commitTarget or defaultCommitTarget,
+        commitReactionGain = options.commitReactionGain,
+        commitSlackGain = options.commitSlackGain,
+        commitMinSamples = options.commitMinSamples,
+        lookaheadGoal = options.lookaheadGoal or defaultLookaheadGoal,
+        lookaheadGain = options.lookaheadGain,
+        lookaheadMinSamples = options.lookaheadMinSamples,
+        maxPressLookahead = options.maxPressLookahead,
+        maxPressLookaheadDelta = options.maxPressLookaheadDelta,
     }
 
     local adjustments = TelemetryAnalytics.computeAdjustments(stats, summary, configSnapshot, computeOptions)
@@ -5845,6 +6304,7 @@ function AutoParry.getDiagnosticsReport()
     })
     local configSnapshot = adjustments.previousConfig or cloneTable(config)
     local recommendations = TelemetryAnalytics.buildRecommendations(stats, summary)
+    local commitTarget, lookaheadGoal = resolvePerformanceTargets()
     return {
         generatedAt = os.clock(),
         counters = stats.counters,
@@ -5857,6 +6317,8 @@ function AutoParry.getDiagnosticsReport()
         config = configSnapshot,
         insights = TelemetryAnalytics.computeInsights(stats, summary, adjustments, {
             minSamples = adjustments.minSamples,
+            commitTarget = commitTarget,
+            lookaheadGoal = lookaheadGoal,
         }),
     }
 end
@@ -5900,6 +6362,8 @@ function AutoParry.getTelemetryInsights(options)
         summary = TelemetryAnalytics.computeSummary(stats)
     end
 
+    local defaultCommitTarget, defaultLookaheadGoal = resolvePerformanceTargets()
+
     local adjustments = AutoParry.buildTelemetryAdjustments({
         stats = stats,
         summary = summary,
@@ -5913,12 +6377,24 @@ function AutoParry.getTelemetryInsights(options)
         maxReactionBias = options.maxReactionBias,
         maxScheduleSlack = options.maxScheduleSlack,
         maxActivationLatency = options.maxActivationLatency,
+        minScheduleSlack = options.minScheduleSlack,
+        commitTarget = options.commitTarget or defaultCommitTarget,
+        commitReactionGain = options.commitReactionGain,
+        commitSlackGain = options.commitSlackGain,
+        commitMinSamples = options.commitMinSamples,
+        lookaheadGoal = options.lookaheadGoal or defaultLookaheadGoal,
+        lookaheadGain = options.lookaheadGain,
+        lookaheadMinSamples = options.lookaheadMinSamples,
+        maxPressLookahead = options.maxPressLookahead,
+        maxPressLookaheadDelta = options.maxPressLookaheadDelta,
     })
 
     local insights = TelemetryAnalytics.computeInsights(stats, summary, adjustments, {
         minSamples = adjustments.minSamples,
         leadTolerance = options.leadTolerance,
         waitTolerance = options.waitTolerance,
+        commitTarget = options.commitTarget or defaultCommitTarget,
+        lookaheadGoal = options.lookaheadGoal or defaultLookaheadGoal,
     })
 
     insights.adjustments = {
