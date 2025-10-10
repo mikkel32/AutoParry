@@ -3,6 +3,7 @@
 local TestHarness = script.Parent.Parent
 local RuntimeFolder = TestHarness:WaitForChild("engine")
 local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
+local Physics = require(RuntimeFolder:WaitForChild("physics"))
 
 local Scheduler = Runtime.Scheduler
 
@@ -470,6 +471,25 @@ local function createContext(options)
         services = services,
     })
 
+    local autoparryConfig = {}
+    if type(autoparry.getConfig) == "function" then
+        autoparryConfig = autoparry.getConfig()
+    end
+
+    local world = Physics.World.new({
+        scheduler = scheduler,
+        now = scheduler:clock(),
+        ballsFolder = ballsFolder,
+        config = autoparryConfig,
+    })
+
+    local playerAgent = world:addAgent({
+        name = "player",
+        instance = rootPart,
+        safeRadius = autoparryConfig.safeRadius,
+        latency = options.playerLatency or 0,
+    })
+
     local originalClock = os.clock
     -- selene: allow(incorrect_standard_library_use)
     os.clock = function()
@@ -543,6 +563,8 @@ local function createContext(options)
         ballsFolder = ballsFolder,
         rootPart = rootPart,
         character = character,
+        world = world,
+        playerAgent = playerAgent,
         highlightEnabled = highlightEnabled,
         setHighlightEnabled = function(_, flag)
             highlightEnabled = flag
@@ -574,16 +596,12 @@ local function createContext(options)
             return
         end
 
-        for _, ball in ipairs(self.ballsFolder:GetChildren()) do
-            local advance = ball._advance
-            if type(advance) == "function" then
-                advance(ball, dt)
-            else
-                local velocity = ball.AssemblyLinearVelocity
-                if velocity then
-                    ball:SetPosition(ball.Position + velocity * dt)
-                end
+        if self.world then
+            local getter = self.autoparry and self.autoparry.getConfig
+            if type(getter) == "function" then
+                self.world:updateConfig(getter())
             end
+            self.world:step(dt)
         end
     end
 
@@ -593,32 +611,41 @@ local function createContext(options)
             return
         end
 
-        local root = self.rootPart
-        if not root or typeof(root.AssemblyLinearVelocity) ~= "Vector3" then
-            return
-        end
+        if not self.world then
+            local root = self.rootPart
+            if not root or typeof(root.AssemblyLinearVelocity) ~= "Vector3" then
+                return
+            end
 
-        local velocity = root.AssemblyLinearVelocity
-        if velocity.Magnitude <= 0 then
-            return
-        end
+            local velocity = root.AssemblyLinearVelocity
+            if velocity.Magnitude <= 0 then
+                return
+            end
 
-        local newPosition = root.Position + velocity * dt
-        root.Position = newPosition
-        if velocity.Magnitude > 1e-3 then
-            root.CFrame = CFrame.new(newPosition, newPosition + velocity.Unit)
-        else
-            root.CFrame = CFrame.new(newPosition)
+            local newPosition = root.Position + velocity * dt
+            root.Position = newPosition
+            if velocity.Magnitude > 1e-3 then
+                root.CFrame = CFrame.new(newPosition, newPosition + velocity.Unit)
+            else
+                root.CFrame = CFrame.new(newPosition)
+            end
         end
     end
 
     function context:addBall(options)
+        if self.world then
+            return self.world:addProjectile(options)
+        end
+
         local ball = createBall(options)
         self.ballsFolder:Add(ball)
         return ball
     end
 
     function context:clearBalls()
+        if self.world then
+            self.world:clearProjectiles()
+        end
         self.ballsFolder:Clear()
     end
 
@@ -716,6 +743,9 @@ local function createContext(options)
             parryConnection:Disconnect()
         end
         autoparry.destroy()
+        if self.world then
+            self.world:destroy()
+        end
         -- selene: allow(incorrect_standard_library_use)
         os.clock = originalClock
         for index = #instrumentedRemotes, 1, -1 do
