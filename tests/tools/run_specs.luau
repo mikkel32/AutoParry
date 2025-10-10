@@ -983,15 +983,19 @@ local function createFolder(name: string)
 end
 
 local sourceMapModule = ModuleScript.new("AutoParrySourceMap", joinPath(fixturesDir, "AutoParrySourceMap.lua"))
-local harnessModule = ModuleScript.new("Harness", joinPath(testsDir, "autoparry/harness.lua"))
 local contextModule = ModuleScript.new("Context", joinPath(testsDir, "autoparry/Context.lua"))
 local telemetryUtilsModule = ModuleScript.new("TelemetryTestUtils", joinPath(testsDir, "autoparry/telemetry_test_utils.lua"))
+local runtimeFolder = createFolder("engine")
+local runtimeModule = ModuleScript.new("runtime", joinPath(rootDir, "engine/runtime/init.lua"))
+local bootstrapModule = ModuleScript.new("bootstrap", joinPath(rootDir, "engine/runtime/bootstrap.lua"))
+runtimeFolder:Add(runtimeModule)
+runtimeFolder:Add(bootstrapModule)
 
 local TestHarness = createFolder("TestHarness")
 local SpecsFolder = createFolder("Specs")
 TestHarness:Add(SpecsFolder)
 TestHarness:Add(sourceMapModule)
-TestHarness:Add(harnessModule)
+TestHarness:Add(runtimeFolder)
 TestHarness:Add(contextModule)
 TestHarness:Add(telemetryUtilsModule)
 
@@ -1012,11 +1016,11 @@ for name, node in pairs(specsConfig) do
 end
 
 sourceMapModule:_mockSetParent(TestHarness)
-harnessModule:_mockSetParent(TestHarness)
+runtimeFolder:_mockSetParent(TestHarness)
+runtimeModule:_mockSetParent(runtimeFolder)
+bootstrapModule:_mockSetParent(runtimeFolder)
 contextModule:_mockSetParent(TestHarness)
 telemetryUtilsModule:_mockSetParent(TestHarness)
-
-local Harness = require(harnessModule)
 local SourceMap = require(sourceMapModule)
 
 

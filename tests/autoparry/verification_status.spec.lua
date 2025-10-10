@@ -1,7 +1,8 @@
 local TestHarness = script.Parent.Parent
-local Harness = require(TestHarness:WaitForChild("Harness"))
+local RuntimeFolder = TestHarness:WaitForChild("engine")
+local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
-local Scheduler = Harness.Scheduler
+local Scheduler = Runtime.Scheduler
 
 local function waitForStage(scheduler, autoparry, stage, maxSteps)
     local limit = maxSteps or 60
@@ -21,20 +22,20 @@ end
 return function(t)
     t.test("waits for ball telemetry verification before enabling", function(expect)
         local scheduler = Scheduler.new(1)
-        local services, remotes = Harness.createBaseServices(scheduler, {
+        local services, remotes = Runtime.createBaseServices(scheduler, {
             initialLocalPlayer = { Name = "LocalPlayer" },
         })
 
-        local workspace = Harness.createContainer(scheduler, "Workspace")
+        local workspace = Runtime.createContainer(scheduler, "Workspace")
         services.Workspace = workspace
 
         local originalWorkspace = rawget(_G, "workspace")
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+            remotes:Add(Runtime.createParryButtonPress({ scheduler = scheduler }))
 
-            local autoparry = Harness.loadAutoparry({
+            local autoparry = Runtime.loadAutoParry({
                 scheduler = scheduler,
                 services = services,
             })
@@ -47,7 +48,7 @@ return function(t)
             end)
 
             scheduler:schedule(3, function()
-                workspace:Add(Harness.createContainer(scheduler, "Balls"))
+                workspace:Add(Runtime.createContainer(scheduler, "Balls"))
             end)
 
             local beforeEnable = scheduler:clock()
@@ -88,21 +89,21 @@ return function(t)
 
     t.test("reports missing success remotes during verification", function(expect)
         local scheduler = Scheduler.new(1)
-        local services, remotes = Harness.createBaseServices(scheduler, {
+        local services, remotes = Runtime.createBaseServices(scheduler, {
             initialLocalPlayer = { Name = "LocalPlayer" },
         })
 
-        local workspace = Harness.createContainer(scheduler, "Workspace")
+        local workspace = Runtime.createContainer(scheduler, "Workspace")
         services.Workspace = workspace
-        workspace:Add(Harness.createContainer(scheduler, "Balls"))
+        workspace:Add(Runtime.createContainer(scheduler, "Balls"))
 
         local originalWorkspace = rawget(_G, "workspace")
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+            remotes:Add(Runtime.createParryButtonPress({ scheduler = scheduler }))
 
-            local autoparry = Harness.loadAutoparry({
+            local autoparry = Runtime.loadAutoParry({
                 scheduler = scheduler,
                 services = services,
             })
@@ -149,22 +150,22 @@ return function(t)
 
     t.test("restarts verification ladder after the parry remote is removed", function(expect)
         local scheduler = Scheduler.new(1)
-        local services, remotes = Harness.createBaseServices(scheduler, {
+        local services, remotes = Runtime.createBaseServices(scheduler, {
             initialLocalPlayer = { Name = "LocalPlayer" },
         })
 
-        local workspace = Harness.createContainer(scheduler, "Workspace")
+        local workspace = Runtime.createContainer(scheduler, "Workspace")
         services.Workspace = workspace
-        workspace:Add(Harness.createContainer(scheduler, "Balls"))
+        workspace:Add(Runtime.createContainer(scheduler, "Balls"))
 
         local originalWorkspace = rawget(_G, "workspace")
         rawset(_G, "workspace", workspace)
 
         local ok, err = pcall(function()
-            local parryContainer = Harness.createParryButtonPress({ scheduler = scheduler })
+            local parryContainer = Runtime.createParryButtonPress({ scheduler = scheduler })
             remotes:Add(parryContainer)
 
-            local autoparry = Harness.loadAutoparry({
+            local autoparry = Runtime.loadAutoParry({
                 scheduler = scheduler,
                 services = services,
             })
@@ -181,7 +182,7 @@ return function(t)
             scheduler:wait()
 
             scheduler:schedule(2, function()
-                remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+                remotes:Add(Runtime.createParryButtonPress({ scheduler = scheduler }))
             end)
 
             local readyAgain = waitForStage(scheduler, autoparry, "ready", 80)

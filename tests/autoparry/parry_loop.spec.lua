@@ -1,9 +1,10 @@
 -- selene: allow(global_usage)
 -- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent.Parent
-local Harness = require(TestHarness:WaitForChild("Harness"))
+local RuntimeFolder = TestHarness:WaitForChild("engine")
+local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
-local Scheduler = Harness.Scheduler
+local Scheduler = Runtime.Scheduler
 
 local function createBall(options)
     options = options or {}
@@ -90,7 +91,7 @@ local BallsFolder = {}
 local function createPropertySignals()
     return setmetatable({}, {
         __index = function(container, key)
-            local signal = Harness.createSignal()
+            local signal = Runtime.createSignal()
             rawset(container, key, signal)
             return signal
         end,
@@ -104,10 +105,10 @@ function BallsFolder.new(name)
         ClassName = "Folder",
         _children = {},
         _propertySignals = createPropertySignals(),
-        ChildAdded = Harness.createSignal(),
-        ChildRemoved = Harness.createSignal(),
-        Destroying = Harness.createSignal(),
-        AncestryChanged = Harness.createSignal(),
+        ChildAdded = Runtime.createSignal(),
+        ChildRemoved = Runtime.createSignal(),
+        Destroying = Runtime.createSignal(),
+        AncestryChanged = Runtime.createSignal(),
     }
 
     local function rawUpdate(key, value)
@@ -278,7 +279,7 @@ local function createContext(options)
         CFrame = CFrame.new(),
     }
     local humanoid = { Name = "Humanoid" }
-    humanoid.Died = Harness.createSignal()
+    humanoid.Died = Runtime.createSignal()
     local character
 
     character = {
@@ -324,8 +325,8 @@ local function createContext(options)
     }
 
     do
-        local addedSignal = Harness.createSignal()
-        local removingSignal = Harness.createSignal()
+        local addedSignal = Runtime.createSignal()
+        local removingSignal = Runtime.createSignal()
         player.CharacterAdded = addedSignal
         player.CharacterRemoving = removingSignal
 
@@ -365,13 +366,13 @@ local function createContext(options)
         end
     end
 
-    local stats = Harness.createStats({
+    local stats = Runtime.createStats({
         pingResponses = {
             { value = 0 },
         },
     })
 
-    local services, remotes = Harness.createBaseServices(scheduler, {
+    local services, remotes = Runtime.createBaseServices(scheduler, {
         initialLocalPlayer = player,
         runService = runService,
         stats = stats,
@@ -431,7 +432,7 @@ local function createContext(options)
     services.VirtualInputManager = virtualInputManager
 
     local remoteOptions = options.remote or {}
-    local parryContainer, remote = Harness.createParryButtonPress({
+    local parryContainer, remote = Runtime.createParryButtonPress({
         scheduler = scheduler,
         remoteKind = remoteOptions.kind,
         remoteClassName = remoteOptions.className,
@@ -464,7 +465,7 @@ local function createContext(options)
     local originalWorkspace = rawget(_G, "workspace")
     rawset(_G, "workspace", workspaceStub)
 
-    local autoparry = Harness.loadAutoparry({
+    local autoparry = Runtime.loadAutoParry({
         scheduler = scheduler,
         services = services,
     })
@@ -482,7 +483,7 @@ local function createContext(options)
         local methodName = remoteInstance._parryMethod or "Fire"
         local original = remoteInstance[methodName]
 
-        assert(isCallable(original), "Harness remote missing parry method")
+        assert(isCallable(original), "Runtime remote missing parry method")
 
         remoteInstance[methodName] = function(self, ...)
             table.insert(remoteLog, {
@@ -697,7 +698,7 @@ local function createContext(options)
             return nil
         end
 
-        local newContainer, newRemote = Harness.createParryButtonPress({
+        local newContainer, newRemote = Runtime.createParryButtonPress({
             scheduler = scheduler,
             remoteKind = remoteOptions and remoteOptions.kind,
             remoteClassName = remoteOptions and remoteOptions.className,
