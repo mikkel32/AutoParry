@@ -53,6 +53,9 @@
           "ParryLoopSpec": {
             "$path": "../autoparry/parry_loop.spec.lua"
           },
+          "OscillationSpamSpec": {
+            "$path": "../autoparry/oscillation_spam.spec.lua"
+          },
           "SmartTuningSpec": {
             "$path": "../autoparry/smart_tuning.spec.lua"
           },

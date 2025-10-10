@@ -1,7 +1,7 @@
 -- Auto-generated source map for AutoParry tests
 return {
     ['src/core/autoparry.lua'] = [===[
--- src/core/autoparry.lua (sha1: 6a2c83529940a8059a7b8e61ec95e8320e0697ee)
+-- src/core/autoparry.lua (sha1: 562712a8aa16a3a01431bd730dd77031c52be760)
 -- mikkel32/AutoParry : src/core/autoparry.lua
 -- selene: allow(global_usage)
 -- Auto-parry implementation that mirrors the "Auto-Parry (F-Key Proximity)" logic
@@ -158,6 +158,20 @@ local Defaults = (function()
         oscillationDistanceDelta = 0.35,
         oscillationSpamCooldown = 0.15,
         oscillationMaxLookahead = 0.45,
+        oscillationSpamBurstPresses = 2,
+        oscillationSpamBurstGap = 0.05,
+        oscillationSpamBurstWindow = 0.28,
+        oscillationSpamBurstLookahead = 0.6,
+        oscillationSpamMinGap = 1 / 180,
+        oscillationSpamPanicTightness = 0.72,
+        oscillationSpamPanicGapScale = 0.42,
+        oscillationSpamPanicWindowScale = 1.35,
+        oscillationSpamPanicLookaheadBoost = 0.2,
+        oscillationSpamPanicSpeedDelta = 40,
+        oscillationSpamPanicSlack = 0.012,
+        oscillationSpamRecoverySeconds = 0.18,
+        oscillationSpamCooldownTightnessGain = 0.55,
+        oscillationSpamCooldownPanicScale = 0.4,
     }
 
     configDefaults.smartTuning = smartTuning
@@ -334,6 +348,11 @@ local Constants = {
         radialJerk = 20000,
     },
 }
+
+local SPAM_MIN_GAP = 1 / 120
+local SPAM_EXPIRY_MARGIN = 0.045
+local SPAM_LOOKAHEAD_BONUS = 0.22
+local SPAM_WINDOW_EXTENSION = 0.3
 local state = {
     enabled = false,
     connection = nil,
@@ -407,6 +426,34 @@ local Context = {
         virtualInputWarningIssued = false,
         virtualInputUnavailable = false,
         virtualInputRetryAt = 0,
+        telemetrySummary = nil,
+        telemetrySummaryTrend = nil,
+        spamBurst = {
+            active = false,
+            ballId = nil :: string?,
+            remaining = 0,
+            nextPressAt = 0,
+            expireAt = 0,
+            gap = 0,
+            dynamicGap = 0,
+            dynamicLookahead = math.huge,
+            window = 0,
+            maxLookahead = math.huge,
+            startedAt = 0,
+            lastPressAt = 0,
+            failures = 0,
+            reason = nil :: string?,
+            initialDecision = nil :: { [string]: any }?,
+            baseSettings = nil :: { presses: number, gap: number, window: number, lookahead: number }?,
+            tightness = 0,
+            predictedImpact = nil :: number?,
+            panicUntil = 0,
+            panicActive = false,
+            panicReason = nil :: string?,
+            mode = "idle",
+            statsAggression = 0,
+            statsSamples = 0,
+        },
     },
     ui = {
         Root = nil :: ScreenGui?,
@@ -2835,16 +2882,42 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.averageWaitDelta = TelemetryAnalytics.aggregateMean(stats.press and stats.press.waitDelta)
     summary.averageActivationLatency = TelemetryAnalytics.aggregateMean(stats.latency and stats.latency.activation)
     summary.averageLatency = TelemetryAnalytics.aggregateMean(stats.latency and stats.latency.accepted)
-    summary.averageReactionTime = TelemetryAnalytics.aggregateMean(stats.press and stats.press.reactionTime)
-    summary.averageDecisionTime = TelemetryAnalytics.aggregateMean(stats.press and stats.press.decisionTime)
-    summary.averageDecisionToPressTime =
-        TelemetryAnalytics.aggregateMean(stats.press and stats.press.decisionToPressTime)
+    local reactionAggregate = Helpers.summariseAggregate(stats.press and stats.press.reactionTime)
+    summary.averageReactionTime = reactionAggregate.mean
+    summary.reactionStdDev = reactionAggregate.stdDev
+    summary.reactionMin = reactionAggregate.min
+    summary.reactionMax = reactionAggregate.max
+
+    local decisionAggregate = Helpers.summariseAggregate(stats.press and stats.press.decisionTime)
+    summary.averageDecisionTime = decisionAggregate.mean
+    summary.decisionStdDev = decisionAggregate.stdDev
+    summary.decisionMin = decisionAggregate.min
+    summary.decisionMax = decisionAggregate.max
+
+    local decisionToPressAggregate = Helpers.summariseAggregate(stats.press and stats.press.decisionToPressTime)
+    summary.averageDecisionToPressTime = decisionToPressAggregate.mean
+    summary.decisionToPressStdDev = decisionToPressAggregate.stdDev
+    summary.decisionToPressMin = decisionToPressAggregate.min
+    summary.decisionToPressMax = decisionToPressAggregate.max
     summary.leadDeltaMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.leadDelta)
     summary.achievedLeadMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.achievedLead)
     summary.scheduleLifetimeMean = TelemetryAnalytics.aggregateMean(stats.timeline and stats.timeline.scheduleLifetime)
     summary.adaptiveBias = stats.adaptiveState and stats.adaptiveState.reactionBias or 0
     summary.cancellationCount = stats.cancellations and stats.cancellations.total or 0
     summary.topCancellationReason, summary.topCancellationCount = TelemetryAnalytics.selectTopReason(stats.cancellations and stats.cancellations.reasonCounts)
+
+    local successAccepted = stats.success and stats.success.acceptedCount or 0
+    local successEvents = counters.success or successAccepted
+    summary.successAccepted = successAccepted
+    summary.successSamples = successEvents
+    if summary.pressCount > 0 then
+        summary.successRate = successAccepted / summary.pressCount
+    elseif successEvents > 0 then
+        summary.successRate = successAccepted / successEvents
+    else
+        summary.successRate = 0
+    end
+    summary.pressMissCount = math.max(summary.pressCount - successAccepted, 0)
     summary.averageThreatScore = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.score)
     summary.averageThreatSeverity = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.severity)
     summary.averageThreatIntensity = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.intensity)
@@ -2873,6 +2946,76 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.averageThreatHorizon = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.horizon)
     summary.averageThreatBudgetConfidenceGain = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetConfidenceGain)
     summary.averageThreatBudgetReadyRate = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetReady)
+    local reactionTarget = Defaults.SMART_TUNING.reactionGoal or Defaults.CONFIG.pressReactionBias or 0
+    if not Helpers.isFiniteNumber(reactionTarget) or reactionTarget <= 0 then
+        reactionTarget = math.max(Defaults.CONFIG.oscillationSpamMinGap or SPAM_MIN_GAP, SPAM_MIN_GAP) * 2.2
+    end
+    local commitTarget = Defaults.SMART_TUNING.commitP99Target or Defaults.CONFIG.pressScheduleSlack or 0
+    if not Helpers.isFiniteNumber(commitTarget) or commitTarget <= 0 then
+        commitTarget = math.max(Defaults.CONFIG.oscillationSpamMinGap or SPAM_MIN_GAP, SPAM_MIN_GAP) * 1.8
+    end
+
+    if reactionAggregate.count >= 6 then
+        local focusScore = 0
+        local meanReaction = reactionAggregate.mean or reactionTarget
+        local minReaction = reactionAggregate.min or meanReaction
+        local reactionStdDev = reactionAggregate.stdDev or 0
+        if Helpers.isFiniteNumber(meanReaction) and reactionTarget > 0 then
+            focusScore += math.clamp((reactionTarget - meanReaction) / reactionTarget, -1.6, 1.6) * 0.55
+        end
+        if Helpers.isFiniteNumber(minReaction) and reactionTarget > 0 then
+            focusScore += math.clamp((reactionTarget * 0.65 - minReaction) / math.max(reactionTarget * 0.65, 0.004), -1.5, 1.5)
+                * 0.3
+        end
+        if Helpers.isFiniteNumber(reactionStdDev) then
+            focusScore += math.clamp((0.006 - reactionStdDev) / 0.006, -1.4, 1.4) * 0.35
+        end
+        if Helpers.isFiniteNumber(summary.successRate) then
+            focusScore += math.clamp((summary.successRate or 0) - 0.95, -0.4, 0.4) * 1.1
+        end
+        if Helpers.isFiniteNumber(summary.immediateRate) then
+            focusScore += math.clamp(0.2 - (summary.immediateRate or 0), -0.35, 0.35) * 0.85
+        end
+        summary.reactionFocusScore = math.clamp(focusScore, -2.5, 2.5)
+    end
+
+    if decisionToPressAggregate.count >= 6 then
+        local loadScore = 0
+        local decisionMean = decisionToPressAggregate.mean or commitTarget
+        local decisionStdDev = decisionToPressAggregate.stdDev or 0
+        local decisionMin = decisionToPressAggregate.min or decisionMean
+        if Helpers.isFiniteNumber(decisionMean) and commitTarget > 0 then
+            loadScore += math.clamp((decisionMean - commitTarget) / commitTarget, -1.5, 2.4) * 0.75
+        end
+        if Helpers.isFiniteNumber(decisionStdDev) then
+            loadScore += math.clamp(decisionStdDev / math.max(commitTarget * 0.8, 0.004) - 1, -1.2, 2.2) * 0.6
+        end
+        if Helpers.isFiniteNumber(decisionMin) and commitTarget > 0 then
+            loadScore += math.clamp((decisionMin - commitTarget * 0.55) / math.max(commitTarget * 0.55, 0.0035), -1.2, 2) * 0.35
+        end
+        if Helpers.isFiniteNumber(reactionAggregate.stdDev) then
+            loadScore += math.clamp(reactionAggregate.stdDev / math.max(reactionTarget * 0.35, 0.004) - 1, -1, 1.8) * 0.45
+        end
+        if Helpers.isFiniteNumber(summary.cancellationCount) then
+            loadScore += math.clamp((summary.cancellationCount or 0) / math.max(summary.pressCount or 1, 1) - 0.05, -0.4, 0.6)
+                * 0.5
+        end
+        summary.cognitiveLoadScore = math.clamp(loadScore, -2, 3)
+    end
+
+    if reactionAggregate.count >= 4 and decisionAggregate.count >= 4 then
+        local blend = 0
+        if Helpers.isFiniteNumber(reactionAggregate.stdDev) then
+            blend += math.clamp((0.005 - (reactionAggregate.stdDev or 0)) / 0.005, -1.5, 1.5) * 0.4
+        end
+        if Helpers.isFiniteNumber(decisionAggregate.stdDev) then
+            blend += math.clamp((0.007 - (decisionAggregate.stdDev or 0)) / 0.007, -1.4, 1.4) * 0.35
+        end
+        if Helpers.isFiniteNumber(summary.successRate) then
+            blend += math.clamp((summary.successRate or 0) - 0.93, -0.4, 0.4) * 0.9
+        end
+        summary.neuroTempoScore = math.clamp(blend, -2.2, 2.2)
+    end
     summary.topThreatStatus, summary.topThreatStatusCount = TelemetryAnalytics.selectTopReason(stats.threat and stats.threat.statusCounts)
     summary.threatTransitions = stats.threat and stats.threat.transitions or 0
 
@@ -3869,7 +4012,17 @@ function Helpers.shouldForceOscillationPress(decision, telemetry, now, config)
     if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
         predictedImpact = math.huge
     end
-    if predictedImpact > fallbackLookahead then
+    local dynamicLookahead = fallbackLookahead
+    if Helpers.isFiniteNumber(predictedImpact) then
+        dynamicLookahead = fallbackLookahead + SPAM_LOOKAHEAD_BONUS * math.clamp(
+            math.max(fallbackLookahead - math.max(predictedImpact - activationLatencyEstimate, 0), 0)
+                / math.max(fallbackLookahead, Constants.EPSILON),
+            0,
+            1
+        )
+    end
+
+    if predictedImpact > dynamicLookahead then
         return false
     end
 
@@ -3890,13 +4043,1535 @@ function Helpers.shouldForceOscillationPress(decision, telemetry, now, config)
         return false
     end
 
+    local closeness = 0
+    if Helpers.isFiniteNumber(predictedImpact) then
+        local windowBase = config.oscillationSpamBurstWindow or Defaults.CONFIG.oscillationSpamBurstWindow
+        if not Helpers.isFiniteNumber(windowBase) or windowBase <= 0 then
+            windowBase = Defaults.CONFIG.oscillationSpamBurstWindow
+        end
+        local denominator = math.max(windowBase, dynamicLookahead, Constants.EPSILON)
+        local remaining = math.max(predictedImpact - activationLatencyEstimate, 0)
+        closeness = math.clamp(1 - remaining / denominator, 0, 1)
+    end
+
+    if telemetry then
+        telemetry.lastOscillationTightness = closeness
+    end
+
     local lastApplied = telemetry.lastOscillationApplied or 0
-    local minSpacing = math.max(fallbackCooldown, 1 / 60)
+
+    local tightnessGain = config.oscillationSpamCooldownTightnessGain
+    if tightnessGain == nil then
+        tightnessGain = Defaults.CONFIG.oscillationSpamCooldownTightnessGain
+    end
+    if not Helpers.isFiniteNumber(tightnessGain) or tightnessGain < 0 then
+        tightnessGain = Defaults.CONFIG.oscillationSpamCooldownTightnessGain
+    end
+    tightnessGain = math.clamp(tightnessGain, 0, 1)
+
+    local panicScale = config.oscillationSpamCooldownPanicScale
+    if panicScale == nil then
+        panicScale = Defaults.CONFIG.oscillationSpamCooldownPanicScale
+    end
+    if not Helpers.isFiniteNumber(panicScale) or panicScale <= 0 then
+        panicScale = 1
+    else
+        panicScale = math.clamp(panicScale, 0.05, 1)
+    end
+
+    local minSpacing = fallbackCooldown
+    if not Helpers.isFiniteNumber(minSpacing) or minSpacing <= 0 then
+        minSpacing = Defaults.CONFIG.oscillationSpamCooldown
+    end
+
+    local tightnessFactor = 1 - tightnessGain * closeness
+    if tightnessFactor < 0.15 then
+        tightnessFactor = 0.15
+    end
+    minSpacing = minSpacing * tightnessFactor
+
+    if telemetry and telemetry.lastOscillationBurst and telemetry.lastOscillationBurst.panic then
+        minSpacing = minSpacing * panicScale
+    end
+
+    minSpacing = math.max(minSpacing, SPAM_MIN_GAP)
     if now - lastApplied < minSpacing then
         return false
     end
 
     return true
+end
+
+local function resolveOscillationSpamSettings()
+    local presses = config.oscillationSpamBurstPresses
+    if presses == nil then
+        presses = Defaults.CONFIG.oscillationSpamBurstPresses
+    end
+    if not Helpers.isFiniteNumber(presses) then
+        presses = 0
+    end
+    presses = math.max(math.floor(presses + 0.5), 0)
+
+    local gap = config.oscillationSpamBurstGap
+    if gap == nil then
+        gap = Defaults.CONFIG.oscillationSpamBurstGap
+    end
+    if not Helpers.isFiniteNumber(gap) or gap <= 0 then
+        gap = 1 / 30
+    else
+        gap = math.max(gap, 1 / 120)
+    end
+
+    local window = config.oscillationSpamBurstWindow
+    if window == nil then
+        window = Defaults.CONFIG.oscillationSpamBurstWindow
+    end
+    if not Helpers.isFiniteNumber(window) or window <= 0 then
+        window = gap * math.max(presses, 1) * 2
+    end
+    window = math.max(window, gap * math.max(presses, 1))
+
+    local lookahead = config.oscillationSpamBurstLookahead
+    if lookahead == nil then
+        lookahead = config.oscillationMaxLookahead or Defaults.CONFIG.oscillationSpamBurstLookahead
+    end
+    if not Helpers.isFiniteNumber(lookahead) or lookahead <= 0 then
+        lookahead = Defaults.CONFIG.oscillationSpamBurstLookahead
+    end
+
+    local minGap = config.oscillationSpamMinGap
+    if minGap == nil then
+        minGap = Defaults.CONFIG.oscillationSpamMinGap or SPAM_MIN_GAP
+    end
+    if not Helpers.isFiniteNumber(minGap) or minGap <= 0 then
+        minGap = SPAM_MIN_GAP
+    end
+    minGap = math.max(minGap, SPAM_MIN_GAP)
+
+    local panicTightness = config.oscillationSpamPanicTightness
+    if panicTightness == nil then
+        panicTightness = Defaults.CONFIG.oscillationSpamPanicTightness
+    end
+    if not Helpers.isFiniteNumber(panicTightness) then
+        panicTightness = Defaults.CONFIG.oscillationSpamPanicTightness
+    end
+    panicTightness = math.clamp(panicTightness, 0, 1)
+
+    local panicGapScale = config.oscillationSpamPanicGapScale
+    if panicGapScale == nil then
+        panicGapScale = Defaults.CONFIG.oscillationSpamPanicGapScale
+    end
+    if not Helpers.isFiniteNumber(panicGapScale) or panicGapScale <= 0 then
+        panicGapScale = Defaults.CONFIG.oscillationSpamPanicGapScale
+    end
+    panicGapScale = math.clamp(panicGapScale, 0.05, 1)
+
+    local panicWindowScale = config.oscillationSpamPanicWindowScale
+    if panicWindowScale == nil then
+        panicWindowScale = Defaults.CONFIG.oscillationSpamPanicWindowScale
+    end
+    if not Helpers.isFiniteNumber(panicWindowScale) or panicWindowScale <= 0 then
+        panicWindowScale = Defaults.CONFIG.oscillationSpamPanicWindowScale
+    end
+    panicWindowScale = math.max(panicWindowScale, 1)
+
+    local panicLookaheadBoost = config.oscillationSpamPanicLookaheadBoost
+    if panicLookaheadBoost == nil then
+        panicLookaheadBoost = Defaults.CONFIG.oscillationSpamPanicLookaheadBoost
+    end
+    if not Helpers.isFiniteNumber(panicLookaheadBoost) or panicLookaheadBoost < 0 then
+        panicLookaheadBoost = Defaults.CONFIG.oscillationSpamPanicLookaheadBoost
+    end
+    if panicLookaheadBoost < 0 then
+        panicLookaheadBoost = 0
+    end
+
+    local panicSpeedDelta = config.oscillationSpamPanicSpeedDelta
+    if panicSpeedDelta == nil then
+        panicSpeedDelta = Defaults.CONFIG.oscillationSpamPanicSpeedDelta
+    end
+    if not Helpers.isFiniteNumber(panicSpeedDelta) or panicSpeedDelta < 0 then
+        panicSpeedDelta = Defaults.CONFIG.oscillationSpamPanicSpeedDelta
+    end
+    if panicSpeedDelta < 0 then
+        panicSpeedDelta = 0
+    end
+
+    local panicSlack = config.oscillationSpamPanicSlack
+    if panicSlack == nil then
+        panicSlack = Defaults.CONFIG.oscillationSpamPanicSlack
+    end
+    if not Helpers.isFiniteNumber(panicSlack) or panicSlack < 0 then
+        panicSlack = Defaults.CONFIG.oscillationSpamPanicSlack
+    end
+    if panicSlack < 0 then
+        panicSlack = 0
+    end
+
+    local recoverySeconds = config.oscillationSpamRecoverySeconds
+    if recoverySeconds == nil then
+        recoverySeconds = Defaults.CONFIG.oscillationSpamRecoverySeconds
+    end
+    if not Helpers.isFiniteNumber(recoverySeconds) or recoverySeconds < 0 then
+        recoverySeconds = Defaults.CONFIG.oscillationSpamRecoverySeconds
+    end
+    if recoverySeconds < 0 then
+        recoverySeconds = 0
+    end
+
+    return {
+        presses = presses,
+        gap = gap,
+        window = window,
+        lookahead = lookahead,
+        minGap = minGap,
+        panicTightness = panicTightness,
+        panicGapScale = panicGapScale,
+        panicWindowScale = panicWindowScale,
+        panicLookaheadBoost = panicLookaheadBoost,
+        panicSpeedDelta = panicSpeedDelta,
+        panicSlack = panicSlack,
+        recoverySeconds = recoverySeconds,
+    }
+end
+
+function Helpers.computeSpamBurstTuning(
+    settings: { presses: number, gap: number, window: number, lookahead: number },
+    decision: { [string]: any }?,
+    kinematics: BallKinematics.Kinematics?,
+    fallbackDecision: { [string]: any }?,
+    telemetrySummary: { [string]: any }?
+)
+    local presses = math.max(settings.presses or 0, 0)
+    local baseGap = settings.gap or Defaults.CONFIG.oscillationSpamBurstGap
+    local baseWindow = settings.window or Defaults.CONFIG.oscillationSpamBurstWindow
+    local baseLookahead = settings.lookahead or Defaults.CONFIG.oscillationSpamBurstLookahead
+
+    local minGap = math.max(settings.minGap or SPAM_MIN_GAP, SPAM_MIN_GAP)
+    local panicTightness = math.clamp(settings.panicTightness or Defaults.CONFIG.oscillationSpamPanicTightness, 0, 1)
+    local panicGapScale = math.clamp(settings.panicGapScale or Defaults.CONFIG.oscillationSpamPanicGapScale, 0.05, 1)
+    local panicWindowScale = math.max(settings.panicWindowScale or Defaults.CONFIG.oscillationSpamPanicWindowScale, 1)
+    local panicLookaheadBoost = math.max(settings.panicLookaheadBoost or Defaults.CONFIG.oscillationSpamPanicLookaheadBoost, 0)
+    local panicSpeedDelta = math.max(settings.panicSpeedDelta or Defaults.CONFIG.oscillationSpamPanicSpeedDelta, 0)
+    local panicSlack = math.max(settings.panicSlack or Defaults.CONFIG.oscillationSpamPanicSlack, 0)
+    local recoverySeconds = math.max(settings.recoverySeconds or Defaults.CONFIG.oscillationSpamRecoverySeconds, 0)
+
+    telemetrySummary = telemetrySummary or Context.runtime.telemetrySummary
+    local commitTarget, lookaheadGoalTarget, reactionGoalTarget = Helpers.resolvePerformanceTargets()
+
+    local statsAggression = 0
+    local statsSamples = 0
+    local statsWaitDelta
+    local statsLeadDelta
+    local statsCommitPressure
+    local statsAverageLatency
+    local statsCancellationRate
+    local statsImmediateRate
+    local statsSpeedPressure
+    local statsLookaheadPressure
+    local statsTempoPressure
+    local statsVolatilityPressure
+    local statsAverageReactionTime
+    local statsReactionStdDev
+    local statsReactionPressure
+    local statsAverageDecisionToPress
+    local statsDecisionStdDev
+    local statsDecisionToPressStdDev
+    local statsDecisionPressure
+    local statsSuccessRate
+    local statsMissPressure
+    local statsPressMissCount
+    local summaryPressCount = 0
+    local statsReactionFocus
+    local statsCognitiveLoad
+    local statsNeuroTempo
+
+    local function accumulateAggression(value, scale, clampLimit)
+        if not Helpers.isFiniteNumber(value) then
+            return
+        end
+        if not Helpers.isFiniteNumber(scale) or scale <= 0 then
+            return
+        end
+
+        local normalized = value / scale
+        if clampLimit then
+            normalized = math.clamp(normalized, -clampLimit, clampLimit)
+        else
+            normalized = math.clamp(normalized, -3, 3)
+        end
+
+        statsAggression += normalized
+        statsSamples += 1
+    end
+
+    if telemetrySummary then
+        local pressCount = telemetrySummary.pressCount or 0
+        summaryPressCount = pressCount
+        local scheduleCount = telemetrySummary.scheduleCount or pressCount
+
+        if pressCount >= 6 then
+            statsWaitDelta = telemetrySummary.averageWaitDelta
+            accumulateAggression(statsWaitDelta or 0, 0.0075, 2.4)
+        end
+
+        if scheduleCount >= 4 then
+            statsLeadDelta = telemetrySummary.leadDeltaMean
+            if Helpers.isFiniteNumber(statsLeadDelta) then
+                accumulateAggression(-statsLeadDelta, 0.0075, 2)
+            end
+        end
+
+        local commitSamples = telemetrySummary.commitLatencySampleCount or 0
+        if commitSamples >= 4 and Helpers.isFiniteNumber(telemetrySummary.commitLatencyP99) then
+            if Helpers.isFiniteNumber(commitTarget) and commitTarget > 0 then
+                statsCommitPressure = (telemetrySummary.commitLatencyP99 - commitTarget) / commitTarget
+                accumulateAggression(statsCommitPressure, 0.35, 2.5)
+            end
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageLatency) then
+            statsAverageLatency = telemetrySummary.averageLatency
+            accumulateAggression((statsAverageLatency or 0) - activationLatencyEstimate, 0.02, 1.8)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageReactionTime) then
+            statsAverageReactionTime = telemetrySummary.averageReactionTime
+            local reactionReference = reactionGoalTarget
+            if not Helpers.isFiniteNumber(reactionReference) or reactionReference <= 0 then
+                reactionReference = activationLatencyEstimate * 0.55
+            end
+            reactionReference = math.max(reactionReference, SPAM_MIN_GAP * 3, baseGap * 0.7)
+            local reactionDelta = (statsAverageReactionTime or 0) - reactionReference
+            if Helpers.isFiniteNumber(reactionDelta) then
+                statsReactionPressure = reactionDelta / math.max(reactionReference, 0.01)
+                accumulateAggression(reactionDelta, math.max(reactionReference * 0.75, 0.01), 2.2)
+            end
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.reactionStdDev) then
+            statsReactionStdDev = telemetrySummary.reactionStdDev
+            local spreadTarget = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
+            accumulateAggression(spreadTarget - statsReactionStdDev, math.max(spreadTarget, 0.01), 2.2)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageDecisionToPressTime) then
+            statsAverageDecisionToPress = telemetrySummary.averageDecisionToPressTime
+            local decisionReference = commitTarget
+            if not Helpers.isFiniteNumber(decisionReference) or decisionReference <= 0 then
+                decisionReference = activationLatencyEstimate * 0.6
+            end
+            decisionReference = math.max(decisionReference, SPAM_MIN_GAP * 2.5)
+            local decisionDelta = (statsAverageDecisionToPress or 0) - decisionReference
+            if Helpers.isFiniteNumber(decisionDelta) then
+                statsDecisionPressure = decisionDelta / math.max(decisionReference, 0.01)
+                accumulateAggression(decisionDelta, math.max(decisionReference * 0.8, 0.01), 2.2)
+            end
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.decisionStdDev) then
+            statsDecisionStdDev = telemetrySummary.decisionStdDev
+            local spreadTarget = math.max(baseGap * 0.55, SPAM_MIN_GAP * 1.8)
+            accumulateAggression(spreadTarget - statsDecisionStdDev, math.max(spreadTarget, 0.01), 2.2)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.decisionToPressStdDev) then
+            statsDecisionToPressStdDev = telemetrySummary.decisionToPressStdDev
+            local spreadTarget = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
+            accumulateAggression(spreadTarget - statsDecisionToPressStdDev, math.max(spreadTarget, 0.01), 2.2)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.cancellationCount) then
+            statsCancellationRate = telemetrySummary.cancellationCount / math.max(pressCount, 1)
+            if statsCancellationRate > 0 then
+                accumulateAggression(-statsCancellationRate, 0.18, 2)
+            end
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.immediateRate) then
+            statsImmediateRate = telemetrySummary.immediateRate
+            accumulateAggression((statsImmediateRate or 0) - 0.18, 0.12, 1.6)
+        end
+
+        if pressCount >= 6 then
+            local successRate = telemetrySummary.successRate
+            if not Helpers.isFiniteNumber(successRate) then
+                local successAccepted = telemetrySummary.successAccepted
+                if Helpers.isFiniteNumber(successAccepted) and pressCount > 0 then
+                    successRate = successAccepted / pressCount
+                end
+            end
+            if Helpers.isFiniteNumber(successRate) then
+                statsSuccessRate = math.clamp(successRate, 0, 1)
+                local successDeficit = 0.92 - statsSuccessRate
+                if successDeficit ~= 0 then
+                    accumulateAggression(successDeficit, 0.18, 2.4)
+                end
+                statsMissPressure = successDeficit
+            end
+            if Helpers.isFiniteNumber(telemetrySummary.pressMissCount) then
+                statsPressMissCount = telemetrySummary.pressMissCount
+            end
+        end
+
+        local lookaheadReference = lookaheadGoalTarget
+        if not Helpers.isFiniteNumber(lookaheadReference) or lookaheadReference <= 0 then
+            lookaheadReference = baseLookahead
+        end
+        lookaheadReference = math.max(lookaheadReference, activationLatencyEstimate + baseGap * 1.2)
+
+        if scheduleCount >= 4 then
+            if Helpers.isFiniteNumber(telemetrySummary.scheduleLookaheadP10) then
+                local lookaheadP10 = telemetrySummary.scheduleLookaheadP10
+                local deficit = lookaheadReference - lookaheadP10
+                if Helpers.isFiniteNumber(deficit) then
+                    statsLookaheadPressure = deficit
+                    accumulateAggression(deficit, math.max(lookaheadReference, 0.04), 2.2)
+                end
+            end
+
+            if Helpers.isFiniteNumber(telemetrySummary.scheduleLookaheadMin) then
+                local lookaheadMin = telemetrySummary.scheduleLookaheadMin
+                local minTarget = math.max(
+                    minGap * math.max(presses, 1) + activationLatencyEstimate * 0.5,
+                    SPAM_MIN_GAP * 1.2
+                )
+                local minDeficit = minTarget - lookaheadMin
+                if Helpers.isFiniteNumber(minDeficit) and minDeficit > 0 then
+                    if statsLookaheadPressure then
+                        statsLookaheadPressure += minDeficit * 0.5
+                    else
+                        statsLookaheadPressure = minDeficit * 0.5
+                    end
+                    accumulateAggression(minDeficit, math.max(minTarget, 0.02), 2.5)
+                end
+            end
+        end
+
+        local threatCount = telemetrySummary.threatCount or 0
+        if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatSpeed) then
+            local minSpeed = config.minSpeed or Defaults.CONFIG.minSpeed
+            if Helpers.isFiniteNumber(minSpeed) and minSpeed > 0 then
+                statsSpeedPressure = (telemetrySummary.averageThreatSpeed - minSpeed) / math.max(minSpeed, 1)
+                accumulateAggression(statsSpeedPressure * 0.5, 0.55, 1.8)
+            end
+        end
+
+        if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatTempo) then
+            local tempo = telemetrySummary.averageThreatTempo
+            local tempoNormalized = tempo * math.max(baseGap, SPAM_MIN_GAP)
+            statsTempoPressure = tempoNormalized - 1
+            accumulateAggression(statsTempoPressure, 0.4, 2.2)
+        end
+
+        if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatVolatility) then
+            local volatility = telemetrySummary.averageThreatVolatility
+            local stability = telemetrySummary.averageThreatStability
+            local volatilityRatio = volatility
+            if Helpers.isFiniteNumber(stability) and stability > 0 then
+                volatilityRatio = volatility / stability
+            end
+            statsVolatilityPressure = volatilityRatio - 1
+            accumulateAggression(statsVolatilityPressure, 0.75, 2)
+        end
+
+        if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatHorizon) then
+            local horizon = telemetrySummary.averageThreatHorizon
+            local horizonReference = math.max(lookaheadReference, baseLookahead)
+            local surplus = horizon - horizonReference
+            if Helpers.isFiniteNumber(surplus) then
+                accumulateAggression(-surplus, math.max(horizonReference, 0.12), 1.8)
+            end
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.reactionFocusScore) then
+            statsReactionFocus = math.clamp(telemetrySummary.reactionFocusScore, -2.5, 2.5)
+            accumulateAggression(statsReactionFocus, 1.6, 2.5)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.cognitiveLoadScore) then
+            statsCognitiveLoad = math.clamp(telemetrySummary.cognitiveLoadScore, -2, 3)
+            accumulateAggression(-statsCognitiveLoad, 1.4, 2.5)
+        end
+
+        if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.neuroTempoScore) then
+            statsNeuroTempo = math.clamp(telemetrySummary.neuroTempoScore, -2.2, 2.2)
+            accumulateAggression(statsNeuroTempo, 1.5, 2.2)
+        end
+    end
+
+    local statsAggressionScore = 0
+    if statsSamples > 0 then
+        statsAggressionScore = math.clamp(statsAggression / statsSamples, -1.8, 1.8)
+    end
+    local statsTighten = math.max(statsAggressionScore, 0)
+    local statsRelax = math.max(-statsAggressionScore, 0)
+
+    local statsTrend = 0
+    local trend = Context.runtime.telemetrySummaryTrend
+    if trend and Helpers.isFiniteNumber(trend.momentum) then
+        local stale = trend.updatedAt and os.clock() - trend.updatedAt > 5
+        if not stale and (trend.samples or 0) >= 2 then
+            statsTrend = math.clamp(trend.momentum, -1.5, 1.5)
+            if statsTrend > 0 then
+                statsTighten = math.min(statsTighten + statsTrend * 0.5, 2.5)
+            elseif statsTrend < 0 then
+                statsRelax = math.min(statsRelax + (-statsTrend) * 0.35, 2.5)
+            end
+        end
+    end
+
+    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
+        if statsReactionFocus > 0 then
+            statsTighten = math.min(statsTighten + statsReactionFocus * 0.45, 3)
+        elseif statsReactionFocus < 0 then
+            statsRelax = math.min(statsRelax + (-statsReactionFocus) * 0.4, 3)
+        end
+    end
+
+    if statsNeuroTempo and Helpers.isFiniteNumber(statsNeuroTempo) then
+        if statsNeuroTempo > 0 then
+            statsTighten = math.min(statsTighten + statsNeuroTempo * 0.35, 3)
+        elseif statsNeuroTempo < 0 then
+            statsRelax = math.min(statsRelax + (-statsNeuroTempo) * 0.25, 3)
+        end
+    end
+
+    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
+        if statsCognitiveLoad > 0 then
+            statsRelax = math.min(statsRelax + statsCognitiveLoad * 0.45, 3)
+        elseif statsCognitiveLoad < 0 then
+            statsTighten = math.min(statsTighten + (-statsCognitiveLoad) * 0.4, 3)
+        end
+    end
+
+    local basePresses = presses
+    local statsPressureBoost = 0
+
+    if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
+        if statsReactionPressure > 0 then
+            statsPressureBoost += math.min(statsReactionPressure, 1.8) * 0.65
+        else
+            statsRelax = math.min(statsRelax + (-statsReactionPressure) * 0.35, 3)
+        end
+    end
+
+    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) and statsReactionFocus > 1.1 then
+        statsPressureBoost += math.min(statsReactionFocus - 1.1, 1.6) * 0.55
+    end
+
+    if statsNeuroTempo and Helpers.isFiniteNumber(statsNeuroTempo) and statsNeuroTempo > 0.9 then
+        statsPressureBoost += math.min(statsNeuroTempo - 0.9, 1.4) * 0.45
+    end
+
+    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) and statsCognitiveLoad < -0.6 then
+        statsPressureBoost += math.min(-statsCognitiveLoad - 0.6, 1.6) * 0.5
+    end
+
+    if statsDecisionPressure and Helpers.isFiniteNumber(statsDecisionPressure) then
+        if statsDecisionPressure > 0 then
+            statsPressureBoost += math.min(statsDecisionPressure, 1.6) * 0.45
+        else
+            statsRelax = math.min(statsRelax + (-statsDecisionPressure) * 0.3, 3)
+        end
+    end
+
+    if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
+        if statsMissPressure > 0 then
+            statsPressureBoost += math.min(statsMissPressure, 1.5) * 0.9
+        else
+            statsRelax = math.min(statsRelax + (-statsMissPressure) * 0.4, 3)
+        end
+    end
+
+    if statsPressMissCount and Helpers.isFiniteNumber(statsPressMissCount) and statsPressMissCount > 0 then
+        local missRatio = statsPressMissCount / math.max(summaryPressCount, 1)
+        statsPressureBoost += math.clamp(missRatio * 1.5, 0, 1.2)
+    end
+
+    if statsSuccessRate and Helpers.isFiniteNumber(statsSuccessRate) and statsSuccessRate > 0.97 then
+        statsRelax = math.min(statsRelax + (statsSuccessRate - 0.97) * 1.4, 3)
+    end
+
+    if
+        statsAverageReactionTime
+        and Helpers.isFiniteNumber(statsAverageReactionTime)
+        and Helpers.isFiniteNumber(reactionGoalTarget)
+        and reactionGoalTarget > 0
+        and statsAverageReactionTime < reactionGoalTarget * 0.85
+    then
+        local surplus = math.max(reactionGoalTarget * 0.85 - statsAverageReactionTime, 0)
+        statsRelax = math.min(statsRelax + surplus / math.max(reactionGoalTarget, 0.01) * 0.6, 3)
+    end
+
+    if statsPressureBoost > 0 then
+        presses = math.max(math.ceil(basePresses + statsPressureBoost), basePresses)
+        presses = math.min(presses, basePresses + 2)
+    else
+        presses = math.max(basePresses, presses)
+    end
+
+    local dynamicPanicTightness = panicTightness
+    local dynamicPanicSlack = panicSlack
+    local dynamicPanicSpeedDelta = panicSpeedDelta
+    if statsTighten > 0 then
+        dynamicPanicTightness = math.max(panicTightness - statsTighten * 0.22, 0.25)
+        dynamicPanicSlack = math.max(panicSlack * (1 - statsTighten * 0.35), minGap * 0.8)
+        dynamicPanicSpeedDelta = math.max(panicSpeedDelta * (1 - statsTighten * 0.45), 0)
+    elseif statsRelax > 0 then
+        dynamicPanicTightness = math.min(panicTightness + statsRelax * 0.18, 0.98)
+        dynamicPanicSlack = panicSlack * (1 + statsRelax * 0.4)
+        dynamicPanicSpeedDelta = panicSpeedDelta * (1 + statsRelax * 0.25)
+    end
+
+    if statsTrend > 0 then
+        dynamicPanicTightness = math.max(dynamicPanicTightness - statsTrend * 0.12, 0.2)
+        dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - statsTrend * 0.18), minGap * 0.75)
+        dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - statsTrend * 0.2), 0)
+    elseif statsTrend < 0 then
+        local relaxTrend = -statsTrend
+        dynamicPanicTightness = math.min(dynamicPanicTightness + relaxTrend * 0.1, 0.99)
+        dynamicPanicSlack = dynamicPanicSlack * (1 + relaxTrend * 0.15)
+        dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + relaxTrend * 0.18)
+    end
+
+    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
+        if statsReactionFocus > 0 then
+            dynamicPanicTightness = math.max(dynamicPanicTightness - statsReactionFocus * 0.08, 0.18)
+            dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - statsReactionFocus * 0.14), minGap * 0.7)
+            dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - statsReactionFocus * 0.12), 0)
+        elseif statsReactionFocus < 0 then
+            local relaxFocus = -statsReactionFocus
+            dynamicPanicTightness = math.min(dynamicPanicTightness + relaxFocus * 0.07, 0.99)
+            dynamicPanicSlack = dynamicPanicSlack * (1 + relaxFocus * 0.16)
+            dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + relaxFocus * 0.12)
+        end
+    end
+
+    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
+        if statsCognitiveLoad > 0 then
+            dynamicPanicTightness = math.min(dynamicPanicTightness + statsCognitiveLoad * 0.09, 0.99)
+            dynamicPanicSlack = dynamicPanicSlack * (1 + statsCognitiveLoad * 0.2)
+            dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + statsCognitiveLoad * 0.12)
+        elseif statsCognitiveLoad < 0 then
+            local lighten = -statsCognitiveLoad
+            dynamicPanicTightness = math.max(dynamicPanicTightness - lighten * 0.1, 0.18)
+            dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - lighten * 0.16), minGap * 0.7)
+            dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - lighten * 0.1), 0)
+        end
+    end
+
+    if not Helpers.isFiniteNumber(baseGap) or baseGap <= 0 then
+        baseGap = Defaults.CONFIG.oscillationSpamBurstGap
+    end
+    if not Helpers.isFiniteNumber(baseWindow) or baseWindow <= 0 then
+        baseWindow = math.max(baseGap * math.max(presses, 1) * 2, baseGap)
+    end
+    if not Helpers.isFiniteNumber(baseLookahead) or baseLookahead <= 0 then
+        baseLookahead = Defaults.CONFIG.oscillationSpamBurstLookahead
+    end
+
+    local reference = decision or fallbackDecision
+    local predictedImpact = nil
+    local timeUntilPress = nil
+    local decisionConfidence = nil
+    local scheduleSlack = nil
+    local detectionAge = nil
+    local minDetectionTime = nil
+    if reference then
+        predictedImpact = reference.predictedImpact or reference.timeUntilPress or reference.timeToImpact
+        timeUntilPress = reference.timeUntilPress or reference.timeToImpact or reference.predictedImpact
+    end
+    if decision then
+        decisionConfidence = decision.confidence
+        scheduleSlack = decision.scheduleSlack
+        detectionAge = decision.detectionAge
+        minDetectionTime = decision.minDetectionTime
+    end
+    if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+        predictedImpact = nil
+    end
+    if not Helpers.isFiniteNumber(timeUntilPress) or timeUntilPress < 0 then
+        timeUntilPress = predictedImpact
+    end
+
+    local gap = baseGap
+    local window = baseWindow
+    local lookahead = baseLookahead
+    local tightness = 0
+    local panic = false
+    local panicReason = nil
+    local panicGap = math.max(baseGap * panicGapScale, minGap)
+    local panicWindow = math.max(baseWindow * panicWindowScale, baseWindow)
+    local panicLookahead = math.max(baseLookahead + panicLookaheadBoost, baseLookahead)
+
+    if predictedImpact then
+        local activationBudget = math.max(predictedImpact - activationLatencyEstimate, 0)
+        local baseDenominator = math.max(baseWindow, baseGap * math.max(presses, 1), Constants.EPSILON)
+        tightness = math.clamp(1 - activationBudget / baseDenominator, 0, 1)
+
+        if timeUntilPress then
+            local scheduleBudget = math.max(timeUntilPress - activationLatencyEstimate, 0)
+            local scheduleDenominator = math.max(baseWindow + activationLatencyEstimate, Constants.EPSILON)
+            local scheduleTightness = 1 - scheduleBudget / scheduleDenominator
+            if Helpers.isFiniteNumber(scheduleTightness) then
+                tightness = math.max(tightness, math.clamp(scheduleTightness, 0, 1))
+            end
+        end
+
+        local speedFactor = 0
+        if kinematics and Helpers.isFiniteNumber(kinematics.velocityMagnitude) then
+            local minSpeed = config.minSpeed or Defaults.CONFIG.minSpeed
+            local speedDenominator = math.max(minSpeed, Constants.EPSILON)
+            local normalized = (kinematics.velocityMagnitude - minSpeed) / speedDenominator
+            speedFactor = math.clamp(normalized * 0.5, 0, 1)
+        end
+
+        local tighten = math.max(tightness, speedFactor)
+        if decisionConfidence and Helpers.isFiniteNumber(decisionConfidence) then
+            local normalizedConfidence = math.clamp((decisionConfidence - 0.5) / 0.45, 0, 1)
+            tighten = math.max(tighten, normalizedConfidence * 0.6)
+        end
+        if statsTighten > 0 then
+            tighten = math.min(tighten + statsTighten * 0.35, 1.25)
+        elseif statsRelax > 0 then
+            tighten = math.max(tighten - statsRelax * 0.25, 0)
+        end
+
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
+            if statsReactionPressure > 0 then
+                tighten = math.min(tighten + math.min(statsReactionPressure, 1.6) * 0.3, 1.4)
+            else
+                tighten = math.max(tighten + statsReactionPressure * 0.22, 0)
+            end
+        end
+
+        if statsDecisionPressure and Helpers.isFiniteNumber(statsDecisionPressure) and statsDecisionPressure > 0 then
+            tighten = math.min(tighten + math.min(statsDecisionPressure, 1.5) * 0.25, 1.45)
+        end
+
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
+            if statsMissPressure > 0 then
+                tighten = math.min(tighten + math.min(statsMissPressure, 1.4) * 0.45, 1.5)
+            else
+                tighten = math.max(tighten + statsMissPressure * 0.25, 0)
+            end
+        end
+
+        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
+            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+            if tempoNormalized > 0 then
+                tighten = math.min(tighten + tempoNormalized * 0.22, 1.3)
+            else
+                tighten = math.max(tighten + tempoNormalized * 0.18, 0)
+            end
+        end
+
+        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
+            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+            if volatilityNormalized > 0 then
+                tighten = math.min(tighten + volatilityNormalized * 0.28, 1.35)
+            else
+                tighten = math.max(tighten + volatilityNormalized * 0.2, 0)
+            end
+        end
+
+        local lookaheadNormalized
+        if statsLookaheadPressure and Helpers.isFiniteNumber(statsLookaheadPressure) then
+            lookaheadNormalized = statsLookaheadPressure / math.max(baseGap + activationLatencyEstimate, 0.04)
+            lookaheadNormalized = math.clamp(lookaheadNormalized, -2, 2)
+            if lookaheadNormalized > 0 then
+                tighten = math.min(tighten + lookaheadNormalized * 0.35, 1.35)
+            else
+                tighten = math.max(tighten + lookaheadNormalized * 0.25, 0)
+            end
+        end
+
+        tightness = math.max(tightness, math.clamp(tighten, 0, 1))
+
+        local tightenScale = 0.55 + statsTighten * 0.25
+        gap = math.max(baseGap * (1 - tightenScale * tighten), SPAM_MIN_GAP)
+        if statsTighten > 0 then
+            gap = math.max(gap * (1 - 0.2 * statsTighten), minGap)
+        elseif statsRelax > 0 then
+            gap = math.min(gap * (1 + 0.15 * statsRelax), baseGap * (1 + 0.35 * statsRelax))
+        end
+
+        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
+            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+            if tempoNormalized > 0 then
+                gap = math.max(gap * (1 - 0.12 * tempoNormalized), minGap)
+            elseif tempoNormalized < 0 then
+                local relaxTempo = -tempoNormalized
+                gap = math.min(gap * (1 + 0.1 * relaxTempo), baseGap * (1 + 0.25 * relaxTempo))
+            end
+        end
+
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
+            if statsReactionPressure > 0 then
+                gap = math.max(gap * (1 - 0.22 * math.min(statsReactionPressure, 1.6)), minGap)
+            else
+                gap = math.min(gap * (1 - statsReactionPressure * 0.15), baseGap * 1.3)
+            end
+        end
+
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
+            if statsMissPressure > 0 then
+                gap = math.max(gap * (1 - 0.28 * math.min(statsMissPressure, 1.3)), minGap)
+            else
+                local relaxMiss = -statsMissPressure
+                gap = math.min(gap * (1 + 0.18 * relaxMiss), baseGap * 1.3)
+            end
+        end
+
+        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
+            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+            if volatilityNormalized > 0 then
+                gap = math.max(gap * (1 - 0.1 * volatilityNormalized), minGap)
+            elseif volatilityNormalized < 0 then
+                local relaxVolatility = -volatilityNormalized
+                gap = math.min(gap * (1 + 0.08 * relaxVolatility), baseGap * (1 + 0.2 * relaxVolatility))
+            end
+        end
+
+        if lookaheadNormalized and lookaheadNormalized ~= 0 then
+            if lookaheadNormalized > 0 then
+                gap = math.max(gap * (1 - 0.18 * lookaheadNormalized), minGap)
+            else
+                local relaxLookahead = -lookaheadNormalized
+                gap = math.min(gap * (1 + 0.12 * relaxLookahead), baseGap * (1 + 0.3 * relaxLookahead))
+            end
+        end
+
+        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+            local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
+            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.6, 1.6)
+            if normalized > 0 then
+                gap = math.max(gap * (1 - 0.08 * normalized), minGap * 0.95)
+            elseif normalized < 0 then
+                local relax = -normalized
+                gap = math.min(gap * (1 + 0.06 * relax), baseGap * (1 + 0.28 * relax))
+            end
+        end
+
+        if statsDecisionToPressStdDev and Helpers.isFiniteNumber(statsDecisionToPressStdDev) then
+            local targetSpread = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
+            local normalized = math.clamp((targetSpread - statsDecisionToPressStdDev) / math.max(targetSpread, 0.01), -1.5, 1.5)
+            if normalized < 0 then
+                local relax = -normalized
+                gap = math.min(gap * (1 + 0.05 * relax), baseGap * (1 + 0.22 * relax))
+            else
+                gap = math.max(gap * (1 - 0.05 * normalized), minGap)
+            end
+        end
+
+        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
+            if statsReactionFocus > 0 then
+                gap = math.max(gap * (1 - 0.14 * math.min(statsReactionFocus, 1.8)), minGap * 0.9)
+            elseif statsReactionFocus < 0 then
+                local relaxFocus = -statsReactionFocus
+                gap = math.min(gap * (1 + 0.1 * relaxFocus), baseGap * (1 + 0.35 * relaxFocus))
+            end
+        end
+
+        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
+            if statsCognitiveLoad > 0 then
+                gap = math.min(gap * (1 + 0.08 * math.min(statsCognitiveLoad, 1.8)), baseGap * (1 + 0.35 * math.min(statsCognitiveLoad, 1.8)))
+            elseif statsCognitiveLoad < 0 then
+                local lighten = -statsCognitiveLoad
+                gap = math.max(gap * (1 - 0.1 * math.min(lighten, 1.6)), minGap)
+            end
+        end
+
+        if decision and Helpers.isFiniteNumber(decision.scheduleSlack) and decision.scheduleSlack > 0 then
+            gap = math.min(gap, math.max(decision.scheduleSlack * 0.5, SPAM_MIN_GAP))
+        end
+
+        local minimumWindow = gap * math.max(presses, 1) + SPAM_EXPIRY_MARGIN + activationLatencyEstimate * 0.5
+        local closenessWindow = predictedImpact + activationLatencyEstimate + SPAM_EXPIRY_MARGIN
+        local extension = baseWindow * SPAM_WINDOW_EXTENSION * tighten
+        if statsTighten > 0 then
+            extension += baseWindow * 0.3 * statsTighten
+        elseif statsRelax > 0 then
+            extension -= baseWindow * 0.2 * statsRelax
+        end
+
+        if lookaheadNormalized and lookaheadNormalized ~= 0 then
+            if lookaheadNormalized > 0 then
+                extension += baseWindow * 0.35 * lookaheadNormalized
+            else
+                extension -= baseWindow * 0.22 * (-lookaheadNormalized)
+            end
+        end
+
+        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+            local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
+            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
+            extension -= baseWindow * 0.08 * normalized
+        end
+
+        if statsDecisionStdDev and Helpers.isFiniteNumber(statsDecisionStdDev) then
+            local targetSpread = math.max(baseGap * 0.55, SPAM_MIN_GAP * 1.8)
+            local normalized = math.clamp((targetSpread - statsDecisionStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
+            extension -= baseWindow * 0.06 * normalized
+        end
+
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
+            if statsReactionPressure > 0 then
+                extension += baseWindow * 0.18 * math.min(statsReactionPressure, 1.2)
+            elseif statsReactionPressure < 0 then
+                extension -= baseWindow * 0.12 * math.min(-statsReactionPressure, 1.2)
+            end
+        end
+
+        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
+            extension -= baseWindow * 0.12 * statsReactionFocus
+        end
+
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
+            if statsMissPressure > 0 then
+                extension += baseWindow * 0.22 * math.min(statsMissPressure, 1.1)
+            else
+                extension -= baseWindow * 0.15 * math.min(-statsMissPressure, 1.1)
+            end
+        end
+
+        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
+            extension += baseWindow * 0.1 * statsCognitiveLoad
+        end
+
+        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
+            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+            if tempoNormalized > 0 then
+                extension += baseWindow * 0.12 * tempoNormalized
+            elseif tempoNormalized < 0 then
+                extension -= baseWindow * 0.08 * (-tempoNormalized)
+            end
+        end
+
+        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
+            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+            if volatilityNormalized > 0 then
+                extension += baseWindow * 0.15 * volatilityNormalized
+            end
+        end
+
+        window = math.max(baseWindow + extension, closenessWindow, minimumWindow)
+        if statsRelax > 0 then
+            window = math.max(window, baseWindow)
+        end
+        window = math.min(window, baseWindow + 0.45 + statsTighten * 0.1 + math.max(lookaheadNormalized or 0, 0) * 0.15)
+
+        local lookaheadBoost = SPAM_LOOKAHEAD_BONUS * math.max(tighten, 0.35)
+        if statsTighten > 0 then
+            lookaheadBoost += 0.08 * statsTighten
+        end
+        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
+            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+            if tempoNormalized > 0 then
+                lookaheadBoost += 0.05 * tempoNormalized
+            end
+        end
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
+            lookaheadBoost += 0.06 * math.min(statsReactionPressure, 1.2)
+        end
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
+            lookaheadBoost += 0.09 * math.min(statsMissPressure, 1.1)
+        end
+        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
+            if statsReactionFocus > 0 then
+                lookaheadBoost += 0.07 * math.min(statsReactionFocus, 1.8)
+            else
+                lookaheadBoost -= 0.05 * math.min(-statsReactionFocus, 1.6)
+            end
+        end
+        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
+            if statsCognitiveLoad < 0 then
+                lookaheadBoost += 0.05 * math.min(-statsCognitiveLoad, 1.6)
+            else
+                lookaheadBoost -= 0.04 * math.min(statsCognitiveLoad, 1.5)
+            end
+        end
+        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+            local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
+            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
+            lookaheadBoost += 0.03 * normalized
+        end
+        if statsDecisionToPressStdDev and Helpers.isFiniteNumber(statsDecisionToPressStdDev) then
+            local targetSpread = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
+            local normalized = math.clamp((targetSpread - statsDecisionToPressStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
+            lookaheadBoost += 0.025 * normalized
+        end
+        if lookaheadNormalized and lookaheadNormalized > 0 then
+            lookaheadBoost += 0.12 * lookaheadNormalized
+        end
+
+        lookahead = math.max(baseLookahead, predictedImpact + activationLatencyEstimate + gap)
+        lookahead = math.min(lookahead + lookaheadBoost, baseLookahead + 0.4 + statsTighten * 0.1 + math.max(lookaheadNormalized or 0, 0) * 0.12)
+
+        if Helpers.isFiniteNumber(scheduleSlack) and scheduleSlack > 0 then
+            panicGap = math.min(panicGap, math.max(scheduleSlack * 0.45, minGap))
+        end
+
+        if statsTighten > 0 then
+            panicGap = math.min(panicGap, math.max(gap * (1 - 0.2 * statsTighten), minGap))
+        elseif statsRelax > 0 then
+            panicGap = math.max(panicGap, gap * (1 + 0.05 * statsRelax))
+        end
+
+        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) and statsTempoPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.08 * math.min(statsTempoPressure, 1.2)), minGap)
+        end
+
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.16 * math.min(statsReactionPressure, 1.2)), minGap)
+        end
+
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.2 * math.min(statsMissPressure, 1.1)), minGap)
+        end
+
+        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) and statsVolatilityPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.1 * math.min(statsVolatilityPressure, 1.2)), minGap)
+        end
+
+        if kinematics and Helpers.isFiniteNumber(kinematics.velocityMagnitude) then
+            local minSpeed = config.minSpeed or Defaults.CONFIG.minSpeed
+            panicGap = math.min(
+                panicGap,
+                math.max(baseGap * (1 - 0.35 * math.clamp((kinematics.velocityMagnitude - minSpeed) / math.max(minSpeed, Constants.EPSILON), 0, 1)), minGap)
+            )
+        end
+
+        panicGap = math.max(panicGap, minGap)
+        panicWindow = math.max(
+            panicWindow,
+            gap * math.max(presses, 1) + SPAM_EXPIRY_MARGIN + activationLatencyEstimate * 0.5,
+            predictedImpact + activationLatencyEstimate + SPAM_EXPIRY_MARGIN
+        )
+        if statsTighten > 0 then
+            panicWindow = panicWindow * (1 + 0.35 * statsTighten)
+        end
+        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) and statsVolatilityPressure > 0 then
+            panicWindow = panicWindow * (1 + 0.25 * math.min(statsVolatilityPressure, 1.2))
+        end
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
+            panicWindow = panicWindow * (1 + 0.18 * math.min(statsReactionPressure, 1.2))
+        end
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
+            if statsMissPressure > 0 then
+                panicWindow = panicWindow * (1 + 0.3 * math.min(statsMissPressure, 1.1))
+            else
+                panicWindow = panicWindow * (1 + statsMissPressure * 0.15)
+            end
+        end
+        if lookaheadNormalized and lookaheadNormalized > 0 then
+            panicWindow = panicWindow * (1 + 0.3 * lookaheadNormalized)
+        end
+        panicWindow = math.min(panicWindow, baseWindow + 0.6 + statsTighten * 0.15 + math.max(lookaheadNormalized or 0, 0) * 0.2)
+        panicLookahead = math.max(panicLookahead, predictedImpact + activationLatencyEstimate + panicGap)
+        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
+            panicLookahead = math.max(
+                panicLookahead,
+                predictedImpact + activationLatencyEstimate + panicGap + statsMissPressure * 0.05
+            )
+        end
+        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
+            panicLookahead = math.max(
+                panicLookahead,
+                predictedImpact + activationLatencyEstimate + panicGap + statsReactionPressure * 0.04
+            )
+        end
+        panicLookahead = math.min(panicLookahead, baseLookahead + panicLookaheadBoost + 0.45 + statsTighten * 0.12 + math.max(lookaheadNormalized or 0, 0) * 0.15)
+
+        if tighten >= dynamicPanicTightness then
+            panic = true
+            panicReason = "tightness"
+        end
+
+        if
+            not panic
+            and Helpers.isFiniteNumber(scheduleSlack)
+            and scheduleSlack > 0
+            and scheduleSlack <= math.max(dynamicPanicSlack, minGap * 1.1)
+        then
+            panic = true
+            panicReason = "slack"
+        end
+
+        if
+            not panic
+            and kinematics
+            and Helpers.isFiniteNumber(kinematics.velocityMagnitude)
+            and Helpers.isFiniteNumber(config.minSpeed)
+            and kinematics.velocityMagnitude >= (config.minSpeed or Defaults.CONFIG.minSpeed) + dynamicPanicSpeedDelta
+        then
+            panic = true
+            panicReason = "speed"
+        end
+
+        if not panic and lookaheadNormalized and lookaheadNormalized >= dynamicPanicTightness then
+            panic = true
+            panicReason = panicReason or "lookahead"
+        end
+
+        if not panic and statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0.35 then
+            panic = true
+            panicReason = panicReason or "reliability"
+        end
+
+        if not panic and statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0.5 then
+            panic = true
+            panicReason = panicReason or "reaction"
+        end
+
+        if
+            not panic
+            and statsPressMissCount
+            and Helpers.isFiniteNumber(statsPressMissCount)
+            and summaryPressCount >= 6
+        then
+            local missRatio = statsPressMissCount / math.max(summaryPressCount, 1)
+            if missRatio >= 0.25 then
+                panic = true
+                panicReason = panicReason or "misses"
+            end
+        end
+
+        if
+            not panic
+            and fallbackDecision
+            and Helpers.isFiniteNumber(fallbackDecision.predictedImpact or fallbackDecision.timeUntilPress)
+        then
+            local fallbackImpact = fallbackDecision.predictedImpact or fallbackDecision.timeUntilPress
+            if fallbackImpact and fallbackImpact <= (predictedImpact or fallbackImpact) + dynamicPanicSlack then
+                panic = true
+                panicReason = "fallback"
+            end
+        end
+
+        if
+            not panic
+            and Helpers.isFiniteNumber(detectionAge)
+            and Helpers.isFiniteNumber(minDetectionTime)
+            and minDetectionTime > 0
+            and detectionAge >= 0
+        then
+            local detectionSlack = detectionAge - minDetectionTime
+            if detectionSlack >= 0 and detectionSlack <= dynamicPanicSlack * 0.5 then
+                panic = true
+                panicReason = "detection"
+            end
+        end
+    end
+
+    gap = math.max(gap, minGap)
+    window = math.max(window, gap * math.max(presses, 1) + SPAM_EXPIRY_MARGIN + activationLatencyEstimate * 0.25)
+    lookahead = math.max(lookahead, gap + activationLatencyEstimate)
+    panicGap = math.max(panicGap, minGap)
+    panicWindow = math.max(panicWindow, window)
+    panicLookahead = math.max(panicLookahead, lookahead)
+
+    return {
+        presses = presses,
+        gap = gap,
+        window = window,
+        lookahead = lookahead,
+        tightness = tightness,
+        predictedImpact = predictedImpact,
+        panic = panic,
+        panicReason = panicReason,
+        panicGap = panicGap,
+        panicWindow = panicWindow,
+        panicLookahead = panicLookahead,
+        recoverySeconds = recoverySeconds,
+        statsAggression = statsAggressionScore,
+        statsSamples = statsSamples,
+        statsWaitDelta = statsWaitDelta,
+        statsLeadDelta = statsLeadDelta,
+        statsCommitPressure = statsCommitPressure,
+        statsAverageLatency = statsAverageLatency,
+        statsCancellationRate = statsCancellationRate,
+        statsImmediateRate = statsImmediateRate,
+        statsSpeedPressure = statsSpeedPressure,
+        statsLookaheadPressure = statsLookaheadPressure,
+        statsTempoPressure = statsTempoPressure,
+        statsVolatilityPressure = statsVolatilityPressure,
+        statsAverageReactionTime = statsAverageReactionTime,
+        statsReactionStdDev = statsReactionStdDev,
+        statsReactionPressure = statsReactionPressure,
+        statsAverageDecisionToPress = statsAverageDecisionToPress,
+        statsDecisionStdDev = statsDecisionStdDev,
+        statsDecisionToPressStdDev = statsDecisionToPressStdDev,
+        statsDecisionPressure = statsDecisionPressure,
+        statsSuccessRate = statsSuccessRate,
+        statsMissPressure = statsMissPressure,
+        statsPressMissCount = statsPressMissCount,
+        statsTrend = statsTrend,
+        statsReactionFocus = statsReactionFocus,
+        statsCognitiveLoad = statsCognitiveLoad,
+        statsNeuroTempo = statsNeuroTempo,
+        panicTightnessThreshold = dynamicPanicTightness,
+        panicSlackLimit = dynamicPanicSlack,
+        panicSpeedDelta = dynamicPanicSpeedDelta,
+    }
+end
+
+function Helpers.applySpamBurstTuning(
+    burstState,
+    tuning,
+    now,
+    telemetry: TelemetryState?,
+    settings: { presses: number, gap: number, window: number, lookahead: number, minGap: number }?
+)
+    if not burstState or not tuning then
+        return
+    end
+
+    local presses = math.max(settings and settings.presses or burstState.remaining or 0, 0)
+    local minGap = math.max(settings and settings.minGap or SPAM_MIN_GAP, SPAM_MIN_GAP)
+    local gap = math.max(tuning.gap or minGap, minGap)
+    local window = math.max(tuning.window or 0, gap * math.max(presses, 1))
+    local lookahead = math.max(tuning.lookahead or gap + activationLatencyEstimate, gap + activationLatencyEstimate)
+
+    local panicActive = false
+    local panicReason = tuning.panicReason
+    local recoverySeconds = math.max(tuning.recoverySeconds or 0, 0)
+    local panicGap = math.max(tuning.panicGap or gap, minGap)
+    local panicWindow = math.max(tuning.panicWindow or window, window)
+    local panicLookahead = math.max(tuning.panicLookahead or lookahead, lookahead)
+
+    if tuning.panic then
+        burstState.panicUntil = math.max(burstState.panicUntil or 0, now + recoverySeconds)
+        panicActive = true
+    elseif burstState.panicUntil and burstState.panicUntil > now then
+        panicActive = true
+        panicReason = burstState.panicReason
+    else
+        burstState.panicUntil = 0
+        burstState.panicReason = nil
+    end
+
+    if panicActive then
+        gap = math.max(panicGap, minGap)
+        window = math.max(panicWindow, window)
+        lookahead = math.max(panicLookahead, lookahead)
+        burstState.panicReason = panicReason or burstState.panicReason
+    end
+
+    burstState.gap = gap
+    burstState.dynamicGap = gap
+    burstState.window = math.max(burstState.window or 0, window)
+    burstState.dynamicLookahead = lookahead
+    burstState.maxLookahead = math.max(
+        burstState.maxLookahead or lookahead,
+        lookahead,
+        panicLookahead,
+        settings and settings.lookahead or lookahead
+    )
+    burstState.tightness = tuning.tightness
+    burstState.predictedImpact = tuning.predictedImpact
+    burstState.panicActive = panicActive
+    burstState.mode = panicActive and "panic" or "normal"
+    burstState.statsAggression = tuning.statsAggression
+    burstState.statsSamples = tuning.statsSamples
+
+    if telemetry then
+        telemetry.lastOscillationBurst = telemetry.lastOscillationBurst or {}
+        telemetry.lastOscillationBurst.gap = gap
+        telemetry.lastOscillationBurst.window = burstState.window
+        telemetry.lastOscillationBurst.lookahead = burstState.dynamicLookahead
+        telemetry.lastOscillationBurst.tightness = tuning.tightness
+        telemetry.lastOscillationBurst.predictedImpact = tuning.predictedImpact
+        telemetry.lastOscillationBurst.panic = panicActive
+        telemetry.lastOscillationBurst.panicReason = burstState.panicReason
+        telemetry.lastOscillationBurst.statsAggression = tuning.statsAggression
+        telemetry.lastOscillationBurst.statsSamples = tuning.statsSamples
+        telemetry.lastOscillationBurst.statsWaitDelta = tuning.statsWaitDelta
+        telemetry.lastOscillationBurst.statsLeadDelta = tuning.statsLeadDelta
+        telemetry.lastOscillationBurst.statsCommitPressure = tuning.statsCommitPressure
+        telemetry.lastOscillationBurst.statsAverageLatency = tuning.statsAverageLatency
+        telemetry.lastOscillationBurst.statsCancellationRate = tuning.statsCancellationRate
+        telemetry.lastOscillationBurst.statsImmediateRate = tuning.statsImmediateRate
+        telemetry.lastOscillationBurst.statsSpeedPressure = tuning.statsSpeedPressure
+        telemetry.lastOscillationBurst.statsLookaheadPressure = tuning.statsLookaheadPressure
+        telemetry.lastOscillationBurst.statsTempoPressure = tuning.statsTempoPressure
+        telemetry.lastOscillationBurst.statsVolatilityPressure = tuning.statsVolatilityPressure
+        telemetry.lastOscillationBurst.statsAverageReactionTime = tuning.statsAverageReactionTime
+        telemetry.lastOscillationBurst.statsReactionStdDev = tuning.statsReactionStdDev
+        telemetry.lastOscillationBurst.statsReactionPressure = tuning.statsReactionPressure
+        telemetry.lastOscillationBurst.statsAverageDecisionToPress = tuning.statsAverageDecisionToPress
+        telemetry.lastOscillationBurst.statsDecisionStdDev = tuning.statsDecisionStdDev
+        telemetry.lastOscillationBurst.statsDecisionToPressStdDev = tuning.statsDecisionToPressStdDev
+        telemetry.lastOscillationBurst.statsDecisionPressure = tuning.statsDecisionPressure
+        telemetry.lastOscillationBurst.statsSuccessRate = tuning.statsSuccessRate
+        telemetry.lastOscillationBurst.statsMissPressure = tuning.statsMissPressure
+        telemetry.lastOscillationBurst.statsPressMissCount = tuning.statsPressMissCount
+        telemetry.lastOscillationBurst.statsTrend = tuning.statsTrend
+        telemetry.lastOscillationBurst.statsReactionFocus = tuning.statsReactionFocus
+        telemetry.lastOscillationBurst.statsCognitiveLoad = tuning.statsCognitiveLoad
+        telemetry.lastOscillationBurst.statsNeuroTempo = tuning.statsNeuroTempo
+        telemetry.lastOscillationBurst.panicTightness = tuning.panicTightnessThreshold
+        telemetry.lastOscillationBurst.panicSlackLimit = tuning.panicSlackLimit
+        telemetry.lastOscillationBurst.panicSpeedDelta = tuning.panicSpeedDelta
+        telemetry.lastOscillationBurst.updatedAt = now
+    end
+
+    return gap, window, lookahead, panicActive
+end
+
+function Helpers.resetSpamBurst(reason: string?)
+    local burstState = Context.runtime.spamBurst
+    if not burstState then
+        return
+    end
+
+    burstState.active = false
+    burstState.ballId = nil
+    burstState.remaining = 0
+    burstState.nextPressAt = 0
+    burstState.expireAt = 0
+    burstState.gap = 0
+    burstState.dynamicGap = 0
+    burstState.dynamicLookahead = math.huge
+    burstState.window = 0
+    burstState.maxLookahead = math.huge
+    burstState.startedAt = 0
+    burstState.lastPressAt = 0
+    burstState.failures = 0
+    burstState.reason = reason
+    burstState.initialDecision = nil
+    burstState.baseSettings = nil
+    burstState.tightness = 0
+    burstState.predictedImpact = nil
+    burstState.panicUntil = 0
+    burstState.panicActive = false
+    burstState.panicReason = nil
+    burstState.mode = "idle"
+    burstState.statsAggression = 0
+    burstState.statsSamples = 0
+end
+
+function Helpers.startSpamBurst(
+    ballId: string?,
+    now: number,
+    decision: { [string]: any }?,
+    telemetry: TelemetryState?,
+    kinematics: BallKinematics.Kinematics?
+)
+    if not ballId then
+        return
+    end
+
+    local settings = resolveOscillationSpamSettings()
+    if settings.presses <= 0 then
+        Helpers.resetSpamBurst("disabled")
+        return
+    end
+
+    local burstState = Context.runtime.spamBurst
+    burstState.active = true
+    burstState.ballId = ballId
+    burstState.remaining = settings.presses
+    burstState.baseSettings = settings
+
+    local tuning = Helpers.computeSpamBurstTuning(
+        settings,
+        decision,
+        kinematics,
+        decision,
+        Context.runtime.telemetrySummary
+    )
+    Helpers.applySpamBurstTuning(burstState, tuning, now, telemetry, settings)
+    burstState.nextPressAt = now + math.max(burstState.gap, SPAM_MIN_GAP)
+    burstState.expireAt = now + math.max(burstState.window or tuning.window, 0)
+    burstState.startedAt = now
+    burstState.lastPressAt = now
+    burstState.failures = 0
+    burstState.reason = "oscillation"
+
+    if telemetry then
+        telemetry.lastOscillationBurst = {
+            startedAt = now,
+            presses = settings.presses,
+            baseGap = settings.gap,
+            baseWindow = settings.window,
+            baseLookahead = settings.lookahead,
+            gap = burstState.gap,
+            window = burstState.window,
+            lookahead = burstState.dynamicLookahead,
+            tightness = tuning.tightness,
+            predictedImpact = tuning.predictedImpact,
+            panic = burstState.panicActive,
+            panicReason = burstState.panicReason,
+        }
+    end
+
+    if decision then
+        burstState.initialDecision = {
+            predictedImpact = decision.predictedImpact,
+            timeToHoldRadius = decision.timeToHoldRadius,
+            holdRadius = decision.holdRadius,
+            shouldHold = decision.shouldHold,
+            targetingMe = decision.targetingMe,
+        }
+    else
+        burstState.initialDecision = nil
+    end
+end
+
+local function spamBurstDecisionGate(decision, burstState)
+    if not decision then
+        return true
+    end
+
+    if decision.shouldHold or decision.shouldPress then
+        return true
+    end
+
+    if decision.proximityPress or decision.inequalityPress or decision.confidencePress then
+        return true
+    end
+
+    if decision.targetingMe and decision.withinLookahead then
+        return true
+    end
+
+    if burstState and burstState.initialDecision then
+        local baseline = burstState.initialDecision
+        if baseline and baseline.targetingMe and decision.targetingMe then
+            return true
+        end
+    end
+
+    if burstState and Helpers.isFiniteNumber(burstState.tightness) and burstState.tightness >= 0.55 then
+        return true
+    end
+
+    if
+        burstState
+        and Helpers.isFiniteNumber(burstState.statsAggression)
+        and Helpers.isFiniteNumber(burstState.statsSamples)
+        and burstState.statsSamples >= 3
+        and burstState.statsAggression >= 0.35
+    then
+        return true
+    end
+
+    return false
+end
+
+function Helpers.processSpamBurst(
+    ball: BasePart?,
+    ballId: string?,
+    now: number,
+    decision: { [string]: any }?,
+    telemetry: TelemetryState?,
+    kinematics: BallKinematics.Kinematics?
+)
+    local burstState = Context.runtime.spamBurst
+    if not burstState or not burstState.active then
+        return false
+    end
+
+    if not ballId or burstState.ballId ~= ballId then
+        Helpers.resetSpamBurst("ball-changed")
+        return false
+    end
+
+    if burstState.remaining <= 0 then
+        Helpers.resetSpamBurst("complete")
+        return false
+    end
+
+    local baseSettings = burstState.baseSettings
+    if not baseSettings then
+        baseSettings = resolveOscillationSpamSettings()
+        burstState.baseSettings = baseSettings
+    end
+
+    local tuning = Helpers.computeSpamBurstTuning(
+        baseSettings,
+        decision,
+        kinematics,
+        burstState.initialDecision,
+        Context.runtime.telemetrySummary
+    )
+    Helpers.applySpamBurstTuning(burstState, tuning, now, telemetry, baseSettings)
+
+    local minimumNext = burstState.lastPressAt + burstState.gap
+    if burstState.nextPressAt < minimumNext then
+        burstState.nextPressAt = minimumNext
+    end
+
+    local newExpireAt = burstState.startedAt + math.max(burstState.window or tuning.window, 0)
+    if newExpireAt > burstState.expireAt then
+        burstState.expireAt = newExpireAt
+    end
+
+    if now > burstState.expireAt then
+        Helpers.resetSpamBurst("expired")
+        return false
+    end
+
+    if now < burstState.nextPressAt then
+        return false
+    end
+
+    local predictedImpact = burstState.predictedImpact
+    if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+        predictedImpact = math.huge
+    end
+    local lookaheadLimit = burstState.dynamicLookahead or burstState.maxLookahead
+    if not Helpers.isFiniteNumber(lookaheadLimit) or lookaheadLimit <= 0 then
+        lookaheadLimit = burstState.maxLookahead
+    end
+    if not Helpers.isFiniteNumber(lookaheadLimit) or lookaheadLimit <= 0 then
+        lookaheadLimit = math.huge
+    end
+    if predictedImpact > lookaheadLimit then
+        return false
+    end
+
+    if not spamBurstDecisionGate(decision, burstState) then
+        Helpers.resetSpamBurst("gate-failed")
+        return false
+    end
+
+    if kinematics and Helpers.isFiniteNumber(kinematics.distance) then
+        local safeRadius = decision and decision.holdRadius or 0
+        if Helpers.isFiniteNumber(safeRadius) and safeRadius > 0 then
+            local radial = kinematics.distance - safeRadius
+            if Helpers.isFiniteNumber(radial) and radial > safeRadius * 2 then
+                Helpers.resetSpamBurst("radial-clear")
+                return false
+            end
+        end
+    end
+
+    local pressed = Helpers.pressParry(ball, ballId, true, decision)
+    if pressed then
+        burstState.remaining -= 1
+        burstState.lastPressAt = now
+        burstState.nextPressAt = now + math.max(burstState.gap, SPAM_MIN_GAP)
+        burstState.failures = 0
+        if telemetry then
+            telemetry.lastOscillationApplied = now
+            telemetry.lastOscillationBurstPress = now
+        end
+        if burstState.remaining <= 0 then
+            Helpers.resetSpamBurst("complete")
+        end
+        return true
+    end
+
+    burstState.failures = (burstState.failures or 0) + 1
+    burstState.nextPressAt = now + math.max(burstState.gap, SPAM_MIN_GAP)
+    if burstState.failures >= 3 then
+        Helpers.resetSpamBurst("failed")
+    end
+
+    return false
 end
 
 function Helpers.getRollingStd(stat: RollingStat?, floor: number)
@@ -4153,6 +5828,81 @@ function Helpers.cloneTable(tbl)
     return Util.deepCopy(tbl)
 end
 
+function Helpers.updateTelemetrySummaryTrend(summary, now)
+    now = now or os.clock()
+
+    local trend = Context.runtime.telemetrySummaryTrend
+    if not trend then
+        trend = { momentum = 0, samples = 0, last = nil, updatedAt = 0 }
+        Context.runtime.telemetrySummaryTrend = trend
+    end
+
+    if summary == nil then
+        trend.momentum = 0
+        trend.samples = 0
+        trend.last = nil
+        trend.updatedAt = now
+        return trend
+    end
+
+    trend.updatedAt = now
+
+    local previous = trend.last
+    if not previous then
+        trend.momentum = 0
+        trend.samples = 0
+        trend.last = Helpers.cloneTable(summary)
+        return trend
+    end
+
+    local deltaScore = 0
+    local deltaSamples = 0
+
+    local function accumulateDelta(current, old, scale, clampLimit)
+        if not Helpers.isFiniteNumber(current) or not Helpers.isFiniteNumber(old) then
+            return
+        end
+
+        local diff = current - old
+        if not Helpers.isFiniteNumber(diff) then
+            return
+        end
+
+        if not Helpers.isFiniteNumber(scale) or scale <= 0 then
+            return
+        end
+
+        local normalized = diff / scale
+        if clampLimit then
+            normalized = math.clamp(normalized, -clampLimit, clampLimit)
+        else
+            normalized = math.clamp(normalized, -3, 3)
+        end
+
+        deltaScore += normalized
+        deltaSamples += 1
+    end
+
+    accumulateDelta(summary.averageWaitDelta, previous.averageWaitDelta, 0.005, 2.5)
+    accumulateDelta(summary.averageLatency, previous.averageLatency, 0.015, 2.5)
+    accumulateDelta(summary.immediateRate, previous.immediateRate, 0.06, 2)
+    accumulateDelta(summary.averageThreatSpeed, previous.averageThreatSpeed, 35, 2)
+    accumulateDelta(summary.averageThreatTempo, previous.averageThreatTempo, 10, 2)
+    accumulateDelta(summary.averageThreatVolatility, previous.averageThreatVolatility, 6, 2)
+    accumulateDelta(summary.scheduleLookaheadP10, previous.scheduleLookaheadP10, 0.03, 2.5)
+
+    local averageDelta = 0
+    if deltaSamples > 0 then
+        averageDelta = deltaScore / deltaSamples
+    end
+
+    trend.momentum = Helpers.emaScalar(trend.momentum or 0, math.clamp(averageDelta, -2.5, 2.5), 0.5)
+    trend.samples = math.min((trend.samples or 0) + deltaSamples, 64)
+    trend.last = Helpers.cloneTable(summary)
+
+    return trend
+end
+
 function Helpers.cloneAutoTuningSnapshot()
     return {
         enabled = autoTuningState.enabled,
@@ -4343,7 +6093,20 @@ function Helpers.resolvePerformanceTargets()
         lookaheadGoal = 0
     end
 
-    return commitTarget, lookaheadGoal
+    local reactionTarget = config.pressReactionBias
+    if reactionTarget == nil then
+        reactionTarget = Defaults.CONFIG.pressReactionBias
+    end
+    if smartConfig and smartConfig ~= false and Helpers.isFiniteNumber(smartConfig.reactionBiasTarget) then
+        reactionTarget = smartConfig.reactionBiasTarget
+    elseif smartConfig and smartConfig ~= false and Helpers.isFiniteNumber(smartConfig.reactionBias) then
+        reactionTarget = smartConfig.reactionBias
+    end
+    if not Helpers.isFiniteNumber(reactionTarget) or reactionTarget < 0 then
+        reactionTarget = Defaults.CONFIG.pressReactionBias or 0
+    end
+
+    return commitTarget, lookaheadGoal, reactionTarget
 end
 
 function Helpers.applySmartTuning(params)
@@ -4570,13 +6333,25 @@ publishTelemetryHistory = function()
     telemetryStore.lastEvent = Context.telemetry.history[#Context.telemetry.history]
     telemetryStore.smartTuning = Helpers.snapshotSmartTuningState()
     telemetryStore.metrics = TelemetryAnalytics.clone()
+    local summary
     if telemetryStore.metrics then
         telemetryStore.adaptiveState = telemetryStore.metrics.adaptiveState
+        summary = TelemetryAnalytics.computeSummary(telemetryStore.metrics)
     else
         telemetryStore.adaptiveState = {
             reactionBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or 0,
             lastUpdate = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.lastUpdate or 0,
         }
+    end
+
+    if summary then
+        telemetryStore.summary = Helpers.cloneTable(summary)
+        Context.runtime.telemetrySummary = Helpers.cloneTable(summary)
+        Helpers.updateTelemetrySummaryTrend(summary, os.clock())
+    else
+        telemetryStore.summary = nil
+        Context.runtime.telemetrySummary = nil
+        Helpers.updateTelemetrySummaryTrend(nil, os.clock())
     end
     return settings, telemetryStore
 end
@@ -4615,6 +6390,7 @@ function Helpers.resetTelemetryHistory(reason: string?)
     TelemetryAnalytics.resetMetrics(previousResets + 1)
     TelemetryAnalytics.resetAdaptive()
     Context.telemetry.history = {}
+    Context.runtime.telemetrySummary = nil
     publishTelemetryHistory()
     if reason then
         emitTelemetryEvent("telemetry-reset", { reason = reason })
@@ -8075,11 +9851,13 @@ end
 function Helpers.renderLoop()
     if initialization.destroyed then
         Helpers.clearScheduledPress(nil, "destroyed")
+        Helpers.resetSpamBurst("destroyed")
         return
     end
 
     if not Context.player.LocalPlayer then
         Helpers.clearScheduledPress(nil, "missing-player")
+        Helpers.resetSpamBurst("missing-player")
         return
     end
 
@@ -8088,6 +9866,7 @@ function Helpers.renderLoop()
         Helpers.safeClearBallVisuals()
         Helpers.clearScheduledPress(nil, "missing-character")
         Helpers.releaseParry()
+        Helpers.resetSpamBurst("missing-character")
         return
     end
 
@@ -8098,6 +9877,7 @@ function Helpers.renderLoop()
         Helpers.safeClearBallVisuals()
         Helpers.clearScheduledPress(nil, "missing-balls-folder")
         Helpers.releaseParry()
+        Helpers.resetSpamBurst("missing-balls-folder")
         return
     end
 
@@ -8107,6 +9887,7 @@ function Helpers.renderLoop()
         Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
         Helpers.safeClearBallVisuals()
         Helpers.updateToggleButton()
+        Helpers.resetSpamBurst("disabled")
         return
     end
 
@@ -8121,6 +9902,7 @@ function Helpers.renderLoop()
         Helpers.safeClearBallVisuals()
         Helpers.clearScheduledPress(nil, "no-ball")
         Helpers.releaseParry()
+        Helpers.resetSpamBurst("no-ball")
         return
     end
 
@@ -8130,6 +9912,7 @@ function Helpers.renderLoop()
         Helpers.safeClearBallVisuals()
         Helpers.clearScheduledPress(nil, "missing-identifier")
         Helpers.releaseParry()
+        Helpers.resetSpamBurst("missing-identifier")
         return
     end
 
@@ -8165,13 +9948,16 @@ function Helpers.renderLoop()
                 spamFallback = Helpers.pressParry(ball, ballId, true, decision)
                 if spamFallback then
                     telemetry.lastOscillationApplied = now
+                    Helpers.startSpamBurst(ballId, now, decision, telemetry, kinematics)
                 end
             end
         end
     end
 
-    if spamFallback then
+    local spamBurstPress = Helpers.processSpamBurst(ball, ballId, now, decision, telemetry, kinematics)
+    if spamFallback or spamBurstPress then
         fired = true
+        spamFallback = spamFallback or spamBurstPress
     end
 
     local existingSchedule = nil
@@ -8404,6 +10190,24 @@ function Helpers.renderLoop()
             telemetry.lastOscillationDelta or 0,
             tostring(spamFallback)
         ),
+        (function()
+            local burst = Context.runtime.spamBurst
+            if burst and burst.active and burst.ballId == ballId then
+                local eta = math.max(burst.nextPressAt - now, 0)
+                local expiresIn = math.max(burst.expireAt - now, 0)
+                return string.format(
+                    "SpamBurst: rem %d | eta %.3f | gap %.3f | exp %.3f | tight %.2f | mode %s%s",
+                    burst.remaining or 0,
+                    eta,
+                    burst.dynamicGap or burst.gap or 0,
+                    expiresIn,
+                    burst.tightness or 0,
+                    burst.mode or "idle",
+                    burst.panicReason and ("(" .. burst.panicReason .. ")") or ""
+                )
+            end
+            return "SpamBurst: idle"
+        end)(),
         string.format("ParryHeld: %s", tostring(Context.runtime.parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
@@ -8577,6 +10381,48 @@ local validators = {
     oscillationMaxLookahead = function(value)
         return value == nil or (typeof(value) == "number" and value > 0)
     end,
+    oscillationSpamBurstPresses = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamBurstGap = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
+    oscillationSpamBurstWindow = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
+    oscillationSpamBurstLookahead = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
+    oscillationSpamMinGap = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
+    oscillationSpamPanicTightness = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0 and value <= 1)
+    end,
+    oscillationSpamPanicGapScale = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
+    oscillationSpamPanicWindowScale = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 1)
+    end,
+    oscillationSpamPanicLookaheadBoost = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamPanicSpeedDelta = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamPanicSlack = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamRecoverySeconds = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamCooldownTightnessGain = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationSpamCooldownPanicScale = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
     smartTuning = function(value)
         local valueType = typeof(value)
         return value == nil or value == false or value == true or valueType == "table"
@@ -8611,6 +10457,7 @@ function AutoParry.disable()
     state.enabled = false
     Context.runtime.targetingGraceUntil = 0
     Helpers.clearScheduledPress(nil, "disabled")
+    Helpers.resetSpamBurst("disabled")
     Helpers.releaseParry()
     telemetryStates = {}
     Context.runtime.trackedBall = nil
@@ -8715,6 +10562,38 @@ end
 
 function AutoParry.getConfig()
     return Helpers.cloneTable(config)
+end
+
+function AutoParry._testEvaluateOscillationBurstTuning(payload)
+    payload = payload or {}
+    local settings = resolveOscillationSpamSettings()
+    local decision = payload.decision
+    local kinematics = payload.kinematics
+    local fallback = payload.fallbackDecision or payload.initialDecision
+    local previousTrend = Context.runtime.telemetrySummaryTrend
+
+    if payload.trend ~= nil then
+        if payload.trend == false then
+            Context.runtime.telemetrySummaryTrend = nil
+        elseif typeof(payload.trend) == "table" then
+            Context.runtime.telemetrySummaryTrend = Helpers.cloneTable(payload.trend)
+        elseif Helpers.isFiniteNumber(payload.trend) then
+            Context.runtime.telemetrySummaryTrend = {
+                momentum = payload.trend,
+                samples = 8,
+                last = nil,
+                updatedAt = os.clock(),
+            }
+        end
+    end
+
+    local tuning = Helpers.computeSpamBurstTuning(settings, decision, kinematics, fallback, payload.summary)
+
+    if payload.trend ~= nil then
+        Context.runtime.telemetrySummaryTrend = previousTrend
+    end
+
+    return Helpers.cloneTable(tuning)
 end
 
 function AutoParry.resetConfig()
@@ -9312,6 +11191,7 @@ function AutoParry.destroy()
     state.lastSuccess = 0
     state.lastBroadcast = 0
     Helpers.clearScheduledPress(nil, "destroyed")
+    Helpers.resetSpamBurst("destroyed")
     Helpers.releaseParry()
     telemetryStates = {}
     Context.runtime.trackedBall = nil
@@ -9348,7 +11228,6 @@ Helpers.syncGlobalSettings()
 Context.runtime.syncImmortalContext()
 
 return AutoParry
-
 ]===],
     ['src/core/immortal.lua'] = [===[
 -- src/core/immortal.lua (sha1: 33d8113542e8d65a94596a1983dce26485a046bb)
