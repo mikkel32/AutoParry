@@ -26,6 +26,16 @@ Target gating, highlight caching, and retry logic keep AutoParry responsive even
     - Regression tests simulate a transient failure and ensure a successful retry lands in under 400 ms. 【F:tests/autoparry/parry_loop.spec.lua†L1001-L1053】
 - **Smart schedule telemetry**: Every scheduled press logs prediction ETA, lead, slack, and latency samples so you can post-mortem any hesitation. The harness captures a `parry_timeline` artifact for manual inspection. 【F:tests/autoparry/parry_loop.spec.lua†L1056-L1146】
 
+## Telemetry-guided Oscillation Spam
+AutoParry continuously folds telemetry summaries back into the oscillation spam engine so burst cadence reflects real outcomes rather than static presets.
+
+- The spam tuner computes a weighted stats pressure score from wait delta, lead delta, commit latency P99, activation latency, reaction time, decision-to-press delay, success rate/miss count, cancellation rate, immediate-fire rate, average threat speed, schedule lookahead percentiles, and threat tempo/volatility before every burst evaluation. 【F:src/core/autoparry.lua†L4156-L4305】
+- Positive pressure now shrinks the burst gap, raises burst presses, lowers panic tightness/slack thresholds, and extends the panic window/lookahead to sustain up to 180 Hz bursts without misses; relaxed telemetry restores the base cadence and raises the guards to avoid wasted presses when reactions are sharp and success is high. 【F:src/core/autoparry.lua†L4307-L4709】
+- A rolling telemetry trend captures whether recent summaries are heating up or cooling off and nudges the spam tuner accordingly—tightening cadence during spikes while relaxing panic guards once conditions stabilize. 【F:src/core/autoparry.lua†L4287-L4355】【F:src/core/autoparry.lua†L4709-L4807】
+- Reaction and decision consistency metrics now surface via `reactionStdDev`, `decisionStdDev`, and `decisionToPressStdDev`, with derived `reactionFocusScore`, `cognitiveLoadScore`, and `neuroTempoScore` steering additional tightening or relaxation so the burst cadence mirrors how quickly (and reliably) the system has been thinking. 【F:src/core/autoparry.lua†L2896-L2954】【F:src/core/autoparry.lua†L4320-L4524】【F:src/core/autoparry.lua†L4563-L4671】
+- Every burst captures the derived stats aggression, reaction/decision pressure, miss telemetry, trend momentum, lookahead pressure, and dynamic panic thresholds so telemetry dashboards and the in-game overlay can confirm how the tuner responded. 【F:src/core/autoparry.lua†L4824-L4881】
+- Specs cover aggressive, relaxed, lookahead-collapse, trend-momentum, reaction/miss escalation, neuro-focus, and cognitive-overload scenarios to ensure the tuner reacts exactly when the summary indicates. 【F:tests/autoparry/oscillation_spam.spec.lua†L21-L207】【F:tests/autoparry/oscillation_spam.spec.lua†L209-L378】
+
 ## Decision Aggressiveness
 - AutoParry captures detection moments whenever a threat reacquires the highlight or the system shifts targets, ensuring no state is lost even while holding the parry key. 【F:src/core/autoparry.lua†L4666-L4734】
 - As soon as the proximity/inequality thresholds trigger, AutoParry stamps the decision time so commit latency reflects nothing but execution overhead. 【F:src/core/autoparry.lua†L4939-L4976】
