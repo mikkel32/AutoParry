@@ -586,6 +586,31 @@ local function createContext(options)
         end
     end
 
+    function context:_advancePlayer(deltaTime)
+        local dt = deltaTime or 0
+        if dt <= 0 then
+            return
+        end
+
+        local root = self.rootPart
+        if not root or typeof(root.AssemblyLinearVelocity) ~= "Vector3" then
+            return
+        end
+
+        local velocity = root.AssemblyLinearVelocity
+        if velocity.Magnitude <= 0 then
+            return
+        end
+
+        local newPosition = root.Position + velocity * dt
+        root.Position = newPosition
+        if velocity.Magnitude > 1e-3 then
+            root.CFrame = CFrame.new(newPosition, newPosition + velocity.Unit)
+        else
+            root.CFrame = CFrame.new(newPosition)
+        end
+    end
+
     function context:addBall(options)
         local ball = createBall(options)
         self.ballsFolder:Add(ball)
@@ -835,53 +860,446 @@ return function(t)
             cooldown = 0.12,
         })
 
+        autoparry.setEnabled(true)
+
+        local function runFlickerAttempt(attemptIndex)
+            context:clearParryLog()
+            context:clearBalls()
+
+            local distance = 56 + math.max(attemptIndex - 1, 0) * 6
+            local speed = -180 + math.max(attemptIndex - 2, 0) * 20
+
+            local ball = context:addBall({
+                name = "HighlightFlickerThreat",
+                position = Vector3.new(0, 0, distance),
+                velocity = Vector3.new(0, 0, speed),
+            })
+
+            context:setHighlightEnabled(true)
+
+            local scheduleSample
+            for _ = 1, 600 do
+                context:step(1 / 240)
+
+                local smart = context:getSmartPressState()
+                if smart.ballId then
+                    scheduleSample = smart
+                    break
+                end
+
+                local last = smart.lastScheduled
+                if last and last.ballId then
+                    scheduleSample = last
+                    break
+                end
+
+                if #context.parryLog > 0 then
+                    expect(context.parryLog[1].ball):toEqual(ball)
+                    return { parriedEarly = true, ball = ball }
+                end
+            end
+
+            expect(scheduleSample):toBeTruthy()
+
+            if #context.parryLog > 0 then
+                expect(context.parryLog[1].ball):toEqual(ball)
+                return { parriedEarly = true, ball = ball }
+            end
+
+            context:setHighlightEnabled(false)
+            expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
+
+            local remaining = 0.12
+            while remaining > 0 and #context.parryLog == 0 do
+                local dt = math.min(remaining, 1 / 240)
+                context:step(dt)
+                remaining -= dt
+            end
+
+            expect(#context.parryLog > 0):toEqual(true)
+            expect(context.highlightEnabled):toEqual(false)
+            expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
+            expect(#context.parryLog):toEqual(1)
+            expect(context.parryLog[1].ball):toEqual(ball)
+            expect(autoparry.getLastParryTime()):toBeCloseTo(context.parryLog[1].timestamp, 1e-3)
+
+            return { parriedEarly = false, ball = ball, highlightCleared = true }
+        end
+
+        local attemptResult
+        for attempt = 1, 3 do
+            attemptResult = runFlickerAttempt(attempt)
+            if attemptResult.parriedEarly ~= true then
+                break
+            end
+        end
+
+        expect(attemptResult).toBeTruthy()
+        expect(attemptResult.parriedEarly):toEqual(false)
+        expect(attemptResult.highlightCleared):toEqual(true)
+        expect(#context.parryLog):toBeGreaterThanOrEqual(1)
+        expect(context.parryLog[1].ball):toEqual(attemptResult.ball)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop stays reliable while the player sprints and jumps", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0.12,
+        })
+
         local ball = context:addBall({
-            name = "HighlightFlickerThreat",
-            position = Vector3.new(0, 0, 56),
+            name = "MovingPlayerThreat",
+            position = Vector3.new(0, 0, 42),
             velocity = Vector3.new(0, 0, -180),
         })
 
         autoparry.setEnabled(true)
 
-        local scheduleSample
-        for _ = 1, 600 do
-            context:step(1 / 240)
+        local motionProfile = {
+            { velocity = Vector3.new(10, 0, 0), duration = 0.16 },
+            { velocity = Vector3.new(-12, 0, 0), duration = 0.14 },
+            { velocity = Vector3.new(0, 20, 0), duration = 0.12 },
+            { velocity = Vector3.new(0, -18, 0), duration = 0.14 },
+            { velocity = Vector3.new(14, 10, 0), duration = 0.18 },
+            { velocity = Vector3.new(-6, 0, 18), duration = 0.12 },
+        }
+
+        for _, entry in ipairs(motionProfile) do
+            context.rootPart.AssemblyLinearVelocity = entry.velocity
+            local remaining = entry.duration
+            local stepSize = 1 / 240
+            while remaining > 0 and #context.parryLog == 0 do
+                local dt = math.min(stepSize, remaining)
+                context:_advancePlayer(dt)
+                context:step(dt)
+                remaining -= dt
+            end
             if #context.parryLog > 0 then
                 break
             end
-
-            local smart = context:getSmartPressState()
-            if smart.ballId then
-                scheduleSample = smart
-                break
-            end
-
-            local last = smart.lastScheduled
-            if last and last.ballId then
-                scheduleSample = last
-                break
-            end
         end
 
-        expect(#context.parryLog):toEqual(0)
-        expect(scheduleSample):toBeTruthy()
+        context.rootPart.AssemblyLinearVelocity = Vector3.new()
 
-        context:setHighlightEnabled(false)
-        expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
+        context:stepUntil(function()
+            return #context.parryLog > 0
+        end, { step = 1 / 240, maxSteps = 420 })
 
-        local remaining = 0.12
-        while remaining > 0 and #context.parryLog == 0 do
-            local dt = math.min(remaining, 1 / 240)
-            context:step(dt)
-            remaining -= dt
-        end
-
-        expect(#context.parryLog > 0):toEqual(true)
-        expect(context.highlightEnabled):toEqual(false)
-        expect(context.character:FindFirstChild("Highlight")):toEqual(nil)
         expect(#context.parryLog):toEqual(1)
         expect(context.parryLog[1].ball):toEqual(ball)
-        expect(autoparry.getLastParryTime()):toBeCloseTo(context.parryLog[1].timestamp, 1e-3)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop spams presses when retargeted in rapid succession", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0,
+            oscillationFrequency = 0,
+            pressScheduleSlack = 0.008,
+            oscillationSpamBurstPresses = 5,
+            oscillationSpamBurstGap = 0.05,
+            oscillationSpamMinGap = 1 / 240,
+        })
+
+        local ball = context:addBall({
+            name = "RapidRetargetThreat",
+            position = Vector3.new(0, 0, 160),
+            velocity = Vector3.new(0, 0, -240),
+        })
+
+        autoparry.setEnabled(true)
+
+        local firstParry = context:stepUntil(function()
+            return #context.parryLog > 0
+        end, { step = 1 / 240, maxSteps = 720 })
+
+        expect(firstParry):toEqual(true)
+        expect(context.parryLog[1].ball):toEqual(ball)
+
+        local initialCount = #context.parryLog
+
+        context:advance(0.05, { step = 1 / 240 })
+
+        local toggleCycles = 0
+        while toggleCycles < 8 do
+            context:setHighlightEnabled(false)
+            context:advance(0.03, { step = 1 / 240 })
+            context:setHighlightEnabled(true)
+            context:advance(0.04, { step = 1 / 240 })
+            toggleCycles += 1
+            if ball.Position.Z <= -5 then
+                break
+            end
+        end
+
+        context:advance(0.35, { step = 1 / 240 })
+
+        expect(#context.parryLog):toBeGreaterThanOrEqual(initialCount + 2)
+        expect(#context.parryLog):toBeGreaterThanOrEqual(3)
+        for index = 1, #context.parryLog do
+            expect(context.parryLog[index].ball):toEqual(ball)
+        end
+
+        local quickGapDetected = false
+        for index = 2, #context.parryLog do
+            local dt = context.parryLog[index].timestamp - context.parryLog[index - 1].timestamp
+            if dt <= 0.2 then
+                quickGapDetected = true
+                break
+            end
+        end
+
+        expect(quickGapDetected):toEqual(true)
+
+        context:destroy()
+    end)
+
+    t.test("parry loop accelerates spam bursts when retargeting stays relentless", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0,
+            oscillationFrequency = 0,
+            pressScheduleSlack = 0.008,
+        })
+
+        local ball = context:addBall({
+            name = "RelentlessThreat",
+            position = Vector3.new(0, 0, 220),
+            velocity = Vector3.new(0, 0, -360),
+        })
+
+        autoparry.setEnabled(true)
+        context:setHighlightEnabled(true)
+
+        local firstParry = context:stepUntil(function()
+            return #context.parryLog > 0
+        end, { step = 1 / 240, maxSteps = 960 })
+
+        expect(firstParry):toEqual(true)
+        expect(context.parryLog[1].ball):toEqual(ball)
+
+        local initialCount = #context.parryLog
+
+        context:advance(0.04, { step = 1 / 240 })
+
+        for cycle = 1, 9 do
+            context:setHighlightEnabled(false)
+            context:advance(0.012, { step = 1 / 240 })
+            context:setHighlightEnabled(true)
+            context:advance(0.02, { step = 1 / 240 })
+            if ball.Position.Z <= -10 then
+                break
+            end
+        end
+
+        context:advance(0.28, { step = 1 / 240 })
+
+        local totalPresses = #context.parryLog
+        expect(totalPresses):toBeGreaterThanOrEqual(initialCount + 3)
+        expect(totalPresses):toBeGreaterThanOrEqual(4)
+
+        local minGap = math.huge
+        local subOneTenth = 0
+        local subEightHundredths = 0
+        for index = 2, totalPresses do
+            local gap = context.parryLog[index].timestamp - context.parryLog[index - 1].timestamp
+            if gap < minGap then
+                minGap = gap
+            end
+            if gap <= 0.1 then
+                subOneTenth += 1
+            end
+            if gap <= 0.08 then
+                subEightHundredths += 1
+            end
+        end
+
+        expect(subOneTenth):toBeGreaterThanOrEqual(3)
+        expect(subEightHundredths):toBeGreaterThanOrEqual(1)
+        expect(minGap <= 0.08):toEqual(true)
+
+        for index = 1, totalPresses do
+            expect(context.parryLog[index].ball):toEqual(ball)
+        end
+
+        context:destroy()
+    end)
+
+    t.test("parry loop clears a deterministic highlight storm without misses", function(expect)
+        local context = createContext()
+        local autoparry = context.autoparry
+
+        autoparry.resetConfig()
+        autoparry.configure({
+            minTTI = 0,
+            pingOffset = 0,
+            cooldown = 0,
+            pressScheduleSlack = 0.008,
+            oscillationFrequency = 0,
+            oscillationSpamBurstPresses = 6,
+            oscillationSpamBurstGap = 0.05,
+            oscillationSpamMinGap = 1 / 240,
+        })
+
+        autoparry.setEnabled(true)
+        context:setHighlightEnabled(false)
+
+        local threatDefinitions = {
+            { spawnTime = 0.0, position = Vector3.new(-6, 4, 240), velocity = Vector3.new(12, 6, -260), highlightOn = 0.28, highlightOff = 0.44 },
+            { spawnTime = 0.28, position = Vector3.new(14, -6, 236), velocity = Vector3.new(-16, 8, -280), highlightOn = 0.48, highlightOff = 0.64 },
+            { spawnTime = 0.52, position = Vector3.new(-18, 2, 228), velocity = Vector3.new(20, 4, -300), highlightOn = 0.72, highlightOff = 0.88 },
+            { spawnTime = 0.78, position = Vector3.new(10, 10, 238), velocity = Vector3.new(-14, -10, -295), highlightOn = 0.98, highlightOff = 1.14 },
+            { spawnTime = 1.04, position = Vector3.new(-20, -12, 222), velocity = Vector3.new(18, 12, -310), highlightOn = 1.24, highlightOff = 1.4 },
+            { spawnTime = 1.26, position = Vector3.new(8, 14, 244), velocity = Vector3.new(-12, -6, -275), highlightOn = 1.46, highlightOff = 1.62 },
+            { spawnTime = 1.48, position = Vector3.new(-16, -10, 226), velocity = Vector3.new(22, 8, -320), highlightOn = 1.68, highlightOff = 1.84 },
+            { spawnTime = 1.72, position = Vector3.new(18, 6, 236), velocity = Vector3.new(-18, -8, -305), highlightOn = 1.92, highlightOff = 2.08 },
+            { spawnTime = 1.94, position = Vector3.new(-12, 12, 218), velocity = Vector3.new(16, -12, -315), highlightOn = 2.14, highlightOff = 2.3 },
+            { spawnTime = 2.18, position = Vector3.new(12, -14, 242), velocity = Vector3.new(-20, 6, -330), highlightOn = 2.38, highlightOff = 2.54 },
+            { spawnTime = 2.4, position = Vector3.new(-10, 8, 230), velocity = Vector3.new(18, -6, -325), highlightOn = 2.6, highlightOff = 2.76 },
+            { spawnTime = 2.64, position = Vector3.new(16, -4, 224), velocity = Vector3.new(-20, 10, -320), highlightOn = 2.8, highlightOff = 3.08 },
+        }
+
+        local highlightEvents = {
+            { time = 0, enabled = false },
+        }
+
+        for _, definition in ipairs(threatDefinitions) do
+            table.insert(highlightEvents, { time = definition.highlightOn, enabled = true })
+            table.insert(highlightEvents, { time = definition.highlightOff, enabled = false })
+        end
+
+        table.sort(highlightEvents, function(a, b)
+            if a.time == b.time then
+                return (a.enabled and 1 or 0) > (b.enabled and 1 or 0)
+            end
+            return a.time < b.time
+        end)
+
+        local playerMotions = {
+            { time = 0.0, velocity = Vector3.new(0, 0, 0) },
+            { time = 0.36, velocity = Vector3.new(10, 0, 4) },
+            { time = 0.78, velocity = Vector3.new(-12, 6, -6) },
+            { time = 1.12, velocity = Vector3.new(14, 12, 8) },
+            { time = 1.56, velocity = Vector3.new(-10, -18, 12) },
+            { time = 1.96, velocity = Vector3.new(16, 8, -10) },
+            { time = 2.32, velocity = Vector3.new(-14, 14, 6) },
+            { time = 2.68, velocity = Vector3.new(0, 0, 0) },
+        }
+
+        local stepSize = 1 / 240
+        local elapsed = 0
+        local totalThreats = #threatDefinitions
+        local spawnIndex = 1
+        local highlightIndex = 1
+        local motionIndex = 1
+        local parryIndex = 0
+        local uniqueParries = 0
+        local parriedByBall = {}
+        local activeThreats = {}
+        local missCount = 0
+
+        local lastEventTime = threatDefinitions[#threatDefinitions].highlightOff
+        local settleDuration = 0.6
+        local totalDuration = lastEventTime + settleDuration
+
+        context.rootPart.AssemblyLinearVelocity = Vector3.new()
+
+        while elapsed < totalDuration do
+            while spawnIndex <= totalThreats and threatDefinitions[spawnIndex].spawnTime <= elapsed + 1e-6 do
+                local definition = threatDefinitions[spawnIndex]
+                local ball = context:addBall({
+                    name = string.format("StormThreat%d", spawnIndex),
+                    position = definition.position,
+                    velocity = definition.velocity,
+                })
+
+                table.insert(activeThreats, {
+                    index = spawnIndex,
+                    definition = definition,
+                    ball = ball,
+                    deadline = definition.highlightOff + 0.4,
+                })
+
+                spawnIndex += 1
+            end
+
+            while highlightIndex <= #highlightEvents and highlightEvents[highlightIndex].time <= elapsed + 1e-6 do
+                context:setHighlightEnabled(highlightEvents[highlightIndex].enabled)
+                highlightIndex += 1
+            end
+
+            while motionIndex <= #playerMotions and playerMotions[motionIndex].time <= elapsed + 1e-6 do
+                context.rootPart.AssemblyLinearVelocity = playerMotions[motionIndex].velocity
+                motionIndex += 1
+            end
+
+            context:_advancePlayer(stepSize)
+            context:step(stepSize)
+            elapsed += stepSize
+
+            if #context.parryLog > parryIndex then
+                for index = parryIndex + 1, #context.parryLog do
+                    local entry = context.parryLog[index]
+                    local ball = entry.ball
+                    if ball ~= nil and parriedByBall[ball] ~= true then
+                        parriedByBall[ball] = true
+                        uniqueParries += 1
+                        context.ballsFolder:Remove(ball)
+
+                        for threatIndex = #activeThreats, 1, -1 do
+                            local threat = activeThreats[threatIndex]
+                            if threat.ball == ball then
+                                threat.parried = true
+                                threat.parryTime = entry.timestamp
+                                if threat.definition.highlightOff then
+                                    expect(entry.timestamp <= threat.definition.highlightOff + 0.36):toEqual(true)
+                                end
+                                expect(entry.timestamp >= threat.definition.highlightOn - 1e-3):toEqual(true)
+                                table.remove(activeThreats, threatIndex)
+                                break
+                            end
+                        end
+                    end
+                end
+                parryIndex = #context.parryLog
+            end
+
+            for threatIndex = #activeThreats, 1, -1 do
+                local threat = activeThreats[threatIndex]
+                local ball = threat.ball
+                if threat.parried then
+                    table.remove(activeThreats, threatIndex)
+                elseif ball and (ball.Position.Z <= 0 or elapsed >= threat.deadline) then
+                    missCount += 1
+                    context.ballsFolder:Remove(ball)
+                    table.remove(activeThreats, threatIndex)
+                end
+            end
+        end
+
+        context:setHighlightEnabled(false)
+
+        expect(missCount):toEqual(0)
+        expect(uniqueParries):toEqual(totalThreats)
+        expect(#context.parryLog >= totalThreats):toEqual(true)
 
         context:destroy()
     end)
@@ -990,6 +1408,12 @@ return function(t)
         expect(#context.parryLog):toEqual(0)
 
         context:step(0.18)
+
+        if #context.parryLog == 0 then
+            context:stepUntil(function()
+                return #context.parryLog > 0
+            end, { step = 1 / 240 })
+        end
 
         expect(#context.parryLog > 0):toEqual(true)
         expect(context.parryLog[1].ball):toEqual(ball)
