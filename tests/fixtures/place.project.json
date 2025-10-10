@@ -24,6 +24,9 @@
         "Context": {
           "$path": "../autoparry/Context.lua"
         },
+        "PhysicsFixtures": {
+          "$path": "../engine/physics_fixtures.lua"
+        },
         "TelemetryTestUtils": {
           "$path": "../autoparry/telemetry_test_utils.lua"
         },
@@ -55,6 +58,9 @@
           },
           "OscillationSpamSpec": {
             "$path": "../autoparry/oscillation_spam.spec.lua"
+          },
+          "PhysicsSpec": {
+            "$path": "../engine/physics.spec.lua"
           },
           "SmartTuningSpec": {
             "$path": "../autoparry/smart_tuning.spec.lua"
