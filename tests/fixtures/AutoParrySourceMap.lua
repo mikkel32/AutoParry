@@ -1,7 +1,7 @@
 -- Auto-generated source map for AutoParry tests
 return {
     ['src/core/autoparry.lua'] = [===[
--- src/core/autoparry.lua (sha1: 562712a8aa16a3a01431bd730dd77031c52be760)
+-- src/core/autoparry.lua (sha1: 129a82cc5ffebe996e2694c561ba9513714c6131)
 -- mikkel32/AutoParry : src/core/autoparry.lua
 -- selene: allow(global_usage)
 -- Auto-parry implementation that mirrors the "Auto-Parry (F-Key Proximity)" logic
@@ -24,6 +24,7 @@ local emitTelemetryEvent
 local telemetryDispatcher: ((string, { [string]: any }?) -> any)? = nil
 local pendingTelemetryEvents = {}
 local MAX_PENDING_TELEMETRY_EVENTS = 128
+local MIN_TRANSIENT_RETRY_COOLDOWN = 1 / 60
 
 local function queueTelemetryEvent(eventType: string, payload: { [string]: any }?)
     pendingTelemetryEvents[#pendingTelemetryEvents + 1] = {
@@ -353,6 +354,23 @@ local SPAM_MIN_GAP = 1 / 120
 local SPAM_EXPIRY_MARGIN = 0.045
 local SPAM_LOOKAHEAD_BONUS = 0.22
 local SPAM_WINDOW_EXTENSION = 0.3
+local TARGETING_PRESSURE_WINDOW = 1.4
+local TARGETING_PRESSURE_RATE_THRESHOLD = 1.55
+local TARGETING_PRESSURE_INTERVAL_THRESHOLD = 0.3
+local TARGETING_PRESSURE_PRESS_WINDOW = 0.42
+local TARGETING_PRESSURE_GAP_THRESHOLD = 0.18
+local TARGETING_PRESSURE_SPEED_DELTA = 55
+local TARGETING_PRESSURE_LOOKAHEAD_BOOST = 0.24
+local TARGETING_PRESSURE_REARM = 0.06
+local TARGETING_MEMORY_SCALE = 0.12
+local TARGETING_MEMORY_HALF_LIFE = 0.65
+local TARGETING_MOMENTUM_HALF_LIFE = 1.8
+local TARGETING_MEMORY_RECENT_PRESS = 0.32
+local TARGETING_MEMORY_RETARGET_WINDOW = 0.55
+local TARGETING_MEMORY_SPEED_DELTA = 65
+local TARGETING_MEMORY_IMPACT_WINDOW = 0.5
+local TARGETING_PRESSURE_MEMORY_THRESHOLD = 1.25
+local TARGETING_PRESSURE_MOMENTUM_THRESHOLD = 0.8
 local state = {
     enabled = false,
     connection = nil,
@@ -428,6 +446,15 @@ local Context = {
         virtualInputRetryAt = 0,
         telemetrySummary = nil,
         telemetrySummaryTrend = nil,
+        targetingHighlightPresent = false,
+        targetingHighlightGraceActive = false,
+        targetingHighlightPulseQueue = nil :: { number }?,
+        targetingHighlightDropQueue = nil :: { number }?,
+        targetingSpamSuspendedUntil = 0,
+        transientRetryActive = false,
+        transientRetryCount = 0,
+        transientRetryCooldown = 0,
+        transientRetryCooldownBallId = nil :: string?,
         spamBurst = {
             active = false,
             ballId = nil :: string?,
@@ -453,6 +480,7 @@ local Context = {
             mode = "idle",
             statsAggression = 0,
             statsSamples = 0,
+            triggerOptions = nil :: { [string]: any }?,
         },
     },
     ui = {
@@ -3572,6 +3600,11 @@ end
 
 function Helpers.noteVirtualInputFailure(delay)
     Context.runtime.virtualInputUnavailable = true
+    Helpers.resetSpamBurst("virtual-input-failure")
+    Context.runtime.transientRetryActive = true
+    Context.runtime.transientRetryCount = 0
+    Context.runtime.transientRetryCooldown = 0
+    Context.runtime.transientRetryCooldownBallId = nil
     local retry = state.virtualInputRetry
     if typeof(retry) ~= "table" then
         retry = { failureCount = 0, min = 0.05, max = 0.25, base = 0.12, growth = 1.5 }
@@ -3611,6 +3644,7 @@ function Helpers.noteVirtualInputFailure(delay)
     end
 
     Context.runtime.virtualInputRetryAt = os.clock() + finalDelay
+    Context.runtime.targetingSpamSuspendedUntil = Context.runtime.virtualInputRetryAt + 0.2
 
     if state.enabled then
         Context.hooks.setStage("waiting-input", { reason = "virtual-input" })
@@ -3622,6 +3656,10 @@ function Helpers.noteVirtualInputSuccess()
     if Context.runtime.virtualInputUnavailable then
         Context.runtime.virtualInputUnavailable = false
         Context.runtime.virtualInputRetryAt = 0
+        Context.runtime.targetingSpamSuspendedUntil = 0
+        Context.runtime.transientRetryActive = false
+        Context.runtime.transientRetryCount = 0
+        Context.runtime.transientRetryCooldownBallId = nil
         local retry = state.virtualInputRetry
         if typeof(retry) == "table" then
             retry.failureCount = 0
@@ -4102,6 +4140,560 @@ function Helpers.shouldForceOscillationPress(decision, telemetry, now, config)
     return true
 end
 
+function Helpers.updateTargetingAggressionMemory(
+    telemetry,
+    decision,
+    kinematics,
+    configSnapshot,
+    now
+)
+    if not telemetry or not decision then
+        return
+    end
+
+    now = now or os.clock()
+
+    local aggression = telemetry.targetingAggression or 0
+    local momentum = telemetry.targetingMomentum or 0
+    local lastUpdate = telemetry.targetingAggressionUpdatedAt
+    if Helpers.isFiniteNumber(lastUpdate) then
+        local dt = math.max(now - lastUpdate, 0)
+        if dt > 0 then
+            if TARGETING_MEMORY_HALF_LIFE > 0 then
+                local decay = 0.5 ^ (dt / TARGETING_MEMORY_HALF_LIFE)
+                aggression *= decay
+            else
+                aggression = 0
+            end
+            if TARGETING_MOMENTUM_HALF_LIFE > 0 then
+                local momentumDecay = 0.5 ^ (dt / TARGETING_MOMENTUM_HALF_LIFE)
+                momentum *= momentumDecay
+            else
+                momentum = 0
+            end
+        end
+    end
+    telemetry.targetingAggressionUpdatedAt = now
+
+    local speedUrgency = telemetry.targetingSpeedUrgency or 0
+    local lastSpeedUpdate = telemetry.targetingSpeedUpdatedAt
+    if Helpers.isFiniteNumber(lastSpeedUpdate) then
+        local dt = math.max(now - lastSpeedUpdate, 0)
+        if dt > 0 and TARGETING_MOMENTUM_HALF_LIFE > 0 then
+            local decay = 0.5 ^ (dt / TARGETING_MOMENTUM_HALF_LIFE)
+            speedUrgency *= decay
+        end
+    end
+
+    local configSource = configSnapshot or config or Defaults.CONFIG
+
+    local lastDrop = telemetry.lastTargetingDrop
+    local recentDrop = false
+    if Helpers.isFiniteNumber(lastDrop) then
+        local elapsed = now - lastDrop
+        if Helpers.isFiniteNumber(elapsed) and elapsed >= 0 and elapsed <= TARGETING_MEMORY_RETARGET_WINDOW then
+            local weight = (TARGETING_MEMORY_RETARGET_WINDOW - elapsed) / TARGETING_MEMORY_RETARGET_WINDOW
+            momentum += weight * 0.65
+            if weight > 0 then
+                recentDrop = true
+            end
+        end
+    end
+
+    local lastPress = telemetry.lastPressAt
+    if Helpers.isFiniteNumber(lastPress) then
+        local elapsed = now - lastPress
+        if Helpers.isFiniteNumber(elapsed) and elapsed >= 0 and elapsed <= TARGETING_MEMORY_RECENT_PRESS then
+            local weight = (TARGETING_MEMORY_RECENT_PRESS - elapsed) / TARGETING_MEMORY_RECENT_PRESS
+            aggression += weight * 1.15
+            momentum += weight * 0.85
+        end
+    end
+
+    local burstCount = telemetry.targetingBurstCount or 0
+    if not Helpers.isFiniteNumber(burstCount) or burstCount < 0 then
+        burstCount = 0
+    else
+        burstCount = math.floor(burstCount + 0.5)
+    end
+
+    if decision.targetingMe then
+        local pulseIntensity = 1
+
+        local lastPulse = telemetry.lastTargetingPulse
+        local newPulse = false
+        if Helpers.isFiniteNumber(lastPulse) then
+            local interval = now - lastPulse
+            if Helpers.isFiniteNumber(interval) and interval >= 0 then
+                local intervalGain = math.clamp(
+                    (TARGETING_PRESSURE_INTERVAL_THRESHOLD - interval) / TARGETING_PRESSURE_INTERVAL_THRESHOLD,
+                    0,
+                    1.1
+                )
+                pulseIntensity += intervalGain * 0.9
+            end
+
+            local pulseStamp = telemetry.targetingAggressionPulseStamp
+            if not Helpers.isFiniteNumber(pulseStamp) or lastPulse > pulseStamp then
+                newPulse = true
+                telemetry.targetingAggressionPulseStamp = lastPulse
+            end
+        end
+
+        if Helpers.isFiniteNumber(telemetry.targetingBurstRate) and telemetry.targetingBurstRate > 0 then
+            local rateExcess = telemetry.targetingBurstRate - TARGETING_PRESSURE_RATE_THRESHOLD
+            if rateExcess > 0 then
+                pulseIntensity += math.min(rateExcess / TARGETING_PRESSURE_RATE_THRESHOLD, 1.2) * 0.6
+            end
+        end
+
+        local velocityMagnitude = kinematics and kinematics.velocityMagnitude
+        if not Helpers.isFiniteNumber(velocityMagnitude) then
+            local relativeFiltered = decision.relativeFilteredVr or 0
+            local relativeRaw = decision.relativeRawVr or 0
+            velocityMagnitude = math.max(relativeFiltered, relativeRaw, 0)
+        end
+
+        local minSpeed = Defaults.CONFIG.minSpeed
+        if configSource and configSource.minSpeed then
+            minSpeed = configSource.minSpeed
+        end
+        local speedDelta = (velocityMagnitude or 0) - (minSpeed or 0)
+        if Helpers.isFiniteNumber(speedDelta) and speedDelta > 0 then
+            local speedGain = math.clamp(speedDelta / math.max(TARGETING_MEMORY_SPEED_DELTA, 1), 0, 2)
+            pulseIntensity += speedGain * 0.85
+            momentum += speedGain * 0.6
+            speedUrgency = math.max(speedUrgency, speedGain)
+        end
+
+        local predictedImpact = decision.predictedImpact
+        if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+            predictedImpact = decision.timeToImpact
+        end
+        if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+            predictedImpact = decision.timeToImpactFallback
+        end
+        if Helpers.isFiniteNumber(predictedImpact) and predictedImpact >= 0 then
+            local urgency = math.clamp(
+                (TARGETING_MEMORY_IMPACT_WINDOW - math.min(predictedImpact, TARGETING_MEMORY_IMPACT_WINDOW))
+                    / math.max(TARGETING_MEMORY_IMPACT_WINDOW, Constants.EPSILON),
+                0,
+                1.5
+            )
+            if urgency > 0 then
+                pulseIntensity += urgency
+                momentum += urgency * 0.8
+            end
+        end
+
+        local shouldIntegrate = newPulse or recentDrop or burstCount >= 2
+        if not shouldIntegrate then
+            local lastPress = telemetry.lastPressAt
+            if Helpers.isFiniteNumber(lastPress) then
+                local elapsed = now - lastPress
+                if Helpers.isFiniteNumber(elapsed) and elapsed >= 0 and elapsed <= TARGETING_MEMORY_RECENT_PRESS then
+                    shouldIntegrate = true
+                end
+            end
+        end
+
+        if not shouldIntegrate then
+            local pressGap = telemetry.lastPressGap
+            if Helpers.isFiniteNumber(pressGap) and pressGap <= TARGETING_PRESSURE_GAP_THRESHOLD then
+                shouldIntegrate = true
+            end
+        end
+
+        if shouldIntegrate then
+            aggression += pulseIntensity
+            momentum += pulseIntensity * 0.45
+            telemetry.targetingLastAggressionSpike = now
+        end
+    end
+
+    if aggression < 0 then
+        aggression = 0
+    end
+    if momentum < 0 then
+        momentum = 0
+    end
+    if speedUrgency < 0 then
+        speedUrgency = 0
+    end
+
+    aggression = math.min(aggression, 12)
+    momentum = math.min(momentum, 12)
+    speedUrgency = math.min(speedUrgency, 4)
+
+    telemetry.targetingAggression = aggression
+    telemetry.targetingMomentum = momentum
+    telemetry.targetingSpeedUrgency = speedUrgency
+    telemetry.targetingSpeedUpdatedAt = now
+end
+
+function Helpers.evaluateTargetingSpam(decision, telemetry, now, config, kinematics, ballId)
+    if not telemetry or not decision or decision.targetingMe ~= true then
+        return nil
+    end
+
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > now then
+        return nil
+    end
+
+    if Context.runtime.targetingSpamSuspendedUntil and Context.runtime.targetingSpamSuspendedUntil > now then
+        return nil
+    end
+
+    local metrics = Helpers.resolveTargetingPressureMetrics(telemetry, now)
+    if not metrics then
+        return nil
+    end
+
+    local pulseCount = metrics.pulses or 0
+    local rate = metrics.rate or 0
+    local minInterval = metrics.minInterval
+    local lastInterval = metrics.lastInterval
+    local targetingFreshness = metrics.freshness or math.huge
+    local sinceDrop = metrics.sinceDrop or math.huge
+    local sincePress = metrics.sincePress or math.huge
+    local pressGap = metrics.pressGap or math.huge
+    local pressRate = metrics.pressRate or 0
+    local targetingPressure = metrics.pressure or 0
+    local memory = metrics.memory or 0
+    local aggression = metrics.aggression or 0
+    local momentum = metrics.momentum or 0
+    local sinceAggression = metrics.sinceAggression or math.huge
+    local speedUrgency = metrics.speedUrgency or 0
+
+    local timeToImpact = decision.timeToImpact or decision.predictedImpact or math.huge
+    if not Helpers.isFiniteNumber(timeToImpact) or timeToImpact < 0 then
+        timeToImpact = math.huge
+    end
+
+    local minSpeed = config.minSpeed or Defaults.CONFIG.minSpeed or 0
+    local velocityMagnitude = kinematics and kinematics.velocityMagnitude or 0
+    if not Helpers.isFiniteNumber(velocityMagnitude) or velocityMagnitude < 0 then
+        velocityMagnitude = 0
+    end
+
+    local fastBall = velocityMagnitude >= minSpeed + TARGETING_PRESSURE_SPEED_DELTA or speedUrgency >= 0.75
+    local freshTarget = targetingFreshness <= TARGETING_PRESSURE_PRESS_WINDOW
+    local recentDrop = sinceDrop <= TARGETING_PRESSURE_PRESS_WINDOW * 0.75
+    local freshRetarget = recentDrop
+    if not freshRetarget and pulseCount >= 2 then
+        freshRetarget = freshTarget
+    end
+
+    local pressPressure = sincePress <= TARGETING_PRESSURE_PRESS_WINDOW
+        or pressGap <= TARGETING_PRESSURE_GAP_THRESHOLD
+        or pressRate >= TARGETING_PRESSURE_RATE_THRESHOLD * 0.9
+
+    local urgentImpact = timeToImpact <= TARGETING_PRESSURE_PRESS_WINDOW * 1.6
+
+    local interval = minInterval or lastInterval
+    local intervalPressure = 0
+    if interval ~= nil then
+        intervalPressure = math.clamp(
+            (TARGETING_PRESSURE_INTERVAL_THRESHOLD - interval) / TARGETING_PRESSURE_INTERVAL_THRESHOLD,
+            0,
+            1.4
+        )
+    end
+    local rapidRetarget = rate >= TARGETING_PRESSURE_RATE_THRESHOLD
+        or (interval ~= nil and interval <= TARGETING_PRESSURE_INTERVAL_THRESHOLD)
+        or (recentDrop and freshTarget)
+        or targetingPressure >= 0.6
+
+    local memoryPressure = memory >= TARGETING_PRESSURE_MEMORY_THRESHOLD
+        or momentum >= TARGETING_PRESSURE_MOMENTUM_THRESHOLD
+        or (sinceAggression <= TARGETING_PRESSURE_PRESS_WINDOW * 1.4 and aggression >= TARGETING_PRESSURE_MEMORY_THRESHOLD * 0.6)
+
+    local memoryReady = memoryPressure and (recentDrop or pressPressure or pulseCount >= 2)
+
+    local gapPressure = 0
+    if pressGap <= TARGETING_PRESSURE_GAP_THRESHOLD then
+        gapPressure = math.clamp(
+            (TARGETING_PRESSURE_GAP_THRESHOLD - pressGap) / TARGETING_PRESSURE_GAP_THRESHOLD,
+            0,
+            1.2
+        )
+    end
+
+    local demand = 0
+    demand += math.clamp(targetingPressure, 0, 3) * 0.45
+    demand += math.clamp(memory, 0, 4) * 0.25
+    demand += math.clamp(momentum, 0, 4) * 0.2
+    demand += math.clamp(speedUrgency, 0, 4) * 0.35
+    if rapidRetarget then
+        demand += 1.1
+    end
+    if pressPressure then
+        demand += 0.95
+    end
+    if memoryReady then
+        demand += 0.7
+    end
+    if urgentImpact then
+        demand += 0.85
+    end
+    if fastBall then
+        demand += 0.6
+    end
+    demand += intervalPressure * 0.85
+    demand += gapPressure * 0.65
+    if sincePress <= TARGETING_PRESSURE_PRESS_WINDOW * 0.6 then
+        demand += 0.5
+    end
+    if pulseCount >= 3 then
+        demand += 0.4 + math.min((pulseCount - 3) * 0.12, 1.2)
+    end
+    if rate >= TARGETING_PRESSURE_RATE_THRESHOLD * 1.25 then
+        demand += math.min((rate / TARGETING_PRESSURE_RATE_THRESHOLD - 1.25) * 0.7, 1.4)
+    end
+    if pressRate >= TARGETING_PRESSURE_RATE_THRESHOLD then
+        demand += math.min((pressRate / TARGETING_PRESSURE_RATE_THRESHOLD - 1) * 0.6, 1.2)
+    end
+    if demand < 0 then
+        demand = 0
+    elseif demand > 12 then
+        demand = 12
+    end
+
+    if pulseCount < 2 and not (memoryReady or pressPressure or recentDrop) then
+        return nil
+    end
+
+    local burstState = Context.runtime.spamBurst
+    if burstState and burstState.active and burstState.ballId == ballId then
+        if burstState.reason == "retarget" and now - (burstState.startedAt or 0) < TARGETING_PRESSURE_REARM then
+            return nil
+        end
+    end
+
+    local lastTrigger = telemetry.lastTargetingSpam
+    if Helpers.isFiniteNumber(lastTrigger) and now - lastTrigger < TARGETING_PRESSURE_REARM then
+        return nil
+    end
+
+    if not (rapidRetarget or freshRetarget or pressPressure or memoryReady) then
+        return nil
+    end
+
+    telemetry.lastTargetingSpam = now
+
+    telemetry.targetingDemand = demand
+    telemetry.targetingDemandUpdatedAt = now
+
+    local shouldForce = false
+    if Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
+        shouldForce = pressPressure or urgentImpact or freshRetarget or memoryPressure
+    end
+
+    local lookaheadBoost = TARGETING_PRESSURE_LOOKAHEAD_BOOST + math.clamp(speedUrgency * 0.08, 0, 0.12)
+
+    local hyperDemand = demand >= 2.4
+        or (interval ~= nil and interval <= TARGETING_PRESSURE_INTERVAL_THRESHOLD * 0.3)
+        or pressRate >= TARGETING_PRESSURE_RATE_THRESHOLD * 1.6
+        or rate >= TARGETING_PRESSURE_RATE_THRESHOLD * 1.45
+        or urgentImpact
+        or gapPressure >= 0.9
+    if hyperDemand then
+        telemetry.targetingHyperActive = now
+    end
+
+    return {
+        triggered = true,
+        reason = "retarget",
+        startBurst = true,
+        forcePress = shouldForce,
+        panic = pressPressure or urgentImpact or fastBall or memoryReady,
+        lookaheadBoost = lookaheadBoost,
+        rate = rate,
+        interval = interval,
+        pulses = pulseCount,
+        fresh = freshRetarget,
+        memory = memory,
+        aggression = aggression,
+        momentum = momentum,
+        speedUrgency = speedUrgency,
+        pressure = targetingPressure,
+        demand = demand,
+        hyper = hyperDemand,
+        pressRate = pressRate,
+        minInterval = minInterval,
+        lastInterval = lastInterval,
+        timeToImpact = timeToImpact,
+        velocity = velocityMagnitude,
+        freshness = targetingFreshness,
+        sincePress = sincePress,
+        sinceDrop = sinceDrop,
+    }
+end
+
+function Helpers.resolveTargetingPressureMetrics(telemetry, now)
+    if not telemetry then
+        return nil
+    end
+
+    now = now or os.clock()
+
+    local pulses = telemetry.targetingBurstCount or 0
+    if not Helpers.isFiniteNumber(pulses) or pulses < 0 then
+        pulses = 0
+    else
+        pulses = math.floor(pulses + 0.5)
+    end
+
+    local rate = telemetry.targetingBurstRate or 0
+    if not Helpers.isFiniteNumber(rate) or rate < 0 then
+        rate = 0
+    end
+
+    local minInterval = telemetry.targetingMinInterval
+    if not Helpers.isFiniteNumber(minInterval) or minInterval < 0 then
+        minInterval = nil
+    end
+
+    local lastInterval = telemetry.targetingLastInterval
+    if not Helpers.isFiniteNumber(lastInterval) or lastInterval < 0 then
+        lastInterval = nil
+    end
+
+    local lastTarget = telemetry.lastTargetingPulse
+    local freshness = math.huge
+    if Helpers.isFiniteNumber(lastTarget) then
+        freshness = now - lastTarget
+        if not Helpers.isFiniteNumber(freshness) then
+            freshness = math.huge
+        end
+    end
+
+    local lastDrop = telemetry.lastTargetingDrop
+    local sinceDrop = math.huge
+    if Helpers.isFiniteNumber(lastDrop) then
+        sinceDrop = now - lastDrop
+        if not Helpers.isFiniteNumber(sinceDrop) then
+            sinceDrop = math.huge
+        end
+    end
+
+    local lastPress = telemetry.lastPressAt
+    local sincePress = math.huge
+    if Helpers.isFiniteNumber(lastPress) then
+        sincePress = now - lastPress
+        if not Helpers.isFiniteNumber(sincePress) then
+            sincePress = math.huge
+        end
+    end
+
+    local pressGap = telemetry.lastPressGap
+    if not Helpers.isFiniteNumber(pressGap) or pressGap < 0 then
+        pressGap = math.huge
+    end
+
+    local pressRate = telemetry.pressRate or 0
+    if not Helpers.isFiniteNumber(pressRate) or pressRate < 0 then
+        pressRate = 0
+    end
+
+    local targetingPressure = 0
+    if pulses > 0 then
+        local rateComponent = 0
+        if pulses >= 2 and rate > 0 then
+            rateComponent = math.clamp(rate / TARGETING_PRESSURE_RATE_THRESHOLD - 0.6, 0, 1.6)
+        end
+
+        local intervalComponent = 0
+        local interval = minInterval or lastInterval
+        if pulses >= 2 and interval ~= nil then
+            intervalComponent = math.clamp(
+                (TARGETING_PRESSURE_INTERVAL_THRESHOLD - interval) / TARGETING_PRESSURE_INTERVAL_THRESHOLD,
+                0,
+                1.4
+            )
+        end
+
+        local freshnessComponent = 0
+        if freshness <= TARGETING_PRESSURE_PRESS_WINDOW then
+            freshnessComponent = math.clamp(
+                (TARGETING_PRESSURE_PRESS_WINDOW - freshness) / TARGETING_PRESSURE_PRESS_WINDOW,
+                0,
+                1
+            )
+        end
+
+        local pressComponent = 0
+        if sincePress <= TARGETING_PRESSURE_PRESS_WINDOW then
+            pressComponent = math.clamp(
+                (TARGETING_PRESSURE_PRESS_WINDOW - sincePress) / TARGETING_PRESSURE_PRESS_WINDOW,
+                0,
+                1
+            )
+        elseif pressGap <= TARGETING_PRESSURE_GAP_THRESHOLD then
+            pressComponent = math.clamp(
+                (TARGETING_PRESSURE_GAP_THRESHOLD - pressGap) / TARGETING_PRESSURE_GAP_THRESHOLD,
+                0,
+                1
+            )
+        end
+
+        local dropComponent = 0
+        if sinceDrop <= TARGETING_PRESSURE_PRESS_WINDOW then
+            dropComponent = math.clamp(
+                (TARGETING_PRESSURE_PRESS_WINDOW - sinceDrop) / TARGETING_PRESSURE_PRESS_WINDOW,
+                0,
+                1
+            )
+        end
+
+        targetingPressure = math.min(rateComponent + intervalComponent + freshnessComponent + pressComponent + dropComponent, 3)
+    end
+
+    local aggression = telemetry.targetingAggression or 0
+    if not Helpers.isFiniteNumber(aggression) or aggression < 0 then
+        aggression = 0
+    end
+
+    local momentum = telemetry.targetingMomentum or 0
+    if not Helpers.isFiniteNumber(momentum) or momentum < 0 then
+        momentum = 0
+    end
+
+    local speedUrgency = telemetry.targetingSpeedUrgency or 0
+    if not Helpers.isFiniteNumber(speedUrgency) or speedUrgency < 0 then
+        speedUrgency = 0
+    end
+
+    local lastAggressionSpike = telemetry.targetingLastAggressionSpike
+    local sinceAggression = math.huge
+    if Helpers.isFiniteNumber(lastAggressionSpike) then
+        sinceAggression = now - lastAggressionSpike
+        if not Helpers.isFiniteNumber(sinceAggression) then
+            sinceAggression = math.huge
+        end
+    end
+
+    local memory = (aggression + 0.6 * momentum) * TARGETING_MEMORY_SCALE
+
+    return {
+        pulses = pulses,
+        rate = rate,
+        minInterval = minInterval,
+        lastInterval = lastInterval,
+        freshness = freshness,
+        sincePress = sincePress,
+        pressGap = pressGap,
+        pressRate = pressRate,
+        sinceDrop = sinceDrop,
+        pressure = targetingPressure,
+        aggression = aggression,
+        momentum = momentum,
+        memory = memory,
+        sinceAggression = sinceAggression,
+        speedUrgency = speedUrgency,
+    }
+end
+
 local function resolveOscillationSpamSettings()
     local presses = config.oscillationSpamBurstPresses
     if presses == nil then
@@ -4240,7 +4832,11 @@ function Helpers.computeSpamBurstTuning(
     decision: { [string]: any }?,
     kinematics: BallKinematics.Kinematics?,
     fallbackDecision: { [string]: any }?,
-    telemetrySummary: { [string]: any }?
+    telemetrySummary: { [string]: any }?,
+    telemetry: TelemetryState?,
+    now: number?,
+    mode: string?,
+    options: { [string]: any }?
 )
     local presses = math.max(settings.presses or 0, 0)
     local baseGap = settings.gap or Defaults.CONFIG.oscillationSpamBurstGap
@@ -4248,6 +4844,124 @@ function Helpers.computeSpamBurstTuning(
     local baseLookahead = settings.lookahead or Defaults.CONFIG.oscillationSpamBurstLookahead
 
     local minGap = math.max(settings.minGap or SPAM_MIN_GAP, SPAM_MIN_GAP)
+    local demandScore = 0
+    local hyperDemand = false
+    local optionPressRate = 0
+    local optionRate = 0
+    local optionInterval = nil
+    local optionTimeToImpact = nil
+    local optionFreshness = nil
+    local optionSincePress = nil
+    local optionSinceDrop = nil
+    local rateOverdrive = 0
+
+    if typeof(options) == "table" then
+        local memory = 0
+        if Helpers.isFiniteNumber(options.memory) and options.memory > 0 then
+            memory = options.memory
+        elseif Helpers.isFiniteNumber(options.aggression) and options.aggression > 0 then
+            memory = options.aggression
+        end
+
+        local optionMomentum = 0
+        if Helpers.isFiniteNumber(options.momentum) and options.momentum > 0 then
+            optionMomentum = options.momentum
+        end
+
+        local optionSpeed = 0
+        if Helpers.isFiniteNumber(options.speedUrgency) and options.speedUrgency > 0 then
+            optionSpeed = options.speedUrgency
+        end
+
+        if Helpers.isFiniteNumber(options.demand) and options.demand > 0 then
+            demandScore = math.clamp(options.demand, 0, 12)
+        end
+        if options.hyper == true then
+            hyperDemand = true
+        end
+        if Helpers.isFiniteNumber(options.pressRate) and options.pressRate > 0 then
+            optionPressRate = options.pressRate
+        end
+        if Helpers.isFiniteNumber(options.rate) and options.rate > 0 then
+            optionRate = options.rate
+        end
+        if Helpers.isFiniteNumber(options.interval) and options.interval > 0 then
+            optionInterval = options.interval
+        elseif Helpers.isFiniteNumber(options.minInterval) and options.minInterval > 0 then
+            optionInterval = options.minInterval
+        elseif Helpers.isFiniteNumber(options.lastInterval) and options.lastInterval > 0 then
+            optionInterval = options.lastInterval
+        end
+        if Helpers.isFiniteNumber(options.timeToImpact) and options.timeToImpact >= 0 then
+            optionTimeToImpact = options.timeToImpact
+        end
+        if Helpers.isFiniteNumber(options.freshness) and options.freshness >= 0 then
+            optionFreshness = options.freshness
+        end
+        if Helpers.isFiniteNumber(options.sincePress) and options.sincePress >= 0 then
+            optionSincePress = options.sincePress
+        end
+        if Helpers.isFiniteNumber(options.sinceDrop) and options.sinceDrop >= 0 then
+            optionSinceDrop = options.sinceDrop
+        end
+
+        local spamDemand = math.min(memory + 0.65 * optionMomentum + 0.9 * optionSpeed, 6)
+        if optionRate > 0 then
+            rateOverdrive = math.max(rateOverdrive, optionRate / TARGETING_PRESSURE_RATE_THRESHOLD - 1)
+        end
+        if optionPressRate > 0 then
+            rateOverdrive = math.max(rateOverdrive, optionPressRate / TARGETING_PRESSURE_RATE_THRESHOLD - 1)
+        end
+        if rateOverdrive < 0 then
+            rateOverdrive = 0
+        end
+        rateOverdrive = math.clamp(rateOverdrive, 0, 2.5)
+
+        local combinedDemand = math.min(spamDemand + demandScore, 12)
+        if combinedDemand > 0 then
+            local extraPresses = math.clamp(memory * 0.6 + optionMomentum * 0.45 + optionSpeed * 0.5, 0, 4.5)
+            local demandExtra = math.clamp(demandScore * 1.05 + rateOverdrive * 1.8, 0, 6)
+            presses = math.max(presses, math.floor(presses + extraPresses + demandExtra + 0.5))
+
+            local tighten = math.clamp(combinedDemand * 0.22 + rateOverdrive * 0.18, 0, 0.88)
+            minGap = math.max(minGap * (1 - tighten * 0.55), SPAM_MIN_GAP)
+            baseGap = math.max(baseGap * (1 - tighten), minGap)
+
+            local windowScale = 1 + math.clamp(combinedDemand * 0.14 + rateOverdrive * 0.35, 0, 2.5)
+            baseWindow = math.max(baseWindow, baseGap * math.max(presses, 1) * windowScale)
+
+            local lookaheadFloor = baseGap * math.max(presses, 1) + activationLatencyEstimate
+            if optionTimeToImpact and Helpers.isFiniteNumber(optionTimeToImpact) then
+                lookaheadFloor = math.max(lookaheadFloor, optionTimeToImpact + activationLatencyEstimate * 0.35)
+            end
+            baseLookahead = math.max(baseLookahead, lookaheadFloor)
+        elseif demandScore > 0 then
+            local lookaheadFloor = baseGap * math.max(presses, 1) + activationLatencyEstimate
+            baseLookahead = math.max(baseLookahead, lookaheadFloor)
+        end
+
+        if optionInterval ~= nil then
+            local intervalBoost = math.clamp(
+                (TARGETING_PRESSURE_INTERVAL_THRESHOLD - optionInterval) / TARGETING_PRESSURE_INTERVAL_THRESHOLD,
+                0,
+                1.6
+            )
+            if intervalBoost > 0 then
+                local tighten = math.clamp(intervalBoost * 0.45, 0, 0.9)
+                minGap = math.max(minGap * (1 - tighten * 0.5), SPAM_MIN_GAP)
+                baseGap = math.max(baseGap * (1 - tighten * 0.6), minGap)
+            end
+        end
+
+        local pulseCountOption = 0
+        if Helpers.isFiniteNumber(options.pulses) and options.pulses > 0 then
+            pulseCountOption = options.pulses
+        end
+        if pulseCountOption < 2 then
+            presses = 1
+        end
+    end
+
     local panicTightness = math.clamp(settings.panicTightness or Defaults.CONFIG.oscillationSpamPanicTightness, 0, 1)
     local panicGapScale = math.clamp(settings.panicGapScale or Defaults.CONFIG.oscillationSpamPanicGapScale, 0.05, 1)
     local panicWindowScale = math.max(settings.panicWindowScale or Defaults.CONFIG.oscillationSpamPanicWindowScale, 1)
@@ -4257,6 +4971,12 @@ function Helpers.computeSpamBurstTuning(
     local recoverySeconds = math.max(settings.recoverySeconds or Defaults.CONFIG.oscillationSpamRecoverySeconds, 0)
 
     telemetrySummary = telemetrySummary or Context.runtime.telemetrySummary
+    telemetry = telemetry or nil
+    now = now or os.clock()
+    mode = mode or "oscillation"
+    if options == nil then
+        options = {}
+    end
     local commitTarget, lookaheadGoalTarget, reactionGoalTarget = Helpers.resolvePerformanceTargets()
 
     local statsAggression = 0
@@ -4285,6 +5005,22 @@ function Helpers.computeSpamBurstTuning(
     local statsReactionFocus
     local statsCognitiveLoad
     local statsNeuroTempo
+    local statsTargetingPressure
+    local statsTargetingRate
+    local statsTargetingInterval
+    local statsTargetingSincePress
+    local statsTargetingAggression
+    local statsTargetingMomentum
+    local statsTargetingSpeedUrgency
+
+    local targetingPressure = 0
+    local targetingRate
+    local targetingInterval
+    local targetingSincePress = math.huge
+    local targetingFreshness = math.huge
+    local targetingPressGap = math.huge
+    local targetingPressRate = 0
+    local targetingSinceDrop = math.huge
 
     local function accumulateAggression(value, scale, clampLimit)
         if not Helpers.isFiniteNumber(value) then
@@ -4303,6 +5039,53 @@ function Helpers.computeSpamBurstTuning(
 
         statsAggression += normalized
         statsSamples += 1
+    end
+
+    if telemetry then
+        local metrics = Helpers.resolveTargetingPressureMetrics(telemetry, now)
+        if metrics then
+            targetingPressure = metrics.pressure or 0
+            targetingRate = metrics.rate or 0
+            targetingInterval = metrics.minInterval
+            if targetingInterval == nil then
+                targetingInterval = metrics.lastInterval
+            end
+            targetingFreshness = metrics.freshness or math.huge
+            targetingSincePress = metrics.sincePress or math.huge
+            targetingPressGap = metrics.pressGap or math.huge
+            targetingPressRate = metrics.pressRate or 0
+            targetingSinceDrop = metrics.sinceDrop or math.huge
+            statsTargetingAggression = metrics.memory or metrics.aggression or statsTargetingAggression
+            statsTargetingMomentum = metrics.momentum or statsTargetingMomentum
+            statsTargetingSpeedUrgency = metrics.speedUrgency or statsTargetingSpeedUrgency
+        end
+    end
+
+    if targetingPressure > 0 then
+        statsTargetingPressure = targetingPressure
+        statsTargetingRate = targetingRate
+        statsTargetingInterval = targetingInterval
+        statsTargetingSincePress = targetingSincePress
+        accumulateAggression(targetingPressure, 0.6, 2.4)
+        if statsTargetingAggression and Helpers.isFiniteNumber(statsTargetingAggression) then
+            accumulateAggression(statsTargetingAggression, 1.2, 2)
+        end
+        if statsTargetingMomentum and Helpers.isFiniteNumber(statsTargetingMomentum) then
+            accumulateAggression(statsTargetingMomentum, 1.2, 2)
+        end
+        if statsTargetingSpeedUrgency and Helpers.isFiniteNumber(statsTargetingSpeedUrgency) then
+            accumulateAggression(statsTargetingSpeedUrgency, 1.2, 2)
+        end
+    end
+
+    local lookaheadBoostExtra = 0
+    if typeof(options) == "table" and Helpers.isFiniteNumber(options.lookaheadBoost) then
+        lookaheadBoostExtra = math.max(options.lookaheadBoost, 0)
+    elseif targetingPressure > 0 then
+        lookaheadBoostExtra = TARGETING_PRESSURE_LOOKAHEAD_BOOST * math.clamp(targetingPressure, 0, 1.8)
+    end
+    if demandScore > 0 then
+        lookaheadBoostExtra = math.max(lookaheadBoostExtra, math.min(demandScore * 0.04, 0.18))
     end
 
     if telemetrySummary then
@@ -4507,6 +5290,10 @@ function Helpers.computeSpamBurstTuning(
     local statsTighten = math.max(statsAggressionScore, 0)
     local statsRelax = math.max(-statsAggressionScore, 0)
 
+    if targetingPressure > 0 then
+        statsTighten = math.min(statsTighten + targetingPressure * 0.55, 3)
+    end
+
     local statsTrend = 0
     local trend = Context.runtime.telemetrySummaryTrend
     if trend and Helpers.isFiniteNumber(trend.momentum) then
@@ -4554,6 +5341,10 @@ function Helpers.computeSpamBurstTuning(
         else
             statsRelax = math.min(statsRelax + (-statsReactionPressure) * 0.35, 3)
         end
+    end
+
+    if targetingPressure > 0 then
+        statsPressureBoost += math.min(targetingPressure, 2.2) * 0.65
     end
 
     if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) and statsReactionFocus > 1.1 then
@@ -4609,6 +5400,11 @@ function Helpers.computeSpamBurstTuning(
         presses = math.min(presses, basePresses + 2)
     else
         presses = math.max(basePresses, presses)
+    end
+
+    if targetingPressure > 0 then
+        local extra = math.min(math.ceil(targetingPressure * 1.3), 3)
+        presses = math.max(presses, basePresses + extra)
     end
 
     local dynamicPanicTightness = panicTightness
@@ -4758,6 +5554,13 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
+        if demandScore > 0 then
+            tighten = math.min(tighten + math.min(demandScore, 6) * 0.05, 1.5)
+        end
+        if hyperDemand then
+            tighten = math.min(tighten + 0.18, 1.6)
+        end
+
         if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
             local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
             if tempoNormalized > 0 then
@@ -4795,6 +5598,11 @@ function Helpers.computeSpamBurstTuning(
             gap = math.max(gap * (1 - 0.2 * statsTighten), minGap)
         elseif statsRelax > 0 then
             gap = math.min(gap * (1 + 0.15 * statsRelax), baseGap * (1 + 0.35 * statsRelax))
+        end
+
+        if targetingPressure > 0 then
+            local tightenFactor = math.clamp(targetingPressure * 0.28, 0, 0.85)
+            gap = math.max(gap * (1 - tightenFactor), minGap)
         end
 
         if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
@@ -4949,6 +5757,10 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
+        if targetingPressure > 0 then
+            extension += baseWindow * 0.3 * math.clamp(targetingPressure, 0, 1.2)
+        end
+
         if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
             local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
             if volatilityNormalized > 0 then
@@ -4956,7 +5768,7 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        window = math.max(baseWindow + extension, closenessWindow, minimumWindow)
+        window = math.max(baseWindow + extension + lookaheadBoostExtra * 0.5, closenessWindow, minimumWindow)
         if statsRelax > 0 then
             window = math.max(window, baseWindow)
         end
@@ -5006,6 +5818,8 @@ function Helpers.computeSpamBurstTuning(
             lookaheadBoost += 0.12 * lookaheadNormalized
         end
 
+        lookaheadBoost += lookaheadBoostExtra
+
         lookahead = math.max(baseLookahead, predictedImpact + activationLatencyEstimate + gap)
         lookahead = math.min(lookahead + lookaheadBoost, baseLookahead + 0.4 + statsTighten * 0.1 + math.max(lookaheadNormalized or 0, 0) * 0.12)
 
@@ -5033,6 +5847,10 @@ function Helpers.computeSpamBurstTuning(
 
         if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) and statsVolatilityPressure > 0 then
             panicGap = math.max(panicGap * (1 - 0.1 * math.min(statsVolatilityPressure, 1.2)), minGap)
+        end
+
+        if targetingPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.18 * math.min(targetingPressure, 1.2)), minGap)
         end
 
         if kinematics and Helpers.isFiniteNumber(kinematics.velocityMagnitude) then
@@ -5068,8 +5886,11 @@ function Helpers.computeSpamBurstTuning(
         if lookaheadNormalized and lookaheadNormalized > 0 then
             panicWindow = panicWindow * (1 + 0.3 * lookaheadNormalized)
         end
+        if targetingPressure > 0 then
+            panicWindow = panicWindow * (1 + 0.22 * math.min(targetingPressure, 1.2))
+        end
         panicWindow = math.min(panicWindow, baseWindow + 0.6 + statsTighten * 0.15 + math.max(lookaheadNormalized or 0, 0) * 0.2)
-        panicLookahead = math.max(panicLookahead, predictedImpact + activationLatencyEstimate + panicGap)
+        panicLookahead = math.max(panicLookahead, predictedImpact + activationLatencyEstimate + panicGap + lookaheadBoostExtra)
         if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
             panicLookahead = math.max(
                 panicLookahead,
@@ -5082,11 +5903,20 @@ function Helpers.computeSpamBurstTuning(
                 predictedImpact + activationLatencyEstimate + panicGap + statsReactionPressure * 0.04
             )
         end
-        panicLookahead = math.min(panicLookahead, baseLookahead + panicLookaheadBoost + 0.45 + statsTighten * 0.12 + math.max(lookaheadNormalized or 0, 0) * 0.15)
+        panicLookahead = math.min(
+            panicLookahead,
+            baseLookahead + panicLookaheadBoost + lookaheadBoostExtra + 0.45 + statsTighten * 0.12
+                + math.max(lookaheadNormalized or 0, 0) * 0.15
+        )
 
         if tighten >= dynamicPanicTightness then
             panic = true
             panicReason = "tightness"
+        end
+
+        if not panic and targetingPressure > 1.1 then
+            panic = true
+            panicReason = panicReason or "retarget"
         end
 
         if
@@ -5163,6 +5993,20 @@ function Helpers.computeSpamBurstTuning(
                 panicReason = "detection"
             end
         end
+
+        if not panic and hyperDemand then
+            panic = true
+            panicReason = panicReason or "demand"
+        end
+    end
+
+    if hyperDemand then
+        gap = math.max(gap * 0.75, minGap)
+        window = math.max(window, gap * math.max(presses, 1) * 1.3)
+        lookahead = math.max(lookahead, gap * math.max(presses, 1) + activationLatencyEstimate * 0.5)
+        panicGap = math.max(minGap, math.min(panicGap, gap))
+        panicWindow = math.max(panicWindow, window * 1.35)
+        panicLookahead = math.max(panicLookahead, lookahead + activationLatencyEstimate * 0.35)
     end
 
     gap = math.max(gap, minGap)
@@ -5211,9 +6055,25 @@ function Helpers.computeSpamBurstTuning(
         statsReactionFocus = statsReactionFocus,
         statsCognitiveLoad = statsCognitiveLoad,
         statsNeuroTempo = statsNeuroTempo,
+        statsTargetingPressure = statsTargetingPressure,
+        statsTargetingRate = statsTargetingRate,
+        statsTargetingInterval = statsTargetingInterval,
+        statsTargetingSincePress = statsTargetingSincePress,
+        statsTargetingAggression = statsTargetingAggression,
+        statsTargetingMomentum = statsTargetingMomentum,
+        statsTargetingSpeedUrgency = statsTargetingSpeedUrgency,
+        targetingDemand = demandScore,
+        targetingRateOverdrive = rateOverdrive,
+        targetingInterval = optionInterval,
+        targetingPressRate = optionPressRate,
+        targetingFreshness = optionFreshness,
+        targetingSincePress = optionSincePress,
+        targetingSinceDrop = optionSinceDrop,
+        hyperDemand = hyperDemand,
         panicTightnessThreshold = dynamicPanicTightness,
         panicSlackLimit = dynamicPanicSlack,
         panicSpeedDelta = dynamicPanicSpeedDelta,
+        triggerMode = mode,
     }
 end
 
@@ -5311,9 +6171,25 @@ function Helpers.applySpamBurstTuning(
         telemetry.lastOscillationBurst.statsReactionFocus = tuning.statsReactionFocus
         telemetry.lastOscillationBurst.statsCognitiveLoad = tuning.statsCognitiveLoad
         telemetry.lastOscillationBurst.statsNeuroTempo = tuning.statsNeuroTempo
+        telemetry.lastOscillationBurst.statsTargetingPressure = tuning.statsTargetingPressure
+        telemetry.lastOscillationBurst.statsTargetingRate = tuning.statsTargetingRate
+        telemetry.lastOscillationBurst.statsTargetingInterval = tuning.statsTargetingInterval
+        telemetry.lastOscillationBurst.statsTargetingSincePress = tuning.statsTargetingSincePress
+        telemetry.lastOscillationBurst.statsTargetingAggression = tuning.statsTargetingAggression
+        telemetry.lastOscillationBurst.statsTargetingMomentum = tuning.statsTargetingMomentum
+        telemetry.lastOscillationBurst.statsTargetingSpeedUrgency = tuning.statsTargetingSpeedUrgency
+        telemetry.lastOscillationBurst.targetingDemand = tuning.targetingDemand
+        telemetry.lastOscillationBurst.targetingRateOverdrive = tuning.targetingRateOverdrive
+        telemetry.lastOscillationBurst.targetingInterval = tuning.targetingInterval
+        telemetry.lastOscillationBurst.targetingPressRate = tuning.targetingPressRate
+        telemetry.lastOscillationBurst.targetingFreshness = tuning.targetingFreshness
+        telemetry.lastOscillationBurst.targetingSincePress = tuning.targetingSincePress
+        telemetry.lastOscillationBurst.targetingSinceDrop = tuning.targetingSinceDrop
+        telemetry.lastOscillationBurst.hyperDemand = tuning.hyperDemand
         telemetry.lastOscillationBurst.panicTightness = tuning.panicTightnessThreshold
         telemetry.lastOscillationBurst.panicSlackLimit = tuning.panicSlackLimit
         telemetry.lastOscillationBurst.panicSpeedDelta = tuning.panicSpeedDelta
+        telemetry.lastOscillationBurst.mode = burstState.reason
         telemetry.lastOscillationBurst.updatedAt = now
     end
 
@@ -5350,6 +6226,7 @@ function Helpers.resetSpamBurst(reason: string?)
     burstState.mode = "idle"
     burstState.statsAggression = 0
     burstState.statsSamples = 0
+    burstState.triggerOptions = nil
 end
 
 function Helpers.startSpamBurst(
@@ -5357,7 +6234,9 @@ function Helpers.startSpamBurst(
     now: number,
     decision: { [string]: any }?,
     telemetry: TelemetryState?,
-    kinematics: BallKinematics.Kinematics?
+    kinematics: BallKinematics.Kinematics?,
+    mode: string?,
+    options: { [string]: any }?
 )
     if not ballId then
         return
@@ -5370,25 +6249,72 @@ function Helpers.startSpamBurst(
     end
 
     local burstState = Context.runtime.spamBurst
+    local modeTag = mode or "oscillation"
+    if burstState.active and burstState.ballId == ballId and burstState.reason == modeTag then
+        burstState.triggerOptions = options
+        return
+    end
     burstState.active = true
     burstState.ballId = ballId
     burstState.remaining = settings.presses
     burstState.baseSettings = settings
+    burstState.triggerOptions = options
+    burstState.reason = modeTag
 
     local tuning = Helpers.computeSpamBurstTuning(
         settings,
         decision,
         kinematics,
         decision,
-        Context.runtime.telemetrySummary
+        Context.runtime.telemetrySummary,
+        telemetry,
+        now,
+        burstState.reason,
+        options
     )
     Helpers.applySpamBurstTuning(burstState, tuning, now, telemetry, settings)
+    local demandOption = 0
+    local rateOption = 0
+    local timeToImpactOption
+    if typeof(options) == "table" then
+        if Helpers.isFiniteNumber(options.demand) and options.demand > 0 then
+            demandOption = options.demand
+        end
+        if Helpers.isFiniteNumber(options.rate) and options.rate > 0 then
+            rateOption = options.rate
+        end
+        if Helpers.isFiniteNumber(options.pressRate) and options.pressRate > 0 then
+            rateOption = math.max(rateOption, options.pressRate)
+        end
+        if Helpers.isFiniteNumber(options.timeToImpact) and options.timeToImpact >= 0 then
+            timeToImpactOption = options.timeToImpact
+        end
+    end
     burstState.nextPressAt = now + math.max(burstState.gap, SPAM_MIN_GAP)
+    if demandOption > 0 then
+        local demandClamp = math.clamp(demandOption, 0, 8)
+        local reduction = math.clamp(demandClamp * 0.18, 0, 0.82)
+        if rateOption > 0 then
+            reduction = math.min(0.9, reduction + math.max(rateOption / TARGETING_PRESSURE_RATE_THRESHOLD - 1, 0) * 0.12)
+        end
+        local earliest = now + math.max(SPAM_MIN_GAP, burstState.gap * (1 - reduction))
+        if earliest < burstState.nextPressAt then
+            burstState.nextPressAt = earliest
+        end
+    end
+    if timeToImpactOption and Helpers.isFiniteNumber(timeToImpactOption) then
+        if timeToImpactOption <= burstState.gap * 1.5 then
+            local urgentAt = now + math.max(SPAM_MIN_GAP, math.min(burstState.gap, timeToImpactOption * 0.6))
+            if urgentAt < burstState.nextPressAt then
+                burstState.nextPressAt = urgentAt
+            end
+        end
+    end
     burstState.expireAt = now + math.max(burstState.window or tuning.window, 0)
     burstState.startedAt = now
     burstState.lastPressAt = now
     burstState.failures = 0
-    burstState.reason = "oscillation"
+    burstState.reason = mode or burstState.reason or "oscillation"
 
     if telemetry then
         telemetry.lastOscillationBurst = {
@@ -5495,13 +6421,73 @@ function Helpers.processSpamBurst(
         decision,
         kinematics,
         burstState.initialDecision,
-        Context.runtime.telemetrySummary
+        Context.runtime.telemetrySummary,
+        telemetry,
+        now,
+        burstState.reason,
+        burstState.triggerOptions
     )
     Helpers.applySpamBurstTuning(burstState, tuning, now, telemetry, baseSettings)
+    local demandOption = 0
+    local rateOption = 0
+    local timeToImpactOption
+    local sincePressOption
+    local triggerOptions = burstState.triggerOptions
+    if typeof(triggerOptions) == "table" then
+        if Helpers.isFiniteNumber(triggerOptions.demand) and triggerOptions.demand > 0 then
+            demandOption = triggerOptions.demand
+        end
+        if Helpers.isFiniteNumber(triggerOptions.rate) and triggerOptions.rate > 0 then
+            rateOption = triggerOptions.rate
+        end
+        if Helpers.isFiniteNumber(triggerOptions.pressRate) and triggerOptions.pressRate > 0 then
+            rateOption = math.max(rateOption, triggerOptions.pressRate)
+        end
+        if Helpers.isFiniteNumber(triggerOptions.timeToImpact) and triggerOptions.timeToImpact >= 0 then
+            timeToImpactOption = triggerOptions.timeToImpact
+        end
+        if Helpers.isFiniteNumber(triggerOptions.sincePress) and triggerOptions.sincePress >= 0 then
+            sincePressOption = triggerOptions.sincePress
+        end
+    end
 
     local minimumNext = burstState.lastPressAt + burstState.gap
     if burstState.nextPressAt < minimumNext then
         burstState.nextPressAt = minimumNext
+    end
+    if demandOption > 0 then
+        local demandClamp = math.clamp(demandOption, 0, 8)
+        local reduction = math.clamp(demandClamp * 0.18, 0, 0.82)
+        if rateOption > 0 then
+            reduction = math.min(0.9, reduction + math.max(rateOption / TARGETING_PRESSURE_RATE_THRESHOLD - 1, 0) * 0.12)
+        end
+        local earliest = burstState.lastPressAt + math.max(SPAM_MIN_GAP, burstState.gap * (1 - reduction))
+        if earliest < burstState.nextPressAt then
+            burstState.nextPressAt = earliest
+        end
+    end
+    if timeToImpactOption and Helpers.isFiniteNumber(timeToImpactOption) then
+        if timeToImpactOption <= burstState.gap * 1.5 then
+            local urgencyWindow = math.max(SPAM_MIN_GAP, math.min(burstState.gap, timeToImpactOption * 0.6))
+            local urgentAt = burstState.lastPressAt + urgencyWindow
+            if urgentAt < burstState.nextPressAt then
+                burstState.nextPressAt = urgentAt
+            end
+        end
+    end
+    if sincePressOption and Helpers.isFiniteNumber(sincePressOption) and sincePressOption <= TARGETING_PRESSURE_PRESS_WINDOW then
+        local catchUpAt = burstState.lastPressAt + math.max(SPAM_MIN_GAP, burstState.gap * 0.45)
+        if catchUpAt < burstState.nextPressAt then
+            burstState.nextPressAt = catchUpAt
+        end
+    end
+
+    local suspendedUntil = Context.runtime.targetingSpamSuspendedUntil or 0
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > now then
+        suspendedUntil = math.max(suspendedUntil, Context.runtime.virtualInputRetryAt)
+    end
+    if suspendedUntil > now then
+        burstState.nextPressAt = math.max(burstState.nextPressAt, suspendedUntil)
     end
 
     local newExpireAt = burstState.startedAt + math.max(burstState.window or tuning.window, 0)
@@ -5515,6 +6501,16 @@ function Helpers.processSpamBurst(
     end
 
     if now < burstState.nextPressAt then
+        return false
+    end
+
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > now then
+        burstState.nextPressAt = math.max(burstState.nextPressAt, Context.runtime.virtualInputRetryAt)
+        return false
+    end
+
+    if Context.runtime.targetingSpamSuspendedUntil and Context.runtime.targetingSpamSuspendedUntil > now then
+        burstState.nextPressAt = math.max(burstState.nextPressAt, Context.runtime.targetingSpamSuspendedUntil)
         return false
     end
 
@@ -5559,6 +6555,7 @@ function Helpers.processSpamBurst(
             telemetry.lastOscillationApplied = now
             telemetry.lastOscillationBurstPress = now
         end
+        Context.runtime.targetingSpamSuspendedUntil = math.max(Context.runtime.targetingSpamSuspendedUntil or 0, now + 0.25)
         if burstState.remaining <= 0 then
             Helpers.resetSpamBurst("complete")
         end
@@ -5784,6 +6781,27 @@ function Helpers.ensureTelemetry(ballId: string, now: number): TelemetryState
         lastUpdate = now,
         triggerTime = nil,
         latencySampled = true,
+        targetingActive = false,
+        targetingPulses = {},
+        targetingBurstCount = 0,
+        targetingBurstRate = 0,
+        targetingMinInterval = nil,
+        targetingLastInterval = nil,
+        lastTargetingPulse = nil,
+        lastTargetingDrop = nil,
+        lastTargetingSpam = 0,
+        lastTargetingApplied = 0,
+        targetingAggression = 0,
+        targetingMomentum = 0,
+        targetingAggressionUpdatedAt = now,
+        targetingLastAggressionSpike = nil,
+        targetingSpeedUrgency = 0,
+        targetingSpeedUpdatedAt = now,
+        targetingAggressionPulseStamp = nil,
+        pressHistory = {},
+        pressRate = 0,
+        lastPressGap = nil,
+        lastPressAt = nil,
         targetDetectedAt = nil,
         decisionAt = nil,
         lastReactionLatency = nil,
@@ -7420,9 +8438,29 @@ function Helpers.getPingTime()
     return seconds
 end
 
+function Helpers.getPlayerRadialVelocity(unit: Vector3?)
+    if typeof(unit) ~= "Vector3" then
+        return 0
+    end
+
+    local root = Context.player.RootPart
+    if not root then
+        return 0
+    end
+
+    local velocity = root.AssemblyLinearVelocity
+    if typeof(velocity) ~= "Vector3" then
+        return 0
+    end
+
+    return unit:Dot(velocity)
+end
+
 function Helpers.isTargetingMe(now)
     if not Context.player.Character then
         Context.runtime.targetingGraceUntil = 0
+        Context.runtime.targetingHighlightPresent = false
+        Context.runtime.targetingHighlightGraceActive = false
         return false
     end
 
@@ -7438,15 +8476,42 @@ function Helpers.isTargetingMe(now)
         return Context.player.Character:FindFirstChild(highlightName)
     end)
 
-    if ok and result ~= nil then
-        Context.runtime.targetingGraceUntil = now + Constants.TARGETING_GRACE_SECONDS
+    local runtime = Context.runtime
+    local highlightPresent = ok and result ~= nil
+
+    if highlightPresent then
+        if runtime.targetingHighlightPresent ~= true then
+            runtime.targetingHighlightPresent = true
+            if runtime.targetingHighlightGraceActive then
+                local queue = runtime.targetingHighlightPulseQueue
+                if typeof(queue) ~= "table" then
+                    queue = {}
+                    runtime.targetingHighlightPulseQueue = queue
+                end
+                queue[#queue + 1] = now
+            end
+        end
+        runtime.targetingHighlightGraceActive = false
+        runtime.targetingGraceUntil = now + Constants.TARGETING_GRACE_SECONDS
         return true
     end
 
-    if Context.runtime.targetingGraceUntil > now then
+    if runtime.targetingHighlightPresent ~= false then
+        runtime.targetingHighlightPresent = false
+        local dropQueue = runtime.targetingHighlightDropQueue
+        if typeof(dropQueue) ~= "table" then
+            dropQueue = {}
+            runtime.targetingHighlightDropQueue = dropQueue
+        end
+        dropQueue[#dropQueue + 1] = now
+    end
+
+    if runtime.targetingGraceUntil > now then
+        runtime.targetingHighlightGraceActive = true
         return true
     end
 
+    runtime.targetingHighlightGraceActive = false
     return false
 end
 
@@ -7781,8 +8846,33 @@ end
 
 function Helpers.pressParry(ball: BasePart?, ballId: string?, force: boolean?, decisionPayload: { [string]: any }?)
     local forcing = force == true
-    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > os.clock() and not forcing then
+    local now = os.clock()
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > now and not forcing then
         return false
+    end
+
+    local wasTransientRetry = Context.runtime.transientRetryActive == true
+    local retryCount = Context.runtime.transientRetryCount or 0
+    local priorCooldownDeadline = Context.runtime.transientRetryCooldown or 0
+    local priorCooldownBallId = Context.runtime.transientRetryCooldownBallId
+
+    local allowRetryDuringCooldown = false
+    if wasTransientRetry then
+        if retryCount >= 1 and not forcing then
+            return false
+        end
+        if retryCount < 1 then
+            allowRetryDuringCooldown = true
+        end
+    end
+
+    local cooldownDeadline = priorCooldownDeadline
+    if cooldownDeadline > now then
+        local cooldownBallId = priorCooldownBallId
+        local sameBall = cooldownBallId == nil or cooldownBallId == ballId
+        if sameBall and not allowRetryDuringCooldown then
+            return false
+        end
     end
 
     if Context.runtime.parryHeld then
@@ -7813,6 +8903,28 @@ function Helpers.pressParry(ball: BasePart?, ballId: string?, force: boolean?, d
 
     Context.runtime.parryHeld = true
     Context.runtime.parryHeldBallId = ballId
+
+    now = os.clock()
+    if wasTransientRetry or priorCooldownDeadline > 0 then
+        if wasTransientRetry then
+            Context.runtime.transientRetryCooldown = math.huge
+        else
+            local cooldownDuration = math.max(config.cooldown or 0, MIN_TRANSIENT_RETRY_COOLDOWN)
+            Context.runtime.transientRetryCooldown = now + cooldownDuration
+        end
+        if ballId ~= nil or wasTransientRetry then
+            Context.runtime.transientRetryCooldownBallId = ballId
+        else
+            Context.runtime.transientRetryCooldownBallId = priorCooldownBallId
+        end
+    end
+
+    if wasTransientRetry then
+        Context.runtime.transientRetryCount = (Context.runtime.transientRetryCount or 0) + 1
+        if Context.runtime.transientRetryCount >= 1 then
+            Context.runtime.transientRetryActive = false
+        end
+    end
 
     local now = os.clock()
     state.lastParry = now
@@ -7979,6 +9091,38 @@ function Helpers.pressParry(ball: BasePart?, ballId: string?, force: boolean?, d
     if telemetry then
         telemetry.triggerTime = now
         telemetry.latencySampled = false
+
+        local history = telemetry.pressHistory
+        if typeof(history) ~= "table" then
+            history = {}
+            telemetry.pressHistory = history
+        end
+        history[#history + 1] = now
+
+        local window = TARGETING_PRESSURE_WINDOW
+        if not Helpers.isFiniteNumber(window) or window <= 0 then
+            window = 1
+        end
+        local cutoff = now - window
+        while #history > 0 and history[1] < cutoff do
+            table.remove(history, 1)
+        end
+
+        if #history >= 2 then
+            local gap = history[#history] - history[#history - 1]
+            if Helpers.isFiniteNumber(gap) and gap >= 0 then
+                telemetry.lastPressGap = gap
+            end
+        else
+            telemetry.lastPressGap = nil
+        end
+
+        telemetry.lastPressAt = now
+        if window > 0 then
+            telemetry.pressRate = #history / window
+        else
+            telemetry.pressRate = 0
+        end
     end
 
     TelemetryAnalytics.recordPress(pressEvent, scheduledSnapshot)
@@ -8003,6 +9147,10 @@ function Helpers.releaseParry()
     local ballId = Context.runtime.parryHeldBallId
     Context.runtime.parryHeld = false
     Context.runtime.parryHeldBallId = nil
+    if Context.runtime.transientRetryCooldownBallId == ballId then
+        Context.runtime.transientRetryCooldown = 0
+        Context.runtime.transientRetryCooldownBallId = nil
+    end
     if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > os.clock() then
         Context.runtime.pendingParryRelease = true
     else
@@ -8618,9 +9766,20 @@ function PressDecision.computeConfidence(state, config, kinematics)
     local delta = 0.5 * ping + activationLatencyEstimate
     local delta2 = delta * delta
 
+    local playerVr = state.playerVr
+    if playerVr == nil then
+        playerVr = Helpers.getPlayerRadialVelocity(kinematics.unit)
+        state.playerVr = playerVr
+    end
+
+    state.playerRadialVelocity = playerVr
+
+    local filteredVr = (kinematics.filteredVr or 0) - playerVr
+    state.relativeFilteredVr = filteredVr
+
     local mu =
         kinematics.filteredD
-        - kinematics.filteredVr * delta
+        - filteredVr * delta
         - 0.5 * kinematics.filteredAr * delta2
         - (1 / 6) * kinematics.filteredJr * delta2 * delta
 
@@ -8676,18 +9835,118 @@ function PressDecision.updateTelemetryState(state, telemetry, now, targetingMe, 
         return
     end
 
+    local pulses = telemetry.targetingPulses
+    if typeof(pulses) ~= "table" then
+        pulses = {}
+        telemetry.targetingPulses = pulses
+    end
+
+    local runtime = Context.runtime
+    local queuedPulses = runtime.targetingHighlightPulseQueue
+    if typeof(queuedPulses) == "table" and #queuedPulses > 0 then
+        for index = 1, #queuedPulses do
+            local pulseTime = queuedPulses[index]
+            if Helpers.isFiniteNumber(pulseTime) then
+                pulses[#pulses + 1] = pulseTime
+            end
+        end
+        table.clear(queuedPulses)
+    end
+
     if targetingMe then
+        if telemetry.targetingActive ~= true then
+            local previous = pulses[#pulses]
+            pulses[#pulses + 1] = now
+            telemetry.targetingActive = true
+            if Helpers.isFiniteNumber(previous) then
+                local interval = now - previous
+                if Helpers.isFiniteNumber(interval) and interval >= 0 then
+                    telemetry.targetingLastInterval = interval
+                end
+            end
+            telemetry.lastTargetingPulse = now
+        end
         if telemetry.targetDetectedAt == nil then
             telemetry.targetDetectedAt = now
         end
-    elseif not Context.runtime.parryHeld or Context.runtime.parryHeldBallId ~= ballId then
-        telemetry.targetDetectedAt = nil
-        telemetry.decisionAt = nil
+    else
+        local holdingSame = Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId
+        if telemetry.targetingActive then
+            telemetry.targetingActive = false
+            telemetry.lastTargetingDrop = now
+        end
+        if not holdingSame then
+            telemetry.targetDetectedAt = nil
+            telemetry.decisionAt = nil
+        end
+    end
+
+    local queuedDrops = runtime.targetingHighlightDropQueue
+    if typeof(queuedDrops) == "table" and #queuedDrops > 0 then
+        local latestDrop = queuedDrops[#queuedDrops]
+        if Helpers.isFiniteNumber(latestDrop) then
+            telemetry.lastTargetingDrop = latestDrop
+        end
+        table.clear(queuedDrops)
+    end
+
+    local window = TARGETING_PRESSURE_WINDOW
+    if not Helpers.isFiniteNumber(window) or window <= 0 then
+        window = 1
+    end
+    local cutoff = now - window
+    while #pulses > 0 and pulses[1] < cutoff do
+        table.remove(pulses, 1)
+    end
+
+    local count = #pulses
+    telemetry.targetingBurstCount = count
+    if window > 0 then
+        telemetry.targetingBurstRate = count / window
+    else
+        telemetry.targetingBurstRate = 0
+    end
+
+    if count >= 2 then
+        local minInterval = math.huge
+        for index = 2, count do
+            local interval = pulses[index] - pulses[index - 1]
+            if Helpers.isFiniteNumber(interval) and interval >= 0 and interval < minInterval then
+                minInterval = interval
+            end
+        end
+        if minInterval < math.huge then
+            telemetry.targetingMinInterval = minInterval
+        else
+            telemetry.targetingMinInterval = nil
+        end
+
+        local lastInterval = pulses[count] - pulses[count - 1]
+        if Helpers.isFiniteNumber(lastInterval) and lastInterval >= 0 then
+            telemetry.targetingLastInterval = lastInterval
+        end
+    else
+        telemetry.targetingMinInterval = nil
+        if count <= 1 then
+            telemetry.targetingLastInterval = nil
+        end
+    end
+
+    if count > 0 then
+        telemetry.lastTargetingPulse = pulses[count]
     end
 end
 
 function PressDecision.computeApproach(state, kinematics, safeRadius)
-    local approachSpeed = math.max(kinematics.filteredVr, kinematics.rawVr, 0)
+    local playerVr = state.playerVr
+    if playerVr == nil then
+        playerVr = Helpers.getPlayerRadialVelocity(kinematics.unit)
+        state.playerVr = playerVr
+    end
+
+    local relativeFilteredVr = (kinematics.filteredVr or 0) - playerVr
+    local relativeRawVr = (kinematics.rawVr or 0) - playerVr
+    local approachSpeed = math.max(relativeFilteredVr, relativeRawVr, 0)
     local approaching = approachSpeed > Constants.EPSILON
     local timeToImpactFallback = math.huge
     local timeToImpactPolynomial
@@ -8699,7 +9958,12 @@ function PressDecision.computeApproach(state, kinematics, safeRadius)
 
         local impactRadial = kinematics.filteredD
         local polynomial =
-            Helpers.solveRadialImpactTime(impactRadial, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+            Helpers.solveRadialImpactTime(
+                impactRadial,
+                relativeFilteredVr,
+                kinematics.filteredAr,
+                kinematics.filteredJr
+            )
         if polynomial and polynomial > Constants.EPSILON then
             timeToImpactPolynomial = polynomial
             timeToImpact = polynomial
@@ -8715,6 +9979,10 @@ function PressDecision.computeApproach(state, kinematics, safeRadius)
 
     state.approachSpeed = approachSpeed
     state.approaching = approaching
+    state.playerRadialVelocity = playerVr
+    state.playerVr = playerVr
+    state.relativeFilteredVr = relativeFilteredVr
+    state.relativeRawVr = relativeRawVr
     state.timeToImpactFallback = timeToImpactFallback
     state.timeToImpactPolynomial = timeToImpactPolynomial
     state.timeToImpact = timeToImpact
@@ -8781,10 +10049,10 @@ function PressDecision.computeCurveAdjustments(state, config, kinematics)
 
     if severityBoost > 0 then
         local curveLeadTime = severityBoost * state.responseWindowBase
+        local approachSpeed = math.max(state.approachSpeed or 0, 0)
         state.curveLeadTime = curveLeadTime
-        state.curveLeadDistance = math.max(severityBoost * kinematics.filteredVr * state.responseWindowBase, 0)
-        state.curveHoldDistance =
-            math.max(curveJerkSeverity * kinematics.filteredVr * PROXIMITY_HOLD_GRACE, 0)
+        state.curveLeadDistance = math.max(severityBoost * approachSpeed * state.responseWindowBase, 0)
+        state.curveHoldDistance = math.max(curveJerkSeverity * approachSpeed * PROXIMITY_HOLD_GRACE, 0)
         state.responseWindow = state.responseWindow + curveLeadTime
     end
 
@@ -8864,7 +10132,7 @@ function PressDecision.computeRadii(state, kinematics, safeRadius, telemetry, no
 
     ballisticInputs.safe = safe
     ballisticInputs.distance = kinematics.distance or safe
-    ballisticInputs.vr = kinematics.filteredVr or 0
+    ballisticInputs.vr = state.relativeFilteredVr or (kinematics.filteredVr or 0)
     ballisticInputs.ar = kinematics.filteredAr or 0
     ballisticInputs.jr = kinematics.filteredJr or 0
     ballisticInputs.curvature = kinematics.filteredKappa or 0
@@ -9057,7 +10325,12 @@ function PressDecision.computeRadiusTimes(state, kinematics, safeRadius)
         local radialToHold = kinematics.filteredD + safeRadius - state.holdRadius
 
         local pressPolynomial =
-            Helpers.solveRadialImpactTime(radialToPress, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+            Helpers.solveRadialImpactTime(
+                radialToPress,
+                state.relativeFilteredVr or (kinematics.filteredVr or 0),
+                kinematics.filteredAr,
+                kinematics.filteredJr
+            )
         if pressPolynomial and pressPolynomial > Constants.EPSILON then
             timeToPressRadiusPolynomial = pressPolynomial
             timeToPressRadius = pressPolynomial
@@ -9066,7 +10339,12 @@ function PressDecision.computeRadiusTimes(state, kinematics, safeRadius)
         end
 
         local holdPolynomial =
-            Helpers.solveRadialImpactTime(radialToHold, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+            Helpers.solveRadialImpactTime(
+                radialToHold,
+                state.relativeFilteredVr or (kinematics.filteredVr or 0),
+                kinematics.filteredAr,
+                kinematics.filteredJr
+            )
         if holdPolynomial and holdPolynomial > Constants.EPSILON then
             timeToHoldRadiusPolynomial = holdPolynomial
             timeToHoldRadius = holdPolynomial
@@ -9747,6 +11025,9 @@ function PressDecision.evaluate(params)
     decision.targetingMe = state.targetingMe
     decision.approachSpeed = state.approachSpeed
     decision.approaching = state.approaching
+    decision.playerRadialVelocity = state.playerRadialVelocity
+    decision.relativeFilteredVr = state.relativeFilteredVr
+    decision.relativeRawVr = state.relativeRawVr
     decision.timeToImpact = state.timeToImpact
     decision.timeToImpactFallback = state.timeToImpactFallback
     decision.timeToImpactPolynomial = state.timeToImpactPolynomial
@@ -9942,6 +11223,7 @@ function Helpers.renderLoop()
     local oscillationTriggered = false
     local spamFallback = false
     if telemetry then
+        Helpers.updateTargetingAggressionMemory(telemetry, decision, kinematics, config, now)
         oscillationTriggered = Helpers.evaluateOscillation(telemetry, now)
         if oscillationTriggered and Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
             if Helpers.shouldForceOscillationPress(decision, telemetry, now, config) then
@@ -9951,6 +11233,24 @@ function Helpers.renderLoop()
                     Helpers.startSpamBurst(ballId, now, decision, telemetry, kinematics)
                 end
             end
+        end
+    end
+
+    local targetingBurst
+    if telemetry then
+        targetingBurst = Helpers.evaluateTargetingSpam(decision, telemetry, now, config, kinematics, ballId)
+        if targetingBurst and targetingBurst.startBurst then
+            local forced = false
+            if targetingBurst.forcePress and (not Context.runtime.virtualInputUnavailable or Context.runtime.virtualInputRetryAt <= now) then
+                forced = Helpers.pressParry(ball, ballId, true, decision)
+                if forced then
+                    telemetry.lastTargetingApplied = now
+                    spamFallback = true
+                    fired = true
+                end
+            end
+
+            Helpers.startSpamBurst(ballId, now, decision, telemetry, kinematics, targetingBurst.reason, targetingBurst)
         end
     end
 
@@ -11228,6 +12528,7 @@ Helpers.syncGlobalSettings()
 Context.runtime.syncImmortalContext()
 
 return AutoParry
+
 ]===],
     ['src/core/immortal.lua'] = [===[
 -- src/core/immortal.lua (sha1: 33d8113542e8d65a94596a1983dce26485a046bb)
