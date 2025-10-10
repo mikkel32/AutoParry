@@ -35,6 +35,10 @@ Target gating, highlight caching, and retry logic keep AutoParry responsive even
 - Telemetry counters track every press, latency sample, and adaptive adjustment, with diagnostics summarizing averages and emitting actionable hints (e.g., when activation latency creeps too high). 【F:src/core/autoparry.lua†L884-L1040】【F:tests/autoparry/telemetry.spec.lua†L124-L185】
 - When VirtualInput access fails, AutoParry logs Roblox warnings (once per outage) and updates the status label so you know the exact blocker. 【F:src/core/autoparry.lua†L1534-L1579】【F:src/core/autoparry.lua†L3317-L3349】
 
+## Register Pressure Snapshot
+- The register scan harness confirms every AutoParry function stays under the 200-local budget, with `Helpers.applySmartTuning` peaking at 44 locals while the module aggregates 1202 locals across 296 functions. 【7ebed2†L4-L118】【7ebed2†L122-L148】
+- No other AutoParry routine exceeds 50 locals, keeping comfortable headroom below the enforced cap during runtime tuning and UI updates. 【7ebed2†L4-L118】
+
 ## What To Watch
 - **Consistently low React/Decide numbers (<100 ms)** mean AutoParry is keeping up; rising values suggest ping spikes or highlight issues. The telemetry feed captures every sample for offline review.
 - **Commit spikes** usually mean Roblox refused VirtualInput (focus loss, permissions). The retry window and status text will call this out immediately so you can refocus before the next threat.
