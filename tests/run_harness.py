@@ -355,6 +355,7 @@ SUITE_ALIASES: Dict[str, List[str]] = {
     "all": list(SUITES.keys()),
     "static": ["format", "lint", "typecheck", "register-pressure"],
     "roblox": ["smoke", "spec", "perf", "accuracy"],
+    "quick": ["telemetry"],
 }
 
 OPTIONAL_DEP_HINTS: Dict[str, str] = {
