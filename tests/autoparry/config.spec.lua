@@ -1,7 +1,8 @@
 local TestHarness = script.Parent.Parent
-local Harness = require(TestHarness:WaitForChild("Harness"))
+local RuntimeFolder = TestHarness:WaitForChild("engine")
+local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
-local Scheduler = Harness.Scheduler
+local Scheduler = Runtime.Scheduler
 
 local function deepCopy(value)
     if typeof(value) ~= "table" then
@@ -17,13 +18,13 @@ end
 
 local function loadAutoparry()
     local scheduler = Scheduler.new(0.25)
-    local services, remotes = Harness.createBaseServices(scheduler, {
+    local services, remotes = Runtime.createBaseServices(scheduler, {
         initialLocalPlayer = { Name = "LocalPlayer" },
     })
 
-    remotes:Add(Harness.createParryButtonPress({ scheduler = scheduler }))
+    remotes:Add(Runtime.createParryButtonPress({ scheduler = scheduler }))
 
-    local autoparry = Harness.loadAutoparry({
+    local autoparry = Runtime.loadAutoParry({
         scheduler = scheduler,
         services = services,
     })

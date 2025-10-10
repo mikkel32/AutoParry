@@ -1,9 +1,10 @@
 -- selene: allow(global_usage)
 -- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent.Parent
-local Harness = require(TestHarness:WaitForChild("Harness"))
+local RuntimeFolder = TestHarness:WaitForChild("engine")
+local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
-local Scheduler = Harness.Scheduler
+local Scheduler = Runtime.Scheduler
 
 local function createRunServiceProbe()
     local probe = {
@@ -160,15 +161,15 @@ return function(t)
                 Character = character1,
             }
 
-            local services1, remotes1 = Harness.createBaseServices(scheduler1, {
+            local services1, remotes1 = Runtime.createBaseServices(scheduler1, {
                 initialLocalPlayer = player1,
                 runService = runServiceProbe,
             })
 
-            local remoteContainer1 = Harness.createParryButtonPress({ scheduler = scheduler1 })
+            local remoteContainer1 = Runtime.createParryButtonPress({ scheduler = scheduler1 })
             remotes1:Add(remoteContainer1)
 
-            local autoparry1 = Harness.loadAutoparry({
+            local autoparry1 = Runtime.loadAutoParry({
                 scheduler = scheduler1,
                 services = services1,
             })
@@ -242,15 +243,15 @@ return function(t)
                 Character = character2,
             }
 
-            local services2, remotes2 = Harness.createBaseServices(scheduler2, {
+            local services2, remotes2 = Runtime.createBaseServices(scheduler2, {
                 initialLocalPlayer = player2,
                 runService = runServiceProbe,
             })
 
-            local remoteContainer2 = Harness.createParryButtonPress({ scheduler = scheduler2 })
+            local remoteContainer2 = Runtime.createParryButtonPress({ scheduler = scheduler2 })
             remotes2:Add(remoteContainer2)
 
-            local autoparry2 = Harness.loadAutoparry({
+            local autoparry2 = Runtime.loadAutoParry({
                 scheduler = scheduler2,
                 services = services2,
             })

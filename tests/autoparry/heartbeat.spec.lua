@@ -1,9 +1,10 @@
 -- selene: allow(global_usage)
 -- selene: allow(incorrect_standard_library_use)
 local TestHarness = script.Parent.Parent
-local Harness = require(TestHarness:WaitForChild("Harness"))
+local RuntimeFolder = TestHarness:WaitForChild("engine")
+local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
-local Scheduler = Harness.Scheduler
+local Scheduler = Runtime.Scheduler
 
 local function createBall(options)
     local ball = {
@@ -125,12 +126,12 @@ return function(t)
             Character = character,
         }
 
-        local services, remotes = Harness.createBaseServices(scheduler, {
+        local services, remotes = Runtime.createBaseServices(scheduler, {
             initialLocalPlayer = player,
             runService = runService,
         })
 
-        local remoteContainer, remote = Harness.createParryButtonPress({ scheduler = scheduler })
+        local remoteContainer, remote = Runtime.createParryButtonPress({ scheduler = scheduler })
         remotes:Add(remoteContainer)
 
         local parryLog = {}
@@ -146,7 +147,7 @@ return function(t)
             return originalFire(self, ...)
         end
 
-        local autoparry = Harness.loadAutoparry({
+        local autoparry = Runtime.loadAutoParry({
             scheduler = scheduler,
             services = services,
         })
