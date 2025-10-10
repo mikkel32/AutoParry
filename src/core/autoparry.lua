@@ -3655,6 +3655,7 @@ function Helpers.noteVirtualInputSuccess()
         Context.runtime.targetingSpamSuspendedUntil = 0
         Context.runtime.transientRetryActive = false
         Context.runtime.transientRetryCount = 0
+        Context.runtime.transientRetryCooldown = 0
         Context.runtime.transientRetryCooldownBallId = nil
         local retry = state.virtualInputRetry
         if typeof(retry) == "table" then
