@@ -1,6 +1,7 @@
 -- Auto-generated source map for AutoParry tests
 return {
     ['src/core/autoparry.lua'] = [===[
+-- src/core/autoparry.lua (sha1: 6a2c83529940a8059a7b8e61ec95e8320e0697ee)
 -- mikkel32/AutoParry : src/core/autoparry.lua
 -- selene: allow(global_usage)
 -- Auto-parry implementation that mirrors the "Auto-Parry (F-Key Proximity)" logic
@@ -10,13 +11,6 @@ return {
 -- destroy, etc.) while swapping the internal behaviour for the requested
 -- proximity/TTI based approach.
 
-local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local Workspace = game:GetService("Workspace")
-local Stats = game:FindService("Stats")
-local VirtualInputManager = game:FindService("VirtualInputManager")
-local CoreGui = game:GetService("CoreGui")
-
 local Require = rawget(_G, "ARequire")
 local Util = Require and Require("src/shared/util.lua") or require(script.Parent.Parent.shared.util)
 
@@ -24,86 +18,159 @@ local Signal = Util.Signal
 local Verification = Require and Require("src/core/verification.lua") or require(script.Parent.verification)
 local ImmortalModule = Require and Require("src/core/immortal.lua") or require(script.Parent.immortal)
 
-local DEFAULT_SMART_TUNING = {
-    enabled = true,
-    minSlack = 0.008,
-    maxSlack = 0.04,
-    sigmaLead = 1.15,
-    slackAlpha = 0.5,
-    minConfidence = 0.025,
-    maxConfidence = 0.26,
-    sigmaConfidence = 0.85,
-    confidenceAlpha = 0.45,
-    reactionLatencyShare = 0.5,
-    overshootShare = 0.28,
-    reactionAlpha = 0.45,
-    minReactionBias = 0.008,
-    maxReactionBias = 0.16,
-    deltaAlpha = 0.35,
-    pingAlpha = 0.45,
-    overshootAlpha = 0.4,
-    sigmaFloor = 0.0025,
-    commitP99Target = 0.01,
-    commitReactionGain = 1.35,
-    commitSlackGain = 0.85,
-    lookaheadGoal = 0.9,
-    lookaheadQuantile = 0.1,
-    lookaheadReactionGain = 0.65,
-    lookaheadSlackGain = 0.4,
-    enforceBaseSlack = true,
-    enforceBaseConfidence = true,
-    enforceBaseReaction = true,
-}
+local Helpers = {}
 
-local DEFAULT_AUTO_TUNING = {
-    enabled = false,
-    intervalSeconds = 30,
-    minSamples = 9,
-    allowWhenSmartTuning = false,
-    dryRun = false,
-    leadGain = 0.75,
-    slackGain = 0.65,
-    latencyGain = 0.65,
-    leadTolerance = 0.004,
-    waitTolerance = 0.0025,
-    maxReactionBias = 0.24,
-    maxScheduleSlack = 0.08,
-    maxActivationLatency = 0.35,
-    minDelta = 0.0003,
-    maxAdjustmentsPerRun = 3,
-}
+local emitTelemetryEvent
+local telemetryDispatcher: ((string, { [string]: any }?) -> any)? = nil
+local pendingTelemetryEvents = {}
+local MAX_PENDING_TELEMETRY_EVENTS = 128
 
-local DEFAULT_CONFIG = {
-    cooldown = 0.1,
-    minSpeed = 10,
-    pingOffset = 0.05,
-    minTTI = 0.12,
-    maxTTI = 0.55,
-    -- public API configuration that remains relevant for the PERFECT-PARRY rule
-    safeRadius = 10,
-    curvatureLeadScale = 0.12,
-    curvatureHoldBoost = 0.5,
-    confidenceZ = 2.2,
-    activationLatency = 0.12,
-    pressReactionBias = 0.02,
-    pressScheduleSlack = 0.015,
-    pressMaxLookahead = 1.2,
-    pressLookaheadGoal = 0.9,
-    pressConfidencePadding = 0.08,
-    targetHighlightName = "Highlight",
-    ballsFolderName = "Balls",
-    playerTimeout = 10,
-    remotesTimeout = 10,
-    ballsFolderTimeout = 5,
-    verificationRetryInterval = 0,
-    remoteQueueGuards = { "SyncDragonSpirit", "SecondaryEndCD" },
-    oscillationFrequency = 3,
-    oscillationDistanceDelta = 0.35,
-    smartTuning = DEFAULT_SMART_TUNING,
-    autoTuning = DEFAULT_AUTO_TUNING,
-}
+local function queueTelemetryEvent(eventType: string, payload: { [string]: any }?)
+    pendingTelemetryEvents[#pendingTelemetryEvents + 1] = {
+        eventType = eventType,
+        payload = payload,
+    }
 
-local function getGlobalTable()
+    if #pendingTelemetryEvents > MAX_PENDING_TELEMETRY_EVENTS then
+        table.remove(pendingTelemetryEvents, 1)
+    end
+end
+
+local function flushPendingTelemetryEvents()
+    if typeof(telemetryDispatcher) ~= "function" then
+        return
+    end
+
+    if #pendingTelemetryEvents == 0 then
+        return
+    end
+
+    local queued = pendingTelemetryEvents
+    pendingTelemetryEvents = {}
+
+    for _, entry in ipairs(queued) do
+        telemetryDispatcher(entry.eventType, entry.payload)
+    end
+end
+
+emitTelemetryEvent = function(eventType: string, payload: { [string]: any }?)
+    if typeof(telemetryDispatcher) == "function" then
+        return telemetryDispatcher(eventType, payload)
+    end
+
+    queueTelemetryEvent(eventType, payload)
+    return nil
+end
+
+local Services = (function()
+    local players = game:GetService("Players")
+    local runService = game:GetService("RunService")
+    local workspaceService = game:GetService("Workspace")
+    local stats = game:FindService("Stats")
+    local vim = game:FindService("VirtualInputManager")
+    local coreGui = game:GetService("CoreGui")
+
+    return {
+        Players = players,
+        RunService = runService,
+        Workspace = workspaceService,
+        Stats = stats,
+        VirtualInputManager = vim,
+        CoreGui = coreGui,
+    }
+end)()
+
+local Defaults = (function()
+    local smartTuning = {
+        enabled = true,
+        minSlack = 0.008,
+        maxSlack = 0.04,
+        sigmaLead = 1.15,
+        slackAlpha = 0.5,
+        minConfidence = 0.025,
+        maxConfidence = 0.26,
+        sigmaConfidence = 0.85,
+        confidenceAlpha = 0.45,
+        reactionLatencyShare = 0.5,
+        overshootShare = 0.28,
+        reactionAlpha = 0.45,
+        minReactionBias = 0.008,
+        maxReactionBias = 0.16,
+        deltaAlpha = 0.35,
+        pingAlpha = 0.45,
+        overshootAlpha = 0.4,
+        sigmaFloor = 0.0025,
+        commitP99Target = 0.01,
+        commitReactionGain = 1.35,
+        commitSlackGain = 0.85,
+        lookaheadGoal = 0.9,
+        lookaheadQuantile = 0.1,
+        lookaheadReactionGain = 0.65,
+        lookaheadSlackGain = 0.4,
+        enforceBaseSlack = true,
+        enforceBaseConfidence = true,
+        enforceBaseReaction = true,
+    }
+
+    local autoTuning = {
+        enabled = false,
+        intervalSeconds = 30,
+        minSamples = 9,
+        allowWhenSmartTuning = false,
+        dryRun = false,
+        leadGain = 0.75,
+        slackGain = 0.65,
+        latencyGain = 0.65,
+        leadTolerance = 0.004,
+        waitTolerance = 0.0025,
+        maxReactionBias = 0.24,
+        maxScheduleSlack = 0.08,
+        maxActivationLatency = 0.35,
+        minDelta = 0.0003,
+        maxAdjustmentsPerRun = 3,
+    }
+
+    local configDefaults = {
+        cooldown = 0.1,
+        minSpeed = 10,
+        pingOffset = 0.05,
+        minTTI = 0.12,
+        maxTTI = 0.55,
+        safeRadius = 10,
+        curvatureLeadScale = 0.12,
+        curvatureHoldBoost = 0.5,
+        confidenceZ = 2.2,
+        activationLatency = 0.12,
+        pressReactionBias = 0.02,
+        pressScheduleSlack = 0.015,
+        pressMaxLookahead = 1.2,
+        pressLookaheadGoal = 0.9,
+        pressConfidencePadding = 0.08,
+        pressMinDetectionTime = 0,
+        targetHighlightName = "Highlight",
+        ballsFolderName = "Balls",
+        playerTimeout = 10,
+        remotesTimeout = 10,
+        ballsFolderTimeout = 5,
+        verificationRetryInterval = 0,
+        remoteQueueGuards = { "SyncDragonSpirit", "SecondaryEndCD" },
+        oscillationFrequency = 3,
+        oscillationDistanceDelta = 0.35,
+        oscillationSpamCooldown = 0.15,
+        oscillationMaxLookahead = 0.45,
+    }
+
+    configDefaults.smartTuning = smartTuning
+    configDefaults.autoTuning = autoTuning
+
+    return {
+        SMART_TUNING = smartTuning,
+        AUTO_TUNING = autoTuning,
+        CONFIG = configDefaults,
+    }
+end)()
+
+function Helpers.getGlobalTable()
     local ok, env = pcall(function()
         if typeof(getgenv) == "function" then
             return getgenv()
@@ -119,30 +186,153 @@ local function getGlobalTable()
     return _G.__AUTO_PARRY_GLOBAL
 end
 
-local GlobalEnv = getGlobalTable()
+local GlobalEnv = Helpers.getGlobalTable()
 GlobalEnv.Paws = GlobalEnv.Paws or {}
+GlobalEnv.LastPressEvent = GlobalEnv.LastPressEvent or nil
 
-local config = Util.deepCopy(DEFAULT_CONFIG)
-local EPSILON = 1e-6
-local SMOOTH_ALPHA = 0.25
-local KAPPA_ALPHA = 0.3
-local DKAPPA_ALPHA = 0.3
-local ACTIVATION_LATENCY_ALPHA = 0.2
-local VR_SIGN_EPSILON = 1e-3
-local OSCILLATION_HISTORY_SECONDS = 0.6
-local TARGETING_GRACE_SECONDS = 0.2
-local SIGMA_FLOORS = {
-    d = 0.01,
-    vr = 1.5,
-    ar = 10,
-    jr = 80,
-}
+local function ensurePressEventProxy()
+    if typeof(GlobalEnv.PressEventProxy) == "table" then
+        return GlobalEnv.PressEventProxy
+    end
 
-local PHYSICS_LIMITS = {
-    curvature = 5,
-    curvatureRate = 120,
-    radialAcceleration = 650,
-    radialJerk = 20000,
+    local proxy = {}
+    local defaults = {
+        reactionTime = 0,
+        decisionTime = 0,
+        decisionToPressTime = 0,
+    }
+
+    setmetatable(proxy, {
+        __index = function(_, key)
+            local last = GlobalEnv.LastPressEvent
+            if typeof(last) == "table" then
+                local value = last[key]
+                if value ~= nil then
+                    return value
+                end
+            end
+            return defaults[key]
+        end,
+        __newindex = function(_, key, value)
+            if typeof(GlobalEnv.LastPressEvent) ~= "table" then
+                GlobalEnv.LastPressEvent = {}
+            end
+            GlobalEnv.LastPressEvent[key] = value
+        end,
+    })
+
+    GlobalEnv.PressEventProxy = proxy
+    if typeof(_G) == "table" then
+        _G.pressEvent = proxy
+        _G.AutoParryLastPressEvent = proxy
+    end
+
+    return proxy
+end
+
+ensurePressEventProxy()
+
+local config = Util.deepCopy(Defaults.CONFIG)
+
+local Constants = {
+    EPSILON = 1e-6,
+    SMOOTH_ALPHA = 0.25,
+    KAPPA_ALPHA = 0.3,
+    DKAPPA_ALPHA = 0.3,
+    ACTIVATION_LATENCY_ALPHA = 0.2,
+    VR_SIGN_EPSILON = 1e-3,
+    OSCILLATION_HISTORY_SECONDS = 0.6,
+    TARGETING_GRACE_SECONDS = 0.2,
+    SIMULATION_MIN_STEPS = 12,
+    SIMULATION_MAX_STEPS = 72,
+    SIMULATION_RESOLUTION = 1 / 180,
+    BALLISTIC_CACHE_MAX_AGE = 0.05,
+    BALLISTIC_CACHE_TOLERANCE = {
+        safe = 0.03,
+        distance = 0.045,
+        vr = 1.6,
+        ar = 12,
+        jr = 150,
+        curvature = 0.45,
+        curvatureRate = 12,
+        horizon = 0.03,
+        maxHorizon = 0.06,
+        speed = 1.2,
+    },
+    BALLISTIC_CACHE_RELATIVE = {
+        safe = 0.02,
+        distance = 0.025,
+        vr = 0.04,
+        ar = 0.06,
+        jr = 0.12,
+        curvature = 0.18,
+        curvatureRate = 0.22,
+        horizon = 0.08,
+        maxHorizon = 0.1,
+        speed = 0.05,
+    },
+    BALLISTIC_CACHE_QUANTIZE = {
+        safe = 0.02,
+        distance = 0.03,
+        vr = 1,
+        ar = 8,
+        jr = 120,
+        curvature = 0.3,
+        curvatureRate = 8,
+        horizon = 0.02,
+        maxHorizon = 0.04,
+        speed = 0.75,
+    },
+    THREAT_SPECTRUM_MIN_DT = 1 / 240,
+    THREAT_SPECTRUM_MAX_DT = 0.75,
+    THREAT_SPECTRUM_FAST_ALPHA = 0.55,
+    THREAT_SPECTRUM_MEDIUM_ALPHA = 0.35,
+    THREAT_SPECTRUM_SLOW_ALPHA = 0.18,
+    THREAT_SPECTRUM_LOAD_ALPHA = 0.45,
+    THREAT_SPECTRUM_ACCEL_ALPHA = 0.5,
+    THREAT_SPECTRUM_JERK_ALPHA = 0.35,
+    THREAT_SPECTRUM_DETECTION_MAX_BONUS = 0.45,
+    THREAT_SPECTRUM_DETECTION_LOAD_WEIGHT = 0.38,
+    THREAT_SPECTRUM_DETECTION_ACCEL_WEIGHT = 0.22,
+    THREAT_SPECTRUM_DETECTION_TEMPO_WEIGHT = 0.18,
+    THREAT_SPECTRUM_DETECTION_URGENCY_WEIGHT = 0.14,
+    THREAT_SPECTRUM_SCORE_LOGISTIC_WEIGHT = 0.42,
+    THREAT_SPECTRUM_SCORE_INTENSITY_WEIGHT = 0.23,
+    THREAT_SPECTRUM_SCORE_CONFIDENCE_WEIGHT = 0.18,
+    THREAT_SPECTRUM_SCORE_LOAD_WEIGHT = 0.12,
+    THREAT_SPECTRUM_SCORE_TEMPO_WEIGHT = 0.05,
+    THREAT_SPECTRUM_CONFIDENCE_LOGISTIC_WEIGHT = 0.45,
+    THREAT_SPECTRUM_CONFIDENCE_INTENSITY_WEIGHT = 0.2,
+    THREAT_SPECTRUM_CONFIDENCE_CONFIDENCE_WEIGHT = 0.2,
+    THREAT_SPECTRUM_CONFIDENCE_LOAD_WEIGHT = 0.15,
+    THREAT_SPECTRUM_READY_THRESHOLD = 0.32,
+    THREAT_SPECTRUM_READY_CONFIDENCE = 0.82,
+    THREAT_THRESHOLDS = {
+        { status = "critical", threshold = 0.85 },
+        { status = "high", threshold = 0.65 },
+        { status = "medium", threshold = 0.4 },
+        { status = "low", threshold = 0.2 },
+        { status = "idle", threshold = 0 },
+    },
+    THREAT_EVENT_MIN_INTERVAL = 1 / 40,
+    THREAT_EVENT_MIN_DELTA = 0.04,
+    THREAT_MOMENTUM_ALPHA = 0.6,
+    THREAT_VOLATILITY_ALPHA = 0.45,
+    THREAT_STABILITY_ALPHA = 0.35,
+    THREAT_CONFIDENCE_ALPHA = 0.55,
+    DETECTION_CONFIDENCE_GRACE = 0.02,
+    SIGMA_FLOORS = {
+        d = 0.01,
+        vr = 1.5,
+        ar = 10,
+        jr = 80,
+    },
+    PHYSICS_LIMITS = {
+        curvature = 5,
+        curvatureRate = 120,
+        radialAcceleration = 650,
+        radialJerk = 20000,
+    },
 }
 local state = {
     enabled = false,
@@ -178,80 +368,100 @@ local parryBroadcastSignal = Signal.new()
 local immortalStateChanged = Signal.new()
 local telemetrySignal = Signal.new()
 
-local LocalPlayer: Player?
-local Character: Model?
-local RootPart: BasePart?
-local Humanoid: Humanoid?
-local BallsFolder: Instance?
-local watchedBallsFolder: Instance?
-local RemotesFolder: Instance?
-
-local ParryInputInfo: {[string]: any}?
-local verificationWatchers: { { RBXScriptConnection? } } = {}
-local successConnections: { RBXScriptConnection? } = {}
-local successStatusSnapshot: { [string]: boolean }?
-local ballsFolderStatusSnapshot: { [string]: any }?
-local ballsFolderConnections: { RBXScriptConnection? }?
-local remoteQueueGuardConnections: { [string]: { remote: Instance?, connection: RBXScriptConnection?, destroying: RBXScriptConnection?, nameChanged: RBXScriptConnection? } } = {}
-local remoteQueueGuardWatchers: { RBXScriptConnection? }?
-local restartPending = false
-local scheduleRestart
-local syncImmortalContext = function() end
-local targetingGraceUntil = 0
-
-local UiRoot: ScreenGui?
-local ToggleButton: TextButton?
-local ImmortalButton: TextButton?
-local RemoveButton: TextButton?
-local StatusLabel: TextLabel?
-local BallHighlight: Highlight?
-local BallBillboard: BillboardGui?
-local BallStatsLabel: TextLabel?
-
-local loopConnection: RBXScriptConnection?
-local humanoidDiedConnection: RBXScriptConnection?
-local characterAddedConnection: RBXScriptConnection?
-local characterRemovingConnection: RBXScriptConnection?
-
-local trackedBall: BasePart?
-local parryHeld = false
-local parryHeldBallId: string?
-local pendingParryRelease = false
-local sendParryKeyEvent
-local publishReadyStatus
-local scheduledPressState = {
-    ballId = nil :: string?,
-    pressAt = 0,
-    predictedImpact = math.huge,
-    lead = 0,
-    slack = 0,
-    reason = nil :: string?,
-    lastUpdate = 0,
-    immediate = false,
-    lastSnapshot = nil,
+local Context = {
+    player = {
+        LocalPlayer = nil :: Player?,
+        Character = nil :: Model?,
+        RootPart = nil :: BasePart?,
+        Humanoid = nil :: Humanoid?,
+        BallsFolder = nil :: Instance?,
+        WatchedBallsFolder = nil :: Instance?,
+        RemotesFolder = nil :: Instance?,
+        ParryInputInfo = nil :: { [string]: any }?,
+    },
+    watchers = {
+        verification = {} :: { { RBXScriptConnection? } },
+        success = {} :: { RBXScriptConnection? },
+        successSnapshot = nil :: { [string]: boolean }?,
+        ballsSnapshot = nil :: { [string]: any }?,
+        ballsConnections = nil :: { RBXScriptConnection? }?,
+        remoteQueueGuards = {} :: {
+            [string]: {
+                remote: Instance?,
+                connection: RBXScriptConnection?,
+                destroying: RBXScriptConnection?,
+                nameChanged: RBXScriptConnection?,
+            }
+        },
+        remoteQueueGuardWatchers = nil :: { RBXScriptConnection? }?,
+    },
+    runtime = {
+        restartPending = false,
+        scheduleRestart = nil,
+        syncImmortalContext = function() end,
+        targetingGraceUntil = 0,
+        trackedBall = nil :: BasePart?,
+        parryHeld = false,
+        parryHeldBallId = nil :: string?,
+        pendingParryRelease = false,
+        virtualInputWarningIssued = false,
+        virtualInputUnavailable = false,
+        virtualInputRetryAt = 0,
+    },
+    ui = {
+        Root = nil :: ScreenGui?,
+        ToggleButton = nil :: TextButton?,
+        ImmortalButton = nil :: TextButton?,
+        RemoveButton = nil :: TextButton?,
+        StatusLabel = nil :: TextLabel?,
+        BallHighlight = nil :: Highlight?,
+        BallBillboard = nil :: BillboardGui?,
+        BallStatsLabel = nil :: TextLabel?,
+    },
+    connections = {
+        loop = nil :: RBXScriptConnection?,
+        humanoidDied = nil :: RBXScriptConnection?,
+        characterAdded = nil :: RBXScriptConnection?,
+        characterRemoving = nil :: RBXScriptConnection?,
+    },
+    telemetry = {
+        historyLimit = 200,
+        history = {} :: { { [string]: any } },
+        sequence = 0,
+    },
+    hooks = {
+        sendParryKeyEvent = nil,
+        publishReadyStatus = nil,
+        setStage = nil,
+        updateStatusLabel = nil,
+    },
+    scheduledPressState = {
+        ballId = nil :: string?,
+        pressAt = 0,
+        predictedImpact = math.huge,
+        lead = 0,
+        slack = 0,
+        reason = nil :: string?,
+        lastUpdate = 0,
+        immediate = false,
+        lastSnapshot = nil,
+    },
+    smartPress = {
+        triggerGrace = 0.01,
+        staleSeconds = 0.75,
+    },
 }
-local SMART_PRESS_TRIGGER_GRACE = 0.01
-local SMART_PRESS_STALE_SECONDS = 0.75
-local setStage
-local updateStatusLabel
-local virtualInputWarningIssued = false
-local virtualInputUnavailable = false
-local virtualInputRetryAt = 0
 
-local TELEMETRY_HISTORY_LIMIT = 200
-local telemetryHistory: { { [string]: any } } = {}
-local telemetrySequence = 0
-
-local function isFiniteNumber(value: number?)
+function Helpers.isFiniteNumber(value: number?)
     return typeof(value) == "number" and value == value and value ~= math.huge and value ~= -math.huge
 end
 
-local function newAggregate()
+function Helpers.newAggregate()
     return { count = 0, sum = 0, sumSquares = 0, min = nil, max = nil }
 end
 
-local function updateAggregate(target, value)
-    if not target or not isFiniteNumber(value) then
+function Helpers.updateAggregate(target, value)
+    if not target or not Helpers.isFiniteNumber(value) then
         return
     end
 
@@ -275,7 +485,7 @@ local function updateAggregate(target, value)
     end
 end
 
-local function summariseAggregate(source)
+function Helpers.summariseAggregate(source)
     if typeof(source) ~= "table" then
         return { count = 0 }
     end
@@ -301,15 +511,15 @@ local function summariseAggregate(source)
     }
 end
 
-local function newQuantileEstimator(targetQuantile, maxSamples)
+function Helpers.newQuantileEstimator(targetQuantile, maxSamples)
     local quantile = targetQuantile
-    if not isFiniteNumber(quantile) then
+    if not Helpers.isFiniteNumber(quantile) then
         quantile = 0.5
     end
     quantile = math.clamp(quantile, 0, 1)
 
     local capacity = maxSamples
-    if not isFiniteNumber(capacity) or capacity < 3 then
+    if not Helpers.isFiniteNumber(capacity) or capacity < 3 then
         capacity = 256
     end
     capacity = math.floor(capacity + 0.5)
@@ -325,7 +535,7 @@ local function newQuantileEstimator(targetQuantile, maxSamples)
     }
 end
 
-local function quantileBinaryInsert(samples, value)
+function Helpers.quantileBinaryInsert(samples, value)
     local low = 1
     local high = #samples
     while low <= high do
@@ -341,7 +551,7 @@ local function quantileBinaryInsert(samples, value)
     table.insert(samples, low, value)
 end
 
-local function quantileRemoveValue(samples, value)
+function Helpers.quantileRemoveValue(samples, value)
     local low = 1
     local high = #samples
     while low <= high do
@@ -367,8 +577,8 @@ local function quantileRemoveValue(samples, value)
     return false
 end
 
-local function updateQuantileEstimator(estimator, value)
-    if typeof(estimator) ~= "table" or not isFiniteNumber(value) then
+function Helpers.updateQuantileEstimator(estimator, value)
+    if typeof(estimator) ~= "table" or not Helpers.isFiniteNumber(value) then
         return
     end
 
@@ -384,11 +594,11 @@ local function updateQuantileEstimator(estimator, value)
         estimator.queue = queue
     end
 
-    quantileBinaryInsert(samples, value)
+    Helpers.quantileBinaryInsert(samples, value)
     queue[#queue + 1] = value
 
     local capacity = estimator.maxSamples
-    if not isFiniteNumber(capacity) or capacity < 3 then
+    if not Helpers.isFiniteNumber(capacity) or capacity < 3 then
         capacity = 256
         estimator.maxSamples = capacity
     end
@@ -402,12 +612,12 @@ local function updateQuantileEstimator(estimator, value)
     while #queue > capacity do
         local oldest = table.remove(queue, 1)
         if oldest ~= nil then
-            quantileRemoveValue(samples, oldest)
+            Helpers.quantileRemoveValue(samples, oldest)
         end
     end
 end
 
-local function summariseQuantileEstimator(estimator)
+function Helpers.summariseQuantileEstimator(estimator)
     if typeof(estimator) ~= "table" then
         return { count = 0 }
     end
@@ -419,7 +629,7 @@ local function summariseQuantileEstimator(estimator)
 
     local count = #samples
     local quantile = estimator.quantile
-    if not isFiniteNumber(quantile) then
+    if not Helpers.isFiniteNumber(quantile) then
         quantile = 0.5
     end
     quantile = math.clamp(quantile, 0, 1)
@@ -435,8 +645,8 @@ local function summariseQuantileEstimator(estimator)
     }
 end
 
-local function getQuantileValue(estimator)
-    local summary = summariseQuantileEstimator(estimator)
+function Helpers.getQuantileValue(estimator)
+    local summary = Helpers.summariseQuantileEstimator(estimator)
     if typeof(summary) ~= "table" then
         return nil
     end
@@ -444,7 +654,7 @@ local function getQuantileValue(estimator)
     return summary.value
 end
 
-local function cloneCounts(source)
+function Helpers.cloneCounts(source)
     local result = {}
     if typeof(source) ~= "table" then
         return result
@@ -457,7 +667,7 @@ local function cloneCounts(source)
     return result
 end
 
-local function incrementCount(container, key, delta)
+function Helpers.incrementCount(container, key, delta)
     if typeof(container) ~= "table" then
         return
     end
@@ -470,21 +680,1318 @@ local function incrementCount(container, key, delta)
     container[key] = current + (delta or 1)
 end
 
-local function emaScalar(previous: number?, sample: number, alpha: number)
+function Helpers.clearTable(target)
+    if typeof(target) ~= "table" then
+        return
+    end
+
+    for key in pairs(target) do
+        target[key] = nil
+    end
+end
+
+function Helpers.significantDelta(previous, current, absoluteTolerance, relativeTolerance)
+    if not Helpers.isFiniteNumber(previous) or not Helpers.isFiniteNumber(current) then
+        return true
+    end
+
+    local delta = math.abs(previous - current)
+    if absoluteTolerance and absoluteTolerance > 0 and delta <= absoluteTolerance then
+        return false
+    end
+
+    if relativeTolerance and relativeTolerance > 0 then
+        local scale = math.max(math.abs(previous), math.abs(current), 1)
+        if delta <= scale * relativeTolerance then
+            return false
+        end
+    end
+
+    if (not absoluteTolerance or absoluteTolerance <= 0) and (not relativeTolerance or relativeTolerance <= 0) then
+        return delta > 0
+    end
+
+    return true
+end
+
+function Helpers.ensureBallisticCache(telemetry)
+    if typeof(telemetry) ~= "table" then
+        return nil
+    end
+
+    local cache = telemetry.ballisticCache
+    if typeof(cache) ~= "table" then
+        cache = {
+            inputs = {},
+            result = {},
+            timestamp = 0,
+            reuseCount = 0,
+        }
+        telemetry.ballisticCache = cache
+    else
+        if typeof(cache.inputs) ~= "table" then
+            cache.inputs = {}
+        end
+        if typeof(cache.result) ~= "table" then
+            cache.result = {}
+        end
+        cache.reuseCount = cache.reuseCount or 0
+        cache.hitStreak = cache.hitStreak or 0
+    end
+
+    return cache
+end
+
+function Helpers.quantizeBallisticInputs(inputs)
+    if typeof(inputs) ~= "table" then
+        return nil
+    end
+
+    local quantize = Constants.BALLISTIC_CACHE_QUANTIZE
+    if typeof(quantize) ~= "table" then
+        return nil
+    end
+
+    local components = {}
+    for key, step in pairs(quantize) do
+        local value = inputs[key]
+        if Helpers.isFiniteNumber(value) and Helpers.isFiniteNumber(step) and step > 0 then
+            local quantized = math.floor(value / step + 0.5)
+            components[#components + 1] = string.format("%s:%d", key, quantized)
+        elseif value ~= nil then
+            components[#components + 1] = string.format("%s:%s", key, tostring(value))
+        end
+    end
+
+    table.sort(components)
+    if #components == 0 then
+        return nil
+    end
+
+    return table.concat(components, "|")
+end
+
+function Helpers.shouldRefreshBallisticCache(cache, inputs, now)
+    local quantizedKey = Helpers.quantizeBallisticInputs(inputs)
+
+    if typeof(cache) ~= "table" or typeof(cache.inputs) ~= "table" then
+        return true, quantizedKey
+    end
+
+    local tolerance = Constants.BALLISTIC_CACHE_TOLERANCE or {}
+    local relative = Constants.BALLISTIC_CACHE_RELATIVE or {}
+
+    local timestamp = cache.timestamp
+    local maxAge = Constants.BALLISTIC_CACHE_MAX_AGE or 0
+    if Helpers.isFiniteNumber(now) and Helpers.isFiniteNumber(timestamp) and maxAge > 0 then
+        if now - timestamp > maxAge then
+            return true, quantizedKey
+        end
+    end
+
+    if quantizedKey and cache.quantizedKey == quantizedKey then
+        cache.hitStreak = (cache.hitStreak or 0) + 1
+        return false, quantizedKey
+    end
+
+    local previous = cache.inputs
+
+    if Helpers.significantDelta(previous.safe, inputs.safe, tolerance.safe, relative.safe) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.distance, inputs.distance, tolerance.distance, relative.distance) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.vr, inputs.vr, tolerance.vr, relative.vr) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.ar, inputs.ar, tolerance.ar, relative.ar) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.jr, inputs.jr, tolerance.jr, relative.jr) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.curvature, inputs.curvature, tolerance.curvature, relative.curvature) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.curvatureRate, inputs.curvatureRate, tolerance.curvatureRate, relative.curvatureRate) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.speed, inputs.speed, tolerance.speed, relative.speed) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.horizon, inputs.horizon, tolerance.horizon, relative.horizon) then
+        return true, quantizedKey
+    end
+    if Helpers.significantDelta(previous.maxHorizon, inputs.maxHorizon, tolerance.maxHorizon, relative.maxHorizon) then
+        return true, quantizedKey
+    end
+
+    cache.hitStreak = 0
+
+    return false, quantizedKey
+end
+
+function Helpers.emaScalar(previous: number?, sample: number, alpha: number)
     if previous == nil then
         return sample
     end
     return previous + (sample - previous) * alpha
 end
 
-local function emaVector(previous: Vector3?, sample: Vector3, alpha: number)
+function Helpers.emaVector(previous: Vector3?, sample: Vector3, alpha: number)
     if previous == nil then
         return sample
     end
     return previous + (sample - previous) * alpha
+end
+
+function Helpers.simulateBallisticProximity(options)
+    if typeof(options) ~= "table" then
+        options = {}
+    end
+
+    local reuse = options.reuse or options.result
+    local result
+    if typeof(reuse) == "table" then
+        Helpers.clearTable(reuse)
+        result = reuse
+    else
+        result = {}
+    end
+
+    local pressGrace = PROXIMITY_PRESS_GRACE or 0.05
+
+    local safe = math.max(options.safe or 0, Constants.EPSILON)
+    local horizon = options.horizon
+    if not Helpers.isFiniteNumber(horizon) or horizon <= 0 then
+        horizon = pressGrace * 6
+    end
+
+    local maxHorizon = options.maxHorizon
+    if Helpers.isFiniteNumber(maxHorizon) and maxHorizon > 0 then
+        horizon = math.min(horizon, maxHorizon)
+    end
+
+    horizon = math.max(horizon, pressGrace)
+
+    local resolution = options.resolution
+    if not Helpers.isFiniteNumber(resolution) or resolution <= 0 then
+        resolution = Constants.SIMULATION_RESOLUTION
+    end
+    if resolution <= 0 then
+        resolution = pressGrace / Constants.SIMULATION_MIN_STEPS
+    end
+
+    local steps = math.floor(horizon / resolution + 0.5)
+    steps = math.clamp(steps, Constants.SIMULATION_MIN_STEPS, Constants.SIMULATION_MAX_STEPS)
+    local dt = horizon / math.max(steps, 1)
+
+    local d0 = options.distance or safe
+    local vr = options.vr or 0
+    local ar = options.ar or 0
+    local jr = options.jr or 0
+    local curvature = options.curvature or 0
+    local curvatureRate = options.curvatureRate or 0
+    local curvatureJerk = options.curvatureJerk or 0
+    local speed = math.abs(options.speed or vr or 0)
+
+    local minRelative = math.huge
+    local peakIntrusion = 0
+    local weightedIntrusion = 0
+    local signedDistanceSum = 0
+    local intrusionArea = 0
+    local ballisticEnergy = 0
+    local curvatureEnergy = 0
+    local velocityImprint = 0
+    local crossingTime = nil
+
+    local previousRelative = d0 - safe
+    local lastSampleTime = 0
+    for step = 1, steps do
+        local t = dt * step
+        lastSampleTime = t
+        local t2 = t * t
+        local t3 = t2 * t
+
+        local radial = d0 + vr * t + 0.5 * ar * t2 + (1 / 6) * jr * t3
+        local relative = radial - safe
+        if relative < minRelative then
+            minRelative = relative
+        end
+
+        local intrusion = math.max(-relative, 0)
+        if intrusion > peakIntrusion then
+            peakIntrusion = intrusion
+        end
+
+        local weight = 1 - math.cos((math.pi * step) / (steps + 1))
+        weightedIntrusion += intrusion * weight * dt
+        intrusionArea += intrusion * dt
+        signedDistanceSum += math.max(relative, 0) * dt
+
+        if not crossingTime and ((previousRelative > 0 and relative <= 0) or intrusion > 0) then
+            crossingTime = t
+        end
+
+        local curvatureAt = curvature + curvatureRate * t + 0.5 * curvatureJerk * t2
+        curvatureEnergy += math.abs(curvatureAt) * dt
+
+        local radialSpeed = vr + ar * t + 0.5 * jr * t2
+        velocityImprint += math.abs(radialSpeed) * intrusion * dt
+
+        local radialGap = math.max(safe - radial, 0)
+        ballisticEnergy += radialGap * radialGap * dt
+
+        previousRelative = relative
+    end
+
+    if crossingTime == nil and minRelative < 0 then
+        crossingTime = horizon
+    end
+
+    local effectiveHorizon = horizon
+    if lastSampleTime > 0 and lastSampleTime < horizon then
+        effectiveHorizon = math.max(lastSampleTime, pressGrace)
+    end
+
+    local horizonInv = 1 / math.max(effectiveHorizon, Constants.EPSILON)
+    local safeEps = math.max(safe, Constants.EPSILON)
+
+    local normalizedPeakIntrusion = peakIntrusion / safeEps
+    local normalizedWeightedIntrusion = (weightedIntrusion * horizonInv) / safeEps
+    local normalizedIntrusionArea = (intrusionArea * horizonInv) / safeEps
+
+    local normalizedBallistic = math.sqrt(ballisticEnergy * horizonInv) / safeEps
+
+    local velocityScale = math.max(speed, Constants.EPSILON)
+    local velocitySignature = velocityImprint / (velocityScale * safeEps * math.max(horizon, Constants.EPSILON))
+    velocitySignature = math.clamp(velocitySignature, 0, 4)
+
+    local urgency = 0
+    if crossingTime then
+        urgency = math.max((horizon - crossingTime) * horizonInv, 0)
+    end
+
+    local densityScore = math.clamp(
+        (steps - Constants.SIMULATION_MIN_STEPS)
+            / math.max(Constants.SIMULATION_MAX_STEPS - Constants.SIMULATION_MIN_STEPS, 1),
+        0,
+        1
+    )
+    local resolutionScore = math.clamp(
+        (Constants.SIMULATION_RESOLUTION or dt) / math.max(dt, Constants.EPSILON),
+        0,
+        1
+    )
+    local quality = math.clamp(densityScore * 0.6 + resolutionScore * 0.4, 0, 1)
+
+    local curvatureSignature = curvatureEnergy * horizonInv
+    local averageDistance = signedDistanceSum * horizonInv
+
+    result.horizon = horizon
+    result.effectiveHorizon = effectiveHorizon
+    result.steps = steps
+    result.dt = dt
+    result.coverage = math.clamp(lastSampleTime / math.max(horizon, Constants.EPSILON), 0, 1)
+    result.minDistance = minRelative
+    result.peakIntrusion = peakIntrusion
+    result.normalizedPeakIntrusion = normalizedPeakIntrusion
+    result.weightedIntrusion = weightedIntrusion
+    result.normalizedWeightedIntrusion = normalizedWeightedIntrusion
+    result.normalizedIntrusionArea = normalizedIntrusionArea
+    result.ballisticEnergy = ballisticEnergy
+    result.normalizedBallisticEnergy = normalizedBallistic
+    result.curvatureEnergy = curvatureEnergy
+    result.curvatureSignature = curvatureSignature
+    result.velocitySignature = velocitySignature
+    result.urgency = urgency
+    result.crossingTime = crossingTime
+    result.averageDistance = averageDistance
+    result.quality = quality
+
+    return result
+end
+
+function Helpers.ensureThreatEnvelope(container)
+    if typeof(container) ~= "table" then
+        return nil
+    end
+
+    local envelope = container.threatEnvelope
+    if typeof(envelope) ~= "table" then
+        envelope = {
+            fast = 0,
+            medium = 0,
+            slow = 0,
+            load = 0,
+            acceleration = 0,
+            jerk = 0,
+            lastFast = 0,
+            lastAcceleration = 0,
+            updated = nil,
+        }
+        container.threatEnvelope = envelope
+    else
+        envelope.fast = envelope.fast or 0
+        envelope.medium = envelope.medium or 0
+        envelope.slow = envelope.slow or 0
+        envelope.load = envelope.load or 0
+        envelope.acceleration = envelope.acceleration or 0
+        envelope.jerk = envelope.jerk or 0
+        envelope.lastFast = envelope.lastFast or envelope.fast or 0
+        envelope.lastAcceleration = envelope.lastAcceleration or envelope.acceleration or 0
+    end
+
+    return envelope
+end
+
+function Helpers.updateThreatEnvelope(stateContainer, telemetry, params)
+    if typeof(stateContainer) ~= "table" then
+        return nil
+    end
+
+    local envelope = Helpers.ensureThreatEnvelope(stateContainer)
+    if telemetry and typeof(telemetry) == "table" then
+        telemetry.threatEnvelope = envelope
+    end
+
+    params = params or {}
+    local now = params.now
+    local dt = params.dt
+    if not Helpers.isFiniteNumber(dt) then
+        if Helpers.isFiniteNumber(now) and Helpers.isFiniteNumber(envelope.updated) then
+            dt = now - envelope.updated
+        end
+    end
+
+    local minDt = Constants.THREAT_SPECTRUM_MIN_DT or Constants.SIMULATION_RESOLUTION or 1 / 240
+    local maxDt = Constants.THREAT_SPECTRUM_MAX_DT or 0.75
+    if not Helpers.isFiniteNumber(dt) or dt <= 0 then
+        dt = minDt
+    end
+    dt = math.clamp(dt, minDt, maxDt)
+
+    local logistic = math.clamp(params.logistic or 0, 0, 1)
+    local intensity = math.clamp(params.intensity or logistic, 0, 1)
+    local severity = math.clamp(params.severity or intensity, 0, 1)
+    local sample = params.sample
+    if not Helpers.isFiniteNumber(sample) then
+        sample = math.max(severity, logistic, intensity)
+    end
+    sample = math.clamp(sample or 0, 0, 1)
+    local composite = math.max(sample, 0.65 * logistic + 0.35 * intensity, severity)
+
+    local fastAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_FAST_ALPHA or 0.55, 0, 1) or 0.55
+    local mediumAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_MEDIUM_ALPHA or 0.35, 0, 1) or 0.35
+    local slowAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_SLOW_ALPHA or 0.18, 0, 1) or 0.18
+    local loadAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_LOAD_ALPHA or 0.45, 0, 1) or 0.45
+    local accelAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_ACCEL_ALPHA or 0.5, 0, 1) or 0.5
+    local jerkAlpha = Helpers.clampNumber(Constants.THREAT_SPECTRUM_JERK_ALPHA or 0.35, 0, 1) or 0.35
+
+    local fast = Helpers.emaScalar(envelope.fast, composite, fastAlpha)
+    local medium = Helpers.emaScalar(envelope.medium, composite, mediumAlpha)
+    local slow = Helpers.emaScalar(envelope.slow, composite, slowAlpha)
+    envelope.fast = fast
+    envelope.medium = medium
+    envelope.slow = slow
+
+    local loadInstant = math.clamp(0.5 * fast + 0.3 * medium + 0.2 * slow, 0, 1)
+    local load = Helpers.emaScalar(envelope.load, loadInstant, loadAlpha)
+    envelope.load = load
+
+    local lastFast = envelope.lastFast
+    if not Helpers.isFiniteNumber(lastFast) then
+        lastFast = fast
+    end
+    local accelerationSample = (fast - lastFast) / math.max(dt, Constants.EPSILON)
+    local acceleration = Helpers.emaScalar(envelope.acceleration, accelerationSample, accelAlpha)
+    envelope.acceleration = acceleration
+
+    local lastAcceleration = envelope.lastAcceleration
+    if not Helpers.isFiniteNumber(lastAcceleration) then
+        lastAcceleration = acceleration
+    end
+    local jerkSample = (acceleration - lastAcceleration) / math.max(dt, Constants.EPSILON)
+    local jerk = Helpers.emaScalar(envelope.jerk, jerkSample, jerkAlpha)
+    envelope.jerk = jerk
+
+    envelope.lastFast = fast
+    envelope.lastAcceleration = acceleration
+    if Helpers.isFiniteNumber(now) then
+        envelope.updated = now
+    end
+
+    local detectionConfidence = math.clamp(params.detectionConfidence or 0, 0, 1)
+    local tempo = math.clamp(params.tempo or 0, 0, 1)
+    local speedComponent = math.clamp(params.speedComponent or 0, 0, 1)
+    local urgency = math.clamp(params.urgency or 0, 0, 1)
+
+    local tempoBlend = math.max(tempo, speedComponent)
+
+    local loadWeight = Constants.THREAT_SPECTRUM_DETECTION_LOAD_WEIGHT or 0.38
+    local accelWeight = Constants.THREAT_SPECTRUM_DETECTION_ACCEL_WEIGHT or 0.22
+    local tempoWeight = Constants.THREAT_SPECTRUM_DETECTION_TEMPO_WEIGHT or 0.18
+    local urgencyWeight = Constants.THREAT_SPECTRUM_DETECTION_URGENCY_WEIGHT or 0.14
+
+    local detectionBoost = loadWeight * load
+        + accelWeight * math.max(acceleration, 0)
+        + tempoWeight * tempoBlend
+        + urgencyWeight * math.max(urgency, severity)
+    detectionBoost = math.max(detectionBoost, 0)
+    detectionBoost = math.min(detectionBoost, Constants.THREAT_SPECTRUM_DETECTION_MAX_BONUS or 0.45)
+
+    detectionConfidence = math.clamp(detectionConfidence + detectionBoost, 0, 1)
+
+    local score = (Constants.THREAT_SPECTRUM_SCORE_LOGISTIC_WEIGHT or 0.42) * logistic
+        + (Constants.THREAT_SPECTRUM_SCORE_INTENSITY_WEIGHT or 0.23) * intensity
+        + (Constants.THREAT_SPECTRUM_SCORE_CONFIDENCE_WEIGHT or 0.18) * detectionConfidence
+        + (Constants.THREAT_SPECTRUM_SCORE_LOAD_WEIGHT or 0.12) * load
+        + (Constants.THREAT_SPECTRUM_SCORE_TEMPO_WEIGHT or 0.05) * tempoBlend
+    score = math.clamp(score, 0, 1)
+
+    local confidence = (Constants.THREAT_SPECTRUM_CONFIDENCE_LOGISTIC_WEIGHT or 0.45) * logistic
+        + (Constants.THREAT_SPECTRUM_CONFIDENCE_INTENSITY_WEIGHT or 0.2) * intensity
+        + (Constants.THREAT_SPECTRUM_CONFIDENCE_CONFIDENCE_WEIGHT or 0.2) * detectionConfidence
+        + (Constants.THREAT_SPECTRUM_CONFIDENCE_LOAD_WEIGHT or 0.15) * load
+    confidence = math.clamp(confidence, 0, 1)
+
+    local instantReady = detectionConfidence >= (Constants.THREAT_SPECTRUM_READY_CONFIDENCE or 0.82)
+        and detectionBoost >= (Constants.THREAT_SPECTRUM_READY_THRESHOLD or 0.32)
+
+    return {
+        fast = fast,
+        medium = medium,
+        slow = slow,
+        load = load,
+        acceleration = acceleration,
+        jerk = jerk,
+        detectionBoost = detectionBoost,
+        detectionConfidence = detectionConfidence,
+        score = score,
+        confidence = confidence,
+        instantReady = instantReady,
+        tempo = tempoBlend,
+        dt = dt,
+    }
 end
 
 local TelemetryAnalytics = {}
+
+function Helpers.resolveThreatStatus(score)
+    score = math.clamp(score or 0, 0, 1)
+    local thresholds = Constants.THREAT_THRESHOLDS
+    if typeof(thresholds) ~= "table" or #thresholds == 0 then
+        if score >= 0.85 then
+            return "critical"
+        elseif score >= 0.65 then
+            return "high"
+        elseif score >= 0.4 then
+            return "medium"
+        elseif score >= 0.2 then
+            return "low"
+        end
+        return "idle"
+    end
+
+    for _, entry in ipairs(thresholds) do
+        local threshold = entry.threshold or 0
+        if score >= threshold then
+            return entry.status or "idle"
+        end
+    end
+
+    return "idle"
+end
+
+function Helpers.updateThreatTelemetry(telemetry, state, kinematics, now, ballId)
+    if typeof(telemetry) ~= "table" then
+        return nil, nil
+    end
+
+    local threat = telemetry.threat
+    if typeof(threat) ~= "table" then
+        threat = {
+            status = "idle",
+            score = 0,
+            severity = 0,
+            urgency = 0,
+            logistic = 0,
+            lastEmit = 0,
+            transitions = 0,
+        }
+        telemetry.threat = threat
+    end
+
+    local score = math.clamp(state.threatScore or 0, 0, 1)
+    local severity = math.clamp(state.threatSeverity or 0, 0, 1)
+    local intensity = math.clamp(state.threatIntensity or severity, 0, 1)
+    local urgency = math.clamp(state.proximitySimulationUrgency or 0, 0, 1)
+    local logistic = math.clamp(state.proximityLogistic or 0, 0, 1)
+    local detectionReady = state.detectionReady and true or false
+    local detectionAge = state.detectionAge or 0
+    local detectionMin = state.minDetectionTime or 0
+    local detectionConfidence = Helpers.clampNumber(state.detectionConfidence or 0, 0, 1) or 0
+    local distance = (kinematics and kinematics.distance) or 0
+    local speed = state.approachSpeed or 0
+    local timeToImpact = state.timeToImpact
+    local timeUntilPress = state.timeUntilPress
+    local shouldPress = state.shouldPress and true or false
+    local shouldHold = state.shouldHold and true or false
+    local withinLookahead = state.withinLookahead and true or false
+
+    local spectralFast = math.clamp(state.threatSpectralFast or math.max(severity, logistic), 0, 1)
+    local spectralMedium = math.clamp(state.threatSpectralMedium or spectralFast, 0, 1)
+    local spectralSlow = math.clamp(state.threatSpectralSlow or spectralMedium, 0, 1)
+    local load = math.clamp(state.threatLoad or math.max(severity, logistic, intensity), 0, 1)
+    local acceleration = state.threatAcceleration or 0
+    if not Helpers.isFiniteNumber(acceleration) then
+        acceleration = 0
+    end
+    local jerk = state.threatJerk or 0
+    if not Helpers.isFiniteNumber(jerk) then
+        jerk = 0
+    end
+    local detectionBoost = math.max(state.threatBoost or 0, 0)
+    local tempoBlend = math.clamp(state.threatTempo or 0, 0, 1)
+    local threatBudget = state.threatBudget
+    local budgetRatio = Helpers.clampNumber(state.threatBudgetRatio or 0, -1, 1) or 0
+    local budgetPressure = math.clamp(state.threatBudgetPressure or 0, 0, 1)
+    local budgetReady = state.threatBudgetReady and true or false
+    local budgetInstantReady = state.threatBudgetInstantReady and true or false
+    local readinessScore = Helpers.clampNumber(state.threatReadinessScore or detectionConfidence, 0, 1) or 0
+    local latencyGapSample = state.threatLatencyGap
+    if not Helpers.isFiniteNumber(latencyGapSample) then
+        latencyGapSample = 0
+    end
+    local budgetHorizon = state.threatBudgetHorizon
+    if not Helpers.isFiniteNumber(budgetHorizon) then
+        budgetHorizon = 0
+    end
+    local budgetConfidenceGain = math.clamp(state.threatBudgetConfidenceGain or 0, 0, 1)
+    local scheduleSlackScale = Helpers.clampNumber(state.scheduleSlackScale or 1, 0, math.huge) or 1
+    local detectionMomentumBoost = Helpers.clampNumber(state.detectionMomentumBoost or 0, -1, 1) or 0
+    local readinessMomentum = math.clamp(state.threatReadinessMomentum or 0, 0, 1)
+    local momentumReady = state.threatMomentumReady and true or false
+    local momentumBoost = math.clamp(state.threatMomentumBoost or 0, 0, 1)
+    local volatilityPenalty = math.max(state.threatVolatilityPenalty or 0, 0)
+    local stabilityBoost = math.max(state.threatStabilityBoost or 0, 0)
+    local loadBoost = math.max(state.threatLoadBoost or 0, 0)
+
+    local previousScore = threat.score or 0
+    local previousMomentum = threat.momentum
+    local previousVolatility = threat.volatility
+    local previousStability = threat.stability
+    local previousConfidence = threat.confidence
+    local previousDetectionConfidence = threat.detectionConfidence or detectionConfidence
+    local lastUpdated = threat.updated
+
+    local delta = score - previousScore
+
+    local dt
+    if Helpers.isFiniteNumber(now) and Helpers.isFiniteNumber(lastUpdated) then
+        dt = now - lastUpdated
+    end
+    if not Helpers.isFiniteNumber(dt) or dt <= 0 then
+        dt = Constants.THREAT_EVENT_MIN_INTERVAL or Constants.SIMULATION_RESOLUTION or 1 / 60
+    end
+    local derivative = 0
+    if Helpers.isFiniteNumber(delta) then
+        derivative = delta / math.max(dt, Constants.EPSILON)
+    end
+
+    local momentumAlpha = Helpers.clampNumber(Constants.THREAT_MOMENTUM_ALPHA or 0.6, 0, 1) or 0.6
+    local volatilityAlpha = Helpers.clampNumber(Constants.THREAT_VOLATILITY_ALPHA or 0.45, 0, 1) or 0.45
+    local stabilityAlpha = Helpers.clampNumber(Constants.THREAT_STABILITY_ALPHA or 0.35, 0, 1) or 0.35
+    local confidenceAlpha = Helpers.clampNumber(Constants.THREAT_CONFIDENCE_ALPHA or 0.55, 0, 1) or 0.55
+
+    local momentum = Helpers.emaScalar(previousMomentum, derivative, momentumAlpha)
+    local volatility = Helpers.emaScalar(previousVolatility, math.abs(derivative), volatilityAlpha)
+    local clampedVolatility = Helpers.clampNumber(volatility or 0, 0, 1) or 0
+    local stabilitySample = math.max(1 - clampedVolatility, 0)
+    local stability = Helpers.emaScalar(previousStability, stabilitySample, stabilityAlpha)
+    local confidenceSample = Helpers.clampNumber(state.threatConfidence or score, 0, 1) or 0
+    local confidence = Helpers.emaScalar(previousConfidence, confidenceSample, confidenceAlpha)
+    local detectionTrend = detectionConfidence - previousDetectionConfidence
+
+    local status = Helpers.resolveThreatStatus(score)
+
+    threat.score = score
+    threat.severity = severity
+    threat.intensity = intensity
+    threat.urgency = urgency
+    threat.logistic = logistic
+    threat.status = status
+    threat.distance = distance
+    threat.speed = speed
+    threat.updated = now
+    threat.detectionReady = detectionReady
+    threat.detectionAge = detectionAge
+    threat.detectionMin = detectionMin
+    threat.detectionConfidence = detectionConfidence
+    threat.confidence = confidence
+    threat.momentum = momentum
+    threat.volatility = volatility
+    threat.stability = stability
+    threat.spectralFast = spectralFast
+    threat.spectralMedium = spectralMedium
+    threat.spectralSlow = spectralSlow
+    threat.load = load
+    threat.acceleration = acceleration
+    threat.jerk = jerk
+    threat.detectionBoost = detectionBoost
+    threat.tempo = tempoBlend
+    threat.budget = threatBudget
+    threat.budgetRatio = budgetRatio
+    threat.budgetPressure = budgetPressure
+    threat.budgetReady = budgetReady or budgetInstantReady
+    threat.readiness = readinessScore
+    threat.latencyGap = latencyGapSample
+    threat.horizon = budgetHorizon
+    threat.budgetConfidenceGain = budgetConfidenceGain
+    threat.scheduleSlackScale = scheduleSlackScale
+    threat.detectionMomentumBoost = detectionMomentumBoost
+    threat.readinessMomentum = readinessMomentum
+    threat.momentumReady = momentumReady or budgetInstantReady
+    threat.momentumBoost = momentumBoost
+    threat.volatilityPenalty = volatilityPenalty
+    threat.stabilityBoost = stabilityBoost
+    threat.loadBoost = loadBoost
+    threat.timeToImpact = timeToImpact
+    threat.timeUntilPress = timeUntilPress
+    threat.shouldPress = shouldPress
+    threat.shouldHold = shouldHold
+    threat.withinLookahead = withinLookahead
+
+    local readyConfidence = Constants.THREAT_SPECTRUM_READY_CONFIDENCE or 0.82
+    local readyThreshold = Constants.THREAT_SPECTRUM_READY_THRESHOLD or 0.32
+    local instantReady = detectionConfidence >= readyConfidence and detectionBoost >= readyThreshold
+
+    local analytics = {
+        delta = delta,
+        derivative = derivative,
+        momentum = momentum,
+        volatility = volatility,
+        stability = stability,
+        confidence = confidence,
+        detectionConfidence = detectionConfidence,
+        detectionTrend = detectionTrend,
+        load = load,
+        spectralFast = spectralFast,
+        spectralMedium = spectralMedium,
+        spectralSlow = spectralSlow,
+        acceleration = acceleration,
+        jerk = jerk,
+        detectionBoost = detectionBoost,
+        tempo = tempoBlend,
+        instantReady = instantReady,
+        budget = threatBudget,
+        budgetRatio = budgetRatio,
+        budgetPressure = budgetPressure,
+        budgetReady = budgetReady or budgetInstantReady,
+        readiness = readinessScore,
+        latencyGap = latencyGapSample,
+        horizon = budgetHorizon,
+        budgetConfidenceGain = budgetConfidenceGain,
+        scheduleSlackScale = scheduleSlackScale,
+        detectionMomentumBoost = detectionMomentumBoost,
+        readinessMomentum = readinessMomentum,
+        momentumReady = momentumReady or budgetInstantReady,
+        momentumBoost = momentumBoost,
+        volatilityPenalty = volatilityPenalty,
+        stabilityBoost = stabilityBoost,
+        loadBoost = loadBoost,
+    }
+
+    local minInterval = Constants.THREAT_EVENT_MIN_INTERVAL or 0
+    local minDelta = Constants.THREAT_EVENT_MIN_DELTA or 0
+    local sinceLast = math.huge
+    if Helpers.isFiniteNumber(threat.lastEmit) and Helpers.isFiniteNumber(now) then
+        sinceLast = now - threat.lastEmit
+    end
+
+    local transitioned = status ~= threat.lastStatus
+    local shouldEmit = transitioned
+        or (sinceLast >= minInterval and math.abs(delta) >= minDelta)
+
+    if not shouldEmit then
+        return status, analytics
+    end
+
+    threat.lastEmit = now
+    if transitioned then
+        threat.lastStatus = status
+        threat.transitions = (threat.transitions or 0) + 1
+    end
+
+    local event = {
+        ballId = ballId,
+        score = score,
+        severity = severity,
+        intensity = intensity,
+        urgency = urgency,
+        logistic = logistic,
+        status = status,
+        delta = delta,
+        derivative = derivative,
+        detectionReady = detectionReady,
+        detectionAge = detectionAge,
+        detectionMin = detectionMin,
+        detectionConfidence = detectionConfidence,
+        detectionTrend = detectionTrend,
+        confidence = confidence,
+        momentum = momentum,
+        volatility = volatility,
+        stability = stability,
+        spectralFast = spectralFast,
+        spectralMedium = spectralMedium,
+        spectralSlow = spectralSlow,
+        load = load,
+        acceleration = acceleration,
+        jerk = jerk,
+        detectionBoost = detectionBoost,
+        boostedConfidence = detectionConfidence,
+        tempo = tempoBlend,
+        instantReady = instantReady,
+        budget = threatBudget,
+        budgetRatio = budgetRatio,
+        budgetPressure = budgetPressure,
+        budgetReady = budgetReady or budgetInstantReady,
+        readiness = readinessScore,
+        latencyGap = latencyGapSample,
+        horizon = budgetHorizon,
+        budgetConfidenceGain = budgetConfidenceGain,
+        timeToImpact = timeToImpact,
+        timeUntilPress = timeUntilPress,
+        distance = distance,
+        speed = speed,
+        shouldPress = shouldPress,
+        shouldHold = shouldHold,
+        withinLookahead = withinLookahead,
+        targeting = state.targetingMe and true or false,
+        transitions = threat.transitions,
+        coverage = state.proximitySimulation and state.proximitySimulation.coverage or 1,
+        horizon = state.responseWindow,
+        holdWindow = state.holdWindow,
+    }
+
+    local metrics = TelemetryAnalytics.metrics
+    if typeof(metrics) == "table" then
+        Helpers.incrementCounter("threat", 1)
+        local threatMetrics = metrics.threat
+        if typeof(threatMetrics) == "table" then
+            if Helpers.isFiniteNumber(score) then
+                Helpers.updateAggregate(threatMetrics.score, score)
+            end
+            if Helpers.isFiniteNumber(severity) then
+                Helpers.updateAggregate(threatMetrics.severity, severity)
+            end
+            if Helpers.isFiniteNumber(intensity) then
+                Helpers.updateAggregate(threatMetrics.intensity, intensity)
+            end
+            if Helpers.isFiniteNumber(urgency) then
+                Helpers.updateAggregate(threatMetrics.urgency, urgency)
+            end
+            if Helpers.isFiniteNumber(logistic) then
+                Helpers.updateAggregate(threatMetrics.logistic, logistic)
+            end
+            if Helpers.isFiniteNumber(distance) then
+                Helpers.updateAggregate(threatMetrics.distance, distance)
+            end
+            if Helpers.isFiniteNumber(speed) then
+                Helpers.updateAggregate(threatMetrics.speed, speed)
+            end
+            if Helpers.isFiniteNumber(confidence) then
+                Helpers.updateAggregate(threatMetrics.confidence, confidence)
+            end
+            if Helpers.isFiniteNumber(detectionConfidence) then
+                Helpers.updateAggregate(threatMetrics.detectionConfidence, detectionConfidence)
+            end
+            if Helpers.isFiniteNumber(load) then
+                Helpers.updateAggregate(threatMetrics.load, load)
+            end
+            if Helpers.isFiniteNumber(spectralFast) then
+                Helpers.updateAggregate(threatMetrics.spectralFast, spectralFast)
+            end
+            if Helpers.isFiniteNumber(spectralMedium) then
+                Helpers.updateAggregate(threatMetrics.spectralMedium, spectralMedium)
+            end
+            if Helpers.isFiniteNumber(spectralSlow) then
+                Helpers.updateAggregate(threatMetrics.spectralSlow, spectralSlow)
+            end
+            if Helpers.isFiniteNumber(momentum) then
+                Helpers.updateAggregate(threatMetrics.momentum, momentum)
+            end
+            if Helpers.isFiniteNumber(volatility) then
+                Helpers.updateAggregate(threatMetrics.volatility, volatility)
+            end
+            if Helpers.isFiniteNumber(stability) then
+                Helpers.updateAggregate(threatMetrics.stability, stability)
+            end
+            if Helpers.isFiniteNumber(acceleration) then
+                Helpers.updateAggregate(threatMetrics.acceleration, acceleration)
+            end
+            if Helpers.isFiniteNumber(jerk) then
+                Helpers.updateAggregate(threatMetrics.jerk, jerk)
+            end
+            if Helpers.isFiniteNumber(detectionBoost) then
+                Helpers.updateAggregate(threatMetrics.detectionBoost, detectionBoost)
+            end
+            if Helpers.isFiniteNumber(tempoBlend) then
+                Helpers.updateAggregate(threatMetrics.tempo, tempoBlend)
+            end
+            if Helpers.isFiniteNumber(threatBudget) then
+                Helpers.updateAggregate(threatMetrics.budget, threatBudget)
+            end
+            if Helpers.isFiniteNumber(budgetHorizon) then
+                Helpers.updateAggregate(threatMetrics.horizon, budgetHorizon)
+            end
+            Helpers.updateAggregate(threatMetrics.budgetPressure, budgetPressure)
+            Helpers.updateAggregate(threatMetrics.budgetRatio, budgetRatio)
+            Helpers.updateAggregate(threatMetrics.readiness, readinessScore)
+            Helpers.updateAggregate(threatMetrics.budgetConfidenceGain, budgetConfidenceGain)
+            if Helpers.isFiniteNumber(latencyGapSample) then
+                Helpers.updateAggregate(threatMetrics.latencyGap, latencyGapSample)
+            end
+            Helpers.updateAggregate(threatMetrics.budgetReady, (budgetReady or budgetInstantReady) and 1 or 0)
+
+            threatMetrics.statusCounts = threatMetrics.statusCounts or {}
+            threatMetrics.statusCounts[status] = (threatMetrics.statusCounts[status] or 0) + 1
+            threatMetrics.transitions = math.max(threatMetrics.transitions or 0, threat.transitions or 0)
+        end
+    end
+
+    emitTelemetryEvent("threat", event)
+    return status, analytics
+end
+
+local function resolveConfigNumber(configSnapshot, key, fallback)
+    local value = configSnapshot[key]
+    if value == nil then
+        value = fallback
+    end
+    if not Helpers.isFiniteNumber(value) then
+        value = fallback
+    end
+    return value
+end
+
+local function addAdjustmentReason(adjustments, message)
+    if message then
+        table.insert(adjustments.reasons, message)
+    end
+end
+
+local function applyAdjustmentUpdate(context, key, currentValue, newValue)
+    if not Helpers.isFiniteNumber(newValue) then
+        return nil
+    end
+
+    local delta = newValue - currentValue
+    if math.abs(delta) < 1e-4 then
+        return nil
+    end
+
+    local adjustments = context.adjustments
+    adjustments.updates[key] = newValue
+    adjustments.deltas[key] = delta
+
+    return delta
+end
+
+local function prepareAdjustmentContext(stats, summary, configSnapshot, options)
+    if typeof(options) ~= "table" then
+        options = {}
+    end
+    stats = stats or TelemetryAnalytics.clone()
+    summary = summary or TelemetryAnalytics.computeSummary(stats)
+    configSnapshot = configSnapshot or {}
+
+    local minSamples = options.minSamples
+    if not Helpers.isFiniteNumber(minSamples) or minSamples < 0 then
+        minSamples = TELEMETRY_ADJUSTMENT_MIN_SAMPLES or 4
+    end
+
+    local adjustments = {
+        updates = {},
+        deltas = {},
+        reasons = {},
+        stats = stats,
+        summary = summary,
+        minSamples = minSamples,
+    }
+
+    local pressCount = summary.pressCount or 0
+    if pressCount < adjustments.minSamples then
+        adjustments.status = "insufficient"
+        addAdjustmentReason(
+            adjustments,
+            string.format(
+                "Need at least %d presses (observed %d) before telemetry-based tuning can stabilise.",
+                adjustments.minSamples,
+                pressCount
+            )
+        )
+        return { adjustments = adjustments, finished = true }
+    end
+
+    if smartTuningState and smartTuningState.enabled and not options.allowWhenSmartTuning then
+        adjustments.status = "skipped"
+        addAdjustmentReason(adjustments, "Smart tuning is enabled; skipping direct telemetry adjustments.")
+        return { adjustments = adjustments, finished = true }
+    end
+
+    local reaction = math.max(resolveConfigNumber(configSnapshot, "pressReactionBias", Defaults.CONFIG.pressReactionBias or 0), 0)
+    local slack = math.max(resolveConfigNumber(configSnapshot, "pressScheduleSlack", Defaults.CONFIG.pressScheduleSlack or 0), 0)
+    local lookaheadFallback =
+        configSnapshot.pressLookaheadGoal
+        or Defaults.CONFIG.pressMaxLookahead
+        or Defaults.CONFIG.pressLookaheadGoal
+        or Defaults.SMART_TUNING.lookaheadGoal
+        or 0
+    local lookahead = resolveConfigNumber(configSnapshot, "pressMaxLookahead", lookaheadFallback or 0)
+    local latency = math.max(resolveConfigNumber(configSnapshot, "activationLatency", Defaults.CONFIG.activationLatency or 0.12), 0)
+
+    local commitTarget = options.commitTarget
+    if not Helpers.isFiniteNumber(commitTarget) or commitTarget <= 0 then
+        commitTarget = Defaults.SMART_TUNING.commitP99Target or 0.01
+    end
+
+    local lookaheadGoal = options.lookaheadGoal
+    if not Helpers.isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
+        lookaheadGoal = configSnapshot.pressLookaheadGoal
+        if not Helpers.isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
+            lookaheadGoal = Defaults.CONFIG.pressLookaheadGoal or Defaults.SMART_TUNING.lookaheadGoal or 0
+        end
+    end
+
+    local commitMinSamples = options.commitMinSamples
+    if not Helpers.isFiniteNumber(commitMinSamples) or commitMinSamples < 0 then
+        commitMinSamples = 6
+    end
+
+    local lookaheadMinSamples = options.lookaheadMinSamples
+    if not Helpers.isFiniteNumber(lookaheadMinSamples) or lookaheadMinSamples < 0 then
+        lookaheadMinSamples = 4
+    end
+
+    local leadTolerance = options.leadTolerance
+    if not Helpers.isFiniteNumber(leadTolerance) or leadTolerance < 0 then
+        leadTolerance = TELEMETRY_ADJUSTMENT_LEAD_TOLERANCE or 0.004
+    end
+
+    local waitTolerance = options.waitTolerance
+    if not Helpers.isFiniteNumber(waitTolerance) or waitTolerance < 0 then
+        waitTolerance = TELEMETRY_ADJUSTMENT_WAIT_TOLERANCE or 0.003
+    end
+
+    return {
+        adjustments = adjustments,
+        summary = summary,
+        options = options,
+        config = configSnapshot,
+        current = {
+            reaction = reaction,
+            slack = slack,
+            lookahead = lookahead,
+            latency = latency,
+        },
+        leadTolerance = leadTolerance,
+        waitTolerance = waitTolerance,
+        commit = {
+            target = commitTarget,
+            samples = summary.commitLatencySampleCount or 0,
+            p99 = summary.commitLatencyP99,
+            minSamples = commitMinSamples,
+        },
+        lookahead = {
+            goal = lookaheadGoal,
+            samples = summary.scheduleLookaheadSampleCount or 0,
+            p10 = summary.scheduleLookaheadP10,
+            minSamples = lookaheadMinSamples,
+        },
+        latency = {
+            observed = summary.averageActivationLatency,
+        },
+        leadDelta = summary.leadDeltaMean,
+        waitDelta = summary.averageWaitDelta,
+    }
+end
+
+local function finalizeAdjustmentStatus(context)
+    local adjustments = context.adjustments
+    if next(adjustments.updates) then
+        adjustments.status = "updates"
+        return
+    end
+
+    adjustments.status = adjustments.status or "stable"
+    if #adjustments.reasons == 0 then
+        addAdjustmentReason(adjustments, "Telemetry averages are within tolerance; no config changes suggested.")
+    end
+end
+
+local function applyLeadAdjustment(context)
+    local leadDelta = context.leadDelta
+    if not Helpers.isFiniteNumber(leadDelta) then
+        return
+    end
+
+    if math.abs(leadDelta) <= (context.leadTolerance or 0) then
+        return
+    end
+
+    local leadGain = context.options.leadGain
+    if not Helpers.isFiniteNumber(leadGain) then
+        leadGain = TELEMETRY_ADJUSTMENT_LEAD_GAIN or 0.6
+    end
+
+    local change = Helpers.clampNumber(-leadDelta * leadGain, -0.05, 0.05)
+    if not change or math.abs(change) < 1e-4 then
+        return
+    end
+
+    local currentReaction = context.current.reaction
+    local maxReaction = context.options.maxReactionBias
+        or math.max(TELEMETRY_ADJUSTMENT_MAX_REACTION or 0.24, Defaults.CONFIG.pressReactionBias or 0)
+    maxReaction = math.max(maxReaction, currentReaction)
+
+    local newReaction = Helpers.clampNumber(currentReaction + change, 0, maxReaction)
+    local delta = applyAdjustmentUpdate(context, "pressReactionBias", currentReaction, newReaction)
+    if not delta then
+        return
+    end
+
+    context.current.reaction = newReaction
+    addAdjustmentReason(
+        context.adjustments,
+        string.format(
+            "Adjusted reaction bias by %.1f ms to offset the %.1f ms average lead delta.",
+            delta * 1000,
+            leadDelta * 1000
+        )
+    )
+end
+
+local function applySlackAdjustment(context)
+    local waitDelta = context.waitDelta
+    if not Helpers.isFiniteNumber(waitDelta) then
+        return
+    end
+
+    if math.abs(waitDelta) <= (context.waitTolerance or 0) then
+        return
+    end
+
+    local slackGain = context.options.slackGain
+    if not Helpers.isFiniteNumber(slackGain) then
+        slackGain = TELEMETRY_ADJUSTMENT_SLACK_GAIN or 0.5
+    end
+
+    local change = Helpers.clampNumber(waitDelta * slackGain, -0.03, 0.03)
+    if not change or math.abs(change) < 1e-4 then
+        return
+    end
+
+    local currentSlack = context.current.slack
+    local maxSlack = context.options.maxScheduleSlack
+        or math.max(TELEMETRY_ADJUSTMENT_MAX_SLACK or 0.08, Defaults.CONFIG.pressScheduleSlack or 0)
+    maxSlack = math.max(maxSlack, currentSlack)
+
+    local newSlack = Helpers.clampNumber(currentSlack + change, 0, maxSlack)
+    local delta = applyAdjustmentUpdate(context, "pressScheduleSlack", currentSlack, newSlack)
+    if not delta then
+        return
+    end
+
+    context.current.slack = newSlack
+    addAdjustmentReason(
+        context.adjustments,
+        string.format(
+            "Adjusted schedule slack by %.1f ms based on the %.1f ms average wait delta.",
+            delta * 1000,
+            waitDelta * 1000
+        )
+    )
+end
+
+local function applyCommitAdjustments(context)
+    local commit = context.commit
+    if not commit or commit.target <= 0 then
+        return
+    end
+
+    if commit.samples < (commit.minSamples or 0) then
+        return
+    end
+
+    if not Helpers.isFiniteNumber(commit.p99) then
+        return
+    end
+
+    local overshoot = commit.p99 - commit.target
+    if overshoot > 0 then
+        local reactionGain = context.options.commitReactionGain
+        if not Helpers.isFiniteNumber(reactionGain) then
+            reactionGain = Defaults.SMART_TUNING.commitReactionGain or 0
+        end
+        if reactionGain > 0 then
+            local currentReaction = context.current.reaction
+            local maxReaction = context.options.maxReactionBias
+                or math.max(TELEMETRY_ADJUSTMENT_MAX_REACTION or 0.24, Defaults.CONFIG.pressReactionBias or 0)
+            maxReaction = math.max(maxReaction, currentReaction)
+
+            local boost = Helpers.clampNumber(overshoot * reactionGain, 0, maxReaction - currentReaction)
+            if boost and boost >= 1e-4 then
+                local newReaction = Helpers.clampNumber(currentReaction + boost, 0, maxReaction)
+                local delta = applyAdjustmentUpdate(context, "pressReactionBias", currentReaction, newReaction)
+                if delta then
+                    context.current.reaction = newReaction
+                    addAdjustmentReason(
+                        context.adjustments,
+                        string.format(
+                            "Raised reaction bias by %.1f ms to chase the %.0f ms commit target (P99=%.1f ms).",
+                            delta * 1000,
+                            commit.target * 1000,
+                            commit.p99 * 1000
+                        )
+                    )
+                end
+            end
+        end
+
+        local slackGain = context.options.commitSlackGain
+        if not Helpers.isFiniteNumber(slackGain) then
+            slackGain = Defaults.SMART_TUNING.commitSlackGain or 0
+        end
+        if slackGain > 0 then
+            local currentSlack = context.current.slack
+            local maxSlack = context.options.maxScheduleSlack
+                or math.max(TELEMETRY_ADJUSTMENT_MAX_SLACK or 0.08, Defaults.CONFIG.pressScheduleSlack or 0)
+            maxSlack = math.max(maxSlack, currentSlack)
+            local minSlack = context.options.minScheduleSlack or 0
+
+            local newSlack = Helpers.clampNumber(currentSlack - overshoot * slackGain, minSlack, maxSlack)
+            local delta = applyAdjustmentUpdate(context, "pressScheduleSlack", currentSlack, newSlack)
+            if delta then
+                context.current.slack = newSlack
+                addAdjustmentReason(
+                    context.adjustments,
+                    string.format(
+                        "Adjusted schedule slack by %.1f ms to curb commit latency overshoot (P99 %.1f ms).",
+                        delta * 1000,
+                        commit.p99 * 1000
+                    )
+                )
+            end
+        end
+    end
+end
+
+local function applyLookaheadAdjustment(context)
+    local lookahead = context.lookahead
+    if not lookahead then
+        return
+    end
+
+    local goal = lookahead.goal
+    if not Helpers.isFiniteNumber(goal) or goal <= 0 then
+        return
+    end
+
+    if lookahead.samples < (lookahead.minSamples or 0) then
+        return
+    end
+
+    local p10 = lookahead.p10
+    if not Helpers.isFiniteNumber(p10) or p10 >= goal then
+        return
+    end
+
+    local currentLookahead = context.adjustments.updates.pressMaxLookahead or context.current.lookahead
+    if not Helpers.isFiniteNumber(currentLookahead) then
+        currentLookahead = goal
+    end
+    currentLookahead = math.max(currentLookahead, goal)
+
+    local lookaheadGain = context.options.lookaheadGain
+    if not Helpers.isFiniteNumber(lookaheadGain) then
+        lookaheadGain = 0.5
+    end
+
+    local maxLookaheadDelta = context.options.maxPressLookaheadDelta
+    if not Helpers.isFiniteNumber(maxLookaheadDelta) or maxLookaheadDelta < 0 then
+        maxLookaheadDelta = 0.75
+    end
+
+    local delta = Helpers.clampNumber((goal - p10) * lookaheadGain, 0, maxLookaheadDelta)
+    if not delta or delta < 1e-4 then
+        return
+    end
+
+    local maxLookahead = context.options.maxPressLookahead
+    if not Helpers.isFiniteNumber(maxLookahead) or maxLookahead <= 0 then
+        maxLookahead = math.max(currentLookahead, goal) + 0.6
+    end
+    local newLookahead = Helpers.clampNumber(currentLookahead + delta, goal, maxLookahead)
+    local appliedDelta = applyAdjustmentUpdate(context, "pressMaxLookahead", currentLookahead, newLookahead)
+    if not appliedDelta then
+        return
+    end
+
+    context.current.lookahead = newLookahead
+    addAdjustmentReason(
+        context.adjustments,
+        string.format(
+            "Raised pressMaxLookahead by %.0f ms to meet the %.0f ms lookahead goal (P10=%.0f ms).",
+            appliedDelta * 1000,
+            goal * 1000,
+            p10 * 1000
+        )
+    )
+end
+
+local function applyLatencyAdjustment(context)
+    local observed = context.latency and context.latency.observed
+    if not Helpers.isFiniteNumber(observed) or observed <= 0 then
+        return
+    end
+
+    local currentLatency = context.current.latency
+    if not Helpers.isFiniteNumber(currentLatency) then
+        currentLatency = 0
+    end
+    local maxLatency = context.options.maxActivationLatency
+    if not Helpers.isFiniteNumber(maxLatency) or maxLatency <= 0 then
+        maxLatency = TELEMETRY_ADJUSTMENT_MAX_LATENCY or 0.35
+    end
+    if not Helpers.isFiniteNumber(maxLatency) then
+        maxLatency = 0.35
+    end
+    maxLatency = math.max(maxLatency, currentLatency)
+
+    local target = Helpers.clampNumber(observed, 0, maxLatency)
+    local latencyGain = context.options.latencyGain
+    if not Helpers.isFiniteNumber(latencyGain) then
+        latencyGain = TELEMETRY_ADJUSTMENT_LATENCY_GAIN or 0.5
+    end
+    local blended = Helpers.clampNumber(currentLatency + (target - currentLatency) * latencyGain, 0, maxLatency)
+
+    local delta = applyAdjustmentUpdate(context, "activationLatency", currentLatency, blended)
+    if not delta then
+        return
+    end
+
+    context.current.latency = blended
+    addAdjustmentReason(
+        context.adjustments,
+        string.format(
+            "Blended activation latency by %.1f ms toward the %.1f ms observed latency sample.",
+            delta * 1000,
+            observed * 1000
+        )
+    )
+end
 
 local TELEMETRY_ADAPTIVE_ALPHA = 0.45
 local TELEMETRY_ADAPTIVE_MIN = -0.03
@@ -500,8 +2007,8 @@ local TELEMETRY_ADJUSTMENT_MAX_REACTION = 0.24
 local TELEMETRY_ADJUSTMENT_MAX_SLACK = 0.08
 local TELEMETRY_ADJUSTMENT_MAX_LATENCY = 0.35
 
-local function clampAdaptive(value)
-    if not isFiniteNumber(value) then
+function Helpers.clampAdaptive(value)
+    if not Helpers.isFiniteNumber(value) then
         return 0
     end
 
@@ -514,7 +2021,7 @@ local function clampAdaptive(value)
     return value
 end
 
-local function clampNumber(value, minValue, maxValue)
+function Helpers.clampNumber(value, minValue, maxValue)
     if value == nil then
         return nil
     end
@@ -529,7 +2036,7 @@ local function clampNumber(value, minValue, maxValue)
     return value
 end
 
-local function incrementCounter(name, delta)
+function Helpers.incrementCounter(name, delta)
     local metrics = TelemetryAnalytics.metrics
     local counters = metrics and metrics.counters
     if typeof(counters) ~= "table" then
@@ -556,46 +2063,47 @@ function TelemetryAnalytics.resetMetrics(resetCount)
             latencyRejected = 0,
             latencyLocal = 0,
             latencyRemote = 0,
+            threat = 0,
             resets = resetCount or 0,
         },
         schedule = {
-            lead = newAggregate(),
-            slack = newAggregate(),
-            eta = newAggregate(),
-            predictedImpact = newAggregate(),
-            adaptiveBias = newAggregate(),
+            lead = Helpers.newAggregate(),
+            slack = Helpers.newAggregate(),
+            eta = Helpers.newAggregate(),
+            predictedImpact = Helpers.newAggregate(),
+            adaptiveBias = Helpers.newAggregate(),
             reasons = {},
-            smartLead = newAggregate(),
-            smartReaction = newAggregate(),
-            smartSlack = newAggregate(),
-            smartConfidence = newAggregate(),
+            smartLead = Helpers.newAggregate(),
+            smartReaction = Helpers.newAggregate(),
+            smartSlack = Helpers.newAggregate(),
+            smartConfidence = Helpers.newAggregate(),
         },
         press = {
-            waitDelta = newAggregate(),
-            actualWait = newAggregate(),
-            activationLatency = newAggregate(),
-            adaptiveBias = newAggregate(),
-            reactionTime = newAggregate(),
-            decisionTime = newAggregate(),
-            decisionToPressTime = newAggregate(),
+            waitDelta = Helpers.newAggregate(),
+            actualWait = Helpers.newAggregate(),
+            activationLatency = Helpers.newAggregate(),
+            adaptiveBias = Helpers.newAggregate(),
+            reactionTime = Helpers.newAggregate(),
+            decisionTime = Helpers.newAggregate(),
+            decisionToPressTime = Helpers.newAggregate(),
             immediateCount = 0,
             forcedCount = 0,
             scheduledCount = 0,
             unscheduledCount = 0,
             scheduledReasons = {},
-            smartLatency = newAggregate(),
-            smartReaction = newAggregate(),
-            smartSlack = newAggregate(),
-            smartConfidence = newAggregate(),
+            smartLatency = Helpers.newAggregate(),
+            smartReaction = Helpers.newAggregate(),
+            smartSlack = Helpers.newAggregate(),
+            smartConfidence = Helpers.newAggregate(),
         },
         latency = {
-            accepted = newAggregate(),
-            localAccepted = newAggregate(),
-            remoteAccepted = newAggregate(),
-            activation = newAggregate(),
+            accepted = Helpers.newAggregate(),
+            localAccepted = Helpers.newAggregate(),
+            remoteAccepted = Helpers.newAggregate(),
+            activation = Helpers.newAggregate(),
         },
         success = {
-            latency = newAggregate(),
+            latency = Helpers.newAggregate(),
             acceptedCount = 0,
         },
         cancellations = {
@@ -604,13 +2112,53 @@ function TelemetryAnalytics.resetMetrics(resetCount)
             reasonCounts = {},
         },
         timeline = {
-            scheduleLifetime = newAggregate(),
-            achievedLead = newAggregate(),
-            leadDelta = newAggregate(),
+            scheduleLifetime = Helpers.newAggregate(),
+            achievedLead = Helpers.newAggregate(),
+            leadDelta = Helpers.newAggregate(),
+        },
+        threat = {
+            score = Helpers.newAggregate(),
+            severity = Helpers.newAggregate(),
+            intensity = Helpers.newAggregate(),
+            urgency = Helpers.newAggregate(),
+            logistic = Helpers.newAggregate(),
+            distance = Helpers.newAggregate(),
+            speed = Helpers.newAggregate(),
+            confidence = Helpers.newAggregate(),
+            detectionConfidence = Helpers.newAggregate(),
+            load = Helpers.newAggregate(),
+            spectralFast = Helpers.newAggregate(),
+            spectralMedium = Helpers.newAggregate(),
+            spectralSlow = Helpers.newAggregate(),
+            momentum = Helpers.newAggregate(),
+            volatility = Helpers.newAggregate(),
+            stability = Helpers.newAggregate(),
+            acceleration = Helpers.newAggregate(),
+            jerk = Helpers.newAggregate(),
+            detectionBoost = Helpers.newAggregate(),
+            tempo = Helpers.newAggregate(),
+            momentumBoost = Helpers.newAggregate(),
+            readinessMomentum = Helpers.newAggregate(),
+            detectionMomentumBoost = Helpers.newAggregate(),
+            scheduleSlackScale = Helpers.newAggregate(),
+            momentumReady = Helpers.newAggregate(),
+            volatilityPenalty = Helpers.newAggregate(),
+            stabilityBoost = Helpers.newAggregate(),
+            loadBoost = Helpers.newAggregate(),
+            budget = Helpers.newAggregate(),
+            budgetPressure = Helpers.newAggregate(),
+            budgetRatio = Helpers.newAggregate(),
+            readiness = Helpers.newAggregate(),
+            latencyGap = Helpers.newAggregate(),
+            horizon = Helpers.newAggregate(),
+            budgetConfidenceGain = Helpers.newAggregate(),
+            budgetReady = Helpers.newAggregate(),
+            statusCounts = {},
+            transitions = 0,
         },
         quantiles = {
-            commitLatency = newQuantileEstimator(0.99, 512),
-            scheduleLookahead = newQuantileEstimator(DEFAULT_SMART_TUNING.lookaheadQuantile or 0.1, 512),
+            commitLatency = Helpers.newQuantileEstimator(0.99, 512),
+            scheduleLookahead = Helpers.newQuantileEstimator(Defaults.SMART_TUNING.lookaheadQuantile or 0.1, 512),
         },
         inFlight = {},
     }
@@ -637,6 +2185,7 @@ function TelemetryAnalytics.clone()
             success = {},
             cancellations = {},
             timeline = {},
+            threat = {},
             adaptiveState = {
                 reactionBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or 0,
                 lastUpdate = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.lastUpdate or 0,
@@ -644,49 +2193,49 @@ function TelemetryAnalytics.clone()
         }
     end
 
-    local counters = cloneCounts(metrics.counters)
+    local counters = Helpers.cloneCounts(metrics.counters)
 
     local result = {
         counters = counters,
         schedule = {
-            lead = summariseAggregate(metrics.schedule.lead),
-            slack = summariseAggregate(metrics.schedule.slack),
-            eta = summariseAggregate(metrics.schedule.eta),
-            predictedImpact = summariseAggregate(metrics.schedule.predictedImpact),
-            adaptiveBias = summariseAggregate(metrics.schedule.adaptiveBias),
-            reasons = cloneCounts(metrics.schedule.reasons),
+            lead = Helpers.summariseAggregate(metrics.schedule.lead),
+            slack = Helpers.summariseAggregate(metrics.schedule.slack),
+            eta = Helpers.summariseAggregate(metrics.schedule.eta),
+            predictedImpact = Helpers.summariseAggregate(metrics.schedule.predictedImpact),
+            adaptiveBias = Helpers.summariseAggregate(metrics.schedule.adaptiveBias),
+            reasons = Helpers.cloneCounts(metrics.schedule.reasons),
             smart = {
-                lead = summariseAggregate(metrics.schedule.smartLead),
-                reactionBias = summariseAggregate(metrics.schedule.smartReaction),
-                scheduleSlack = summariseAggregate(metrics.schedule.smartSlack),
-                confidencePadding = summariseAggregate(metrics.schedule.smartConfidence),
+                lead = Helpers.summariseAggregate(metrics.schedule.smartLead),
+                reactionBias = Helpers.summariseAggregate(metrics.schedule.smartReaction),
+                scheduleSlack = Helpers.summariseAggregate(metrics.schedule.smartSlack),
+                confidencePadding = Helpers.summariseAggregate(metrics.schedule.smartConfidence),
             },
         },
         press = {
-            waitDelta = summariseAggregate(metrics.press.waitDelta),
-            actualWait = summariseAggregate(metrics.press.actualWait),
-            activationLatency = summariseAggregate(metrics.press.activationLatency),
-            adaptiveBias = summariseAggregate(metrics.press.adaptiveBias),
-            reactionTime = summariseAggregate(metrics.press.reactionTime),
-            decisionTime = summariseAggregate(metrics.press.decisionTime),
-            decisionToPressTime = summariseAggregate(metrics.press.decisionToPressTime),
+            waitDelta = Helpers.summariseAggregate(metrics.press.waitDelta),
+            actualWait = Helpers.summariseAggregate(metrics.press.actualWait),
+            activationLatency = Helpers.summariseAggregate(metrics.press.activationLatency),
+            adaptiveBias = Helpers.summariseAggregate(metrics.press.adaptiveBias),
+            reactionTime = Helpers.summariseAggregate(metrics.press.reactionTime),
+            decisionTime = Helpers.summariseAggregate(metrics.press.decisionTime),
+            decisionToPressTime = Helpers.summariseAggregate(metrics.press.decisionToPressTime),
             immediateCount = metrics.press.immediateCount,
             forcedCount = metrics.press.forcedCount,
             scheduledCount = metrics.press.scheduledCount,
             unscheduledCount = metrics.press.unscheduledCount,
-            scheduledReasons = cloneCounts(metrics.press.scheduledReasons),
+            scheduledReasons = Helpers.cloneCounts(metrics.press.scheduledReasons),
             smart = {
-                latency = summariseAggregate(metrics.press.smartLatency),
-                reactionBias = summariseAggregate(metrics.press.smartReaction),
-                scheduleSlack = summariseAggregate(metrics.press.smartSlack),
-                confidencePadding = summariseAggregate(metrics.press.smartConfidence),
+                latency = Helpers.summariseAggregate(metrics.press.smartLatency),
+                reactionBias = Helpers.summariseAggregate(metrics.press.smartReaction),
+                scheduleSlack = Helpers.summariseAggregate(metrics.press.smartSlack),
+                confidencePadding = Helpers.summariseAggregate(metrics.press.smartConfidence),
             },
         },
         latency = {
-            accepted = summariseAggregate(metrics.latency.accepted),
-            localAccepted = summariseAggregate(metrics.latency.localAccepted),
-            remoteAccepted = summariseAggregate(metrics.latency.remoteAccepted),
-            activation = summariseAggregate(metrics.latency.activation),
+            accepted = Helpers.summariseAggregate(metrics.latency.accepted),
+            localAccepted = Helpers.summariseAggregate(metrics.latency.localAccepted),
+            remoteAccepted = Helpers.summariseAggregate(metrics.latency.remoteAccepted),
+            activation = Helpers.summariseAggregate(metrics.latency.activation),
             counters = {
                 accepted = counters.latencyAccepted or 0,
                 rejected = counters.latencyRejected or 0,
@@ -695,22 +2244,62 @@ function TelemetryAnalytics.clone()
             },
         },
         success = {
-            latency = summariseAggregate(metrics.success.latency),
+            latency = Helpers.summariseAggregate(metrics.success.latency),
             acceptedCount = metrics.success.acceptedCount,
         },
         cancellations = {
             total = metrics.cancellations.total,
             stale = metrics.cancellations.stale,
-            reasonCounts = cloneCounts(metrics.cancellations.reasonCounts),
+            reasonCounts = Helpers.cloneCounts(metrics.cancellations.reasonCounts),
         },
         timeline = {
-            scheduleLifetime = summariseAggregate(metrics.timeline.scheduleLifetime),
-            achievedLead = summariseAggregate(metrics.timeline.achievedLead),
-            leadDelta = summariseAggregate(metrics.timeline.leadDelta),
+            scheduleLifetime = Helpers.summariseAggregate(metrics.timeline.scheduleLifetime),
+            achievedLead = Helpers.summariseAggregate(metrics.timeline.achievedLead),
+            leadDelta = Helpers.summariseAggregate(metrics.timeline.leadDelta),
+        },
+        threat = {
+            score = Helpers.summariseAggregate(metrics.threat and metrics.threat.score),
+            severity = Helpers.summariseAggregate(metrics.threat and metrics.threat.severity),
+            intensity = Helpers.summariseAggregate(metrics.threat and metrics.threat.intensity),
+            urgency = Helpers.summariseAggregate(metrics.threat and metrics.threat.urgency),
+            logistic = Helpers.summariseAggregate(metrics.threat and metrics.threat.logistic),
+            distance = Helpers.summariseAggregate(metrics.threat and metrics.threat.distance),
+            speed = Helpers.summariseAggregate(metrics.threat and metrics.threat.speed),
+            confidence = Helpers.summariseAggregate(metrics.threat and metrics.threat.confidence),
+            detectionConfidence = Helpers.summariseAggregate(metrics.threat and metrics.threat.detectionConfidence),
+            load = Helpers.summariseAggregate(metrics.threat and metrics.threat.load),
+            spectralFast = Helpers.summariseAggregate(metrics.threat and metrics.threat.spectralFast),
+            spectralMedium = Helpers.summariseAggregate(metrics.threat and metrics.threat.spectralMedium),
+            spectralSlow = Helpers.summariseAggregate(metrics.threat and metrics.threat.spectralSlow),
+            momentum = Helpers.summariseAggregate(metrics.threat and metrics.threat.momentum),
+            volatility = Helpers.summariseAggregate(metrics.threat and metrics.threat.volatility),
+            stability = Helpers.summariseAggregate(metrics.threat and metrics.threat.stability),
+            acceleration = Helpers.summariseAggregate(metrics.threat and metrics.threat.acceleration),
+            jerk = Helpers.summariseAggregate(metrics.threat and metrics.threat.jerk),
+            detectionBoost = Helpers.summariseAggregate(metrics.threat and metrics.threat.detectionBoost),
+            tempo = Helpers.summariseAggregate(metrics.threat and metrics.threat.tempo),
+            momentumBoost = Helpers.summariseAggregate(metrics.threat and metrics.threat.momentumBoost),
+            readinessMomentum = Helpers.summariseAggregate(metrics.threat and metrics.threat.readinessMomentum),
+            detectionMomentumBoost = Helpers.summariseAggregate(metrics.threat and metrics.threat.detectionMomentumBoost),
+            scheduleSlackScale = Helpers.summariseAggregate(metrics.threat and metrics.threat.scheduleSlackScale),
+            momentumReady = Helpers.summariseAggregate(metrics.threat and metrics.threat.momentumReady),
+            volatilityPenalty = Helpers.summariseAggregate(metrics.threat and metrics.threat.volatilityPenalty),
+            stabilityBoost = Helpers.summariseAggregate(metrics.threat and metrics.threat.stabilityBoost),
+            loadBoost = Helpers.summariseAggregate(metrics.threat and metrics.threat.loadBoost),
+            budget = Helpers.summariseAggregate(metrics.threat and metrics.threat.budget),
+            budgetPressure = Helpers.summariseAggregate(metrics.threat and metrics.threat.budgetPressure),
+            budgetRatio = Helpers.summariseAggregate(metrics.threat and metrics.threat.budgetRatio),
+            readiness = Helpers.summariseAggregate(metrics.threat and metrics.threat.readiness),
+            latencyGap = Helpers.summariseAggregate(metrics.threat and metrics.threat.latencyGap),
+            horizon = Helpers.summariseAggregate(metrics.threat and metrics.threat.horizon),
+            budgetConfidenceGain = Helpers.summariseAggregate(metrics.threat and metrics.threat.budgetConfidenceGain),
+            budgetReady = Helpers.summariseAggregate(metrics.threat and metrics.threat.budgetReady),
+            statusCounts = Helpers.cloneCounts(metrics.threat and metrics.threat.statusCounts),
+            transitions = metrics.threat and metrics.threat.transitions or 0,
         },
         quantiles = {
-            commitLatency = summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.commitLatency),
-            scheduleLookahead = summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.scheduleLookahead),
+            commitLatency = Helpers.summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.commitLatency),
+            scheduleLookahead = Helpers.summariseQuantileEstimator(metrics.quantiles and metrics.quantiles.scheduleLookahead),
         },
         adaptiveState = {
             reactionBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or 0,
@@ -730,11 +2319,11 @@ function TelemetryAnalytics.adjust(leadDelta)
     local desired = 0
     if smartTuningState and smartTuningState.enabled then
         desired = 0
-    elseif isFiniteNumber(leadDelta) then
-        desired = clampAdaptive(-leadDelta)
+    elseif Helpers.isFiniteNumber(leadDelta) then
+        desired = Helpers.clampAdaptive(-leadDelta)
     end
 
-    adaptive.reactionBias = emaScalar(adaptive.reactionBias, desired, TELEMETRY_ADAPTIVE_ALPHA)
+    adaptive.reactionBias = Helpers.emaScalar(adaptive.reactionBias, desired, TELEMETRY_ADAPTIVE_ALPHA)
     adaptive.lastUpdate = os.clock()
 end
 
@@ -744,36 +2333,36 @@ function TelemetryAnalytics.recordSchedule(event)
         return
     end
 
-    incrementCounter("schedule", 1)
+    Helpers.incrementCounter("schedule", 1)
 
-    updateAggregate(metrics.schedule.lead, event.lead)
-    updateAggregate(metrics.schedule.slack, event.slack)
-    updateAggregate(metrics.schedule.eta, event.eta)
-    updateAggregate(metrics.schedule.predictedImpact, event.predictedImpact)
-    updateAggregate(metrics.schedule.adaptiveBias, event.adaptiveBias)
+    Helpers.updateAggregate(metrics.schedule.lead, event.lead)
+    Helpers.updateAggregate(metrics.schedule.slack, event.slack)
+    Helpers.updateAggregate(metrics.schedule.eta, event.eta)
+    Helpers.updateAggregate(metrics.schedule.predictedImpact, event.predictedImpact)
+    Helpers.updateAggregate(metrics.schedule.adaptiveBias, event.adaptiveBias)
 
     if metrics.quantiles then
-        updateQuantileEstimator(metrics.quantiles.scheduleLookahead, event.eta)
+        Helpers.updateQuantileEstimator(metrics.quantiles.scheduleLookahead, event.eta)
     end
 
     if event.reason then
-        incrementCount(metrics.schedule.reasons, event.reason, 1)
+        Helpers.incrementCount(metrics.schedule.reasons, event.reason, 1)
     end
 
-    if isFiniteNumber(event.activationLatency) then
-        updateAggregate(metrics.latency.activation, event.activationLatency)
+    if Helpers.isFiniteNumber(event.activationLatency) then
+        Helpers.updateAggregate(metrics.latency.activation, event.activationLatency)
     end
 
     if typeof(event.smartTuning) == "table" then
-        if isFiniteNumber(event.smartTuning.scheduleLead) then
-            updateAggregate(metrics.schedule.smartLead, event.smartTuning.scheduleLead)
+        if Helpers.isFiniteNumber(event.smartTuning.scheduleLead) then
+            Helpers.updateAggregate(metrics.schedule.smartLead, event.smartTuning.scheduleLead)
         end
 
         local applied = event.smartTuning.applied
         if typeof(applied) == "table" then
-            updateAggregate(metrics.schedule.smartReaction, applied.reactionBias)
-            updateAggregate(metrics.schedule.smartSlack, applied.scheduleSlack)
-            updateAggregate(metrics.schedule.smartConfidence, applied.confidencePadding)
+            Helpers.updateAggregate(metrics.schedule.smartReaction, applied.reactionBias)
+            Helpers.updateAggregate(metrics.schedule.smartSlack, applied.scheduleSlack)
+            Helpers.updateAggregate(metrics.schedule.smartConfidence, applied.confidencePadding)
         end
     end
 
@@ -794,7 +2383,7 @@ function TelemetryAnalytics.recordSchedule(event)
 end
 
 function TelemetryAnalytics.recordScheduleCleared(event)
-    incrementCounter("scheduleCleared", 1)
+    Helpers.incrementCounter("scheduleCleared", 1)
     local metrics = TelemetryAnalytics.metrics
     if typeof(event) ~= "table" or typeof(metrics) ~= "table" then
         return
@@ -806,31 +2395,31 @@ function TelemetryAnalytics.recordScheduleCleared(event)
         local entry = typeof(inFlight) == "table" and inFlight[ballId] or nil
         if entry then
             local eventTime = event.time or os.clock()
-            if isFiniteNumber(eventTime) and isFiniteNumber(entry.time) then
-                updateAggregate(metrics.timeline.scheduleLifetime, eventTime - entry.time)
-            elseif isFiniteNumber(event.timeSinceUpdate) then
-                updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
+            if Helpers.isFiniteNumber(eventTime) and Helpers.isFiniteNumber(entry.time) then
+                Helpers.updateAggregate(metrics.timeline.scheduleLifetime, eventTime - entry.time)
+            elseif Helpers.isFiniteNumber(event.timeSinceUpdate) then
+                Helpers.updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
             end
             inFlight[ballId] = nil
-        elseif isFiniteNumber(event.timeSinceUpdate) then
-            updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
+        elseif Helpers.isFiniteNumber(event.timeSinceUpdate) then
+            Helpers.updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
         end
-    elseif isFiniteNumber(event.timeSinceUpdate) then
-        updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
+    elseif Helpers.isFiniteNumber(event.timeSinceUpdate) then
+        Helpers.updateAggregate(metrics.timeline.scheduleLifetime, event.timeSinceUpdate)
     end
 
     if event.reason ~= "pressed" then
         metrics.cancellations.total += 1
-        incrementCount(metrics.cancellations.reasonCounts, event.reason or "unknown", 1)
+        Helpers.incrementCount(metrics.cancellations.reasonCounts, event.reason or "unknown", 1)
 
-        if isFiniteNumber(event.timeSinceUpdate) and event.timeSinceUpdate >= SMART_PRESS_STALE_SECONDS then
+        if Helpers.isFiniteNumber(event.timeSinceUpdate) and event.timeSinceUpdate >= Context.smartPress.staleSeconds then
             metrics.cancellations.stale += 1
         end
     end
 end
 
 function TelemetryAnalytics.formatLatencyText(seconds: number?, pending: boolean?)
-    if not isFiniteNumber(seconds) then
+    if not Helpers.isFiniteNumber(seconds) then
         return "n/a"
     end
 
@@ -852,7 +2441,7 @@ function TelemetryAnalytics.computeLatencyReadouts(telemetry: TelemetryState?, n
     if telemetry.targetDetectedAt then
         reactionLatency = math.max(now - telemetry.targetDetectedAt, 0)
         reactionPending = true
-    elseif isFiniteNumber(telemetry.lastReactionLatency) then
+    elseif Helpers.isFiniteNumber(telemetry.lastReactionLatency) then
         reactionLatency = telemetry.lastReactionLatency
     end
 
@@ -861,7 +2450,7 @@ function TelemetryAnalytics.computeLatencyReadouts(telemetry: TelemetryState?, n
     if telemetry.targetDetectedAt and telemetry.decisionAt then
         decisionLatency = math.max(telemetry.decisionAt - telemetry.targetDetectedAt, 0)
         decisionPending = telemetry.lastDecisionLatency == nil
-    elseif isFiniteNumber(telemetry.lastDecisionLatency) then
+    elseif Helpers.isFiniteNumber(telemetry.lastDecisionLatency) then
         decisionLatency = telemetry.lastDecisionLatency
     end
 
@@ -870,7 +2459,7 @@ function TelemetryAnalytics.computeLatencyReadouts(telemetry: TelemetryState?, n
     if telemetry.decisionAt then
         commitLatency = math.max(now - telemetry.decisionAt, 0)
         commitPending = telemetry.lastDecisionToPressLatency == nil
-    elseif isFiniteNumber(telemetry.lastDecisionToPressLatency) then
+    elseif Helpers.isFiniteNumber(telemetry.lastDecisionToPressLatency) then
         commitLatency = telemetry.lastDecisionToPressLatency
     end
 
@@ -881,6 +2470,17 @@ end
 
 function TelemetryAnalytics.applyPressLatencyTelemetry(telemetry: TelemetryState?, pressEvent, now: number)
     if not telemetry then
+        if pressEvent then
+            if pressEvent.reactionTime == nil then
+                pressEvent.reactionTime = 0
+            end
+            if pressEvent.decisionTime == nil then
+                pressEvent.decisionTime = 0
+            end
+            if pressEvent.decisionToPressTime == nil then
+                pressEvent.decisionToPressTime = 0
+            end
+        end
         return
     end
 
@@ -913,51 +2513,171 @@ function TelemetryAnalytics.applyPressLatencyTelemetry(telemetry: TelemetryState
 end
 
 function TelemetryAnalytics.recordLatency(event)
-    incrementCounter("latency", 1)
+    Helpers.incrementCounter("latency", 1)
     local metrics = TelemetryAnalytics.metrics
     if typeof(event) ~= "table" or typeof(metrics) ~= "table" then
         return
     end
 
     if event.source == "remote" then
-        incrementCounter("latencyRemote", 1)
+        Helpers.incrementCounter("latencyRemote", 1)
     elseif event.source == "local" then
-        incrementCounter("latencyLocal", 1)
+        Helpers.incrementCounter("latencyLocal", 1)
     end
 
     if event.accepted then
-        incrementCounter("latencyAccepted", 1)
-        updateAggregate(metrics.latency.accepted, event.value)
+        Helpers.incrementCounter("latencyAccepted", 1)
+        Helpers.updateAggregate(metrics.latency.accepted, event.value)
 
         if event.source == "remote" then
-            updateAggregate(metrics.latency.remoteAccepted, event.value)
+            Helpers.updateAggregate(metrics.latency.remoteAccepted, event.value)
         elseif event.source == "local" then
-            updateAggregate(metrics.latency.localAccepted, event.value)
+            Helpers.updateAggregate(metrics.latency.localAccepted, event.value)
         end
     else
-        incrementCounter("latencyRejected", 1)
+        Helpers.incrementCounter("latencyRejected", 1)
     end
 
-    if isFiniteNumber(event.activationLatency) then
-        updateAggregate(metrics.latency.activation, event.activationLatency)
+    if Helpers.isFiniteNumber(event.activationLatency) then
+        Helpers.updateAggregate(metrics.latency.activation, event.activationLatency)
     end
 end
 
 function TelemetryAnalytics.recordSuccess(event)
-    incrementCounter("success", 1)
+    Helpers.incrementCounter("success", 1)
     local metrics = TelemetryAnalytics.metrics
     if typeof(event) ~= "table" or typeof(metrics) ~= "table" then
         return
     end
 
-    if event.accepted and isFiniteNumber(event.latency) then
+    if event.accepted and Helpers.isFiniteNumber(event.latency) then
         metrics.success.acceptedCount += 1
-        updateAggregate(metrics.success.latency, event.latency)
+        Helpers.updateAggregate(metrics.success.latency, event.latency)
+    end
+end
+
+function TelemetryAnalytics.recordThreat(event)
+    Helpers.incrementCounter("threat", 1)
+    local metrics = TelemetryAnalytics.metrics
+    if typeof(event) ~= "table" or typeof(metrics) ~= "table" then
+        return
+    end
+
+    local threat = metrics.threat
+    if typeof(threat) ~= "table" then
+        return
+    end
+
+    if Helpers.isFiniteNumber(event.score) then
+        Helpers.updateAggregate(threat.score, event.score)
+    end
+    if Helpers.isFiniteNumber(event.severity) then
+        Helpers.updateAggregate(threat.severity, event.severity)
+    end
+    if Helpers.isFiniteNumber(event.intensity) then
+        Helpers.updateAggregate(threat.intensity, event.intensity)
+    elseif Helpers.isFiniteNumber(event.score) then
+        Helpers.updateAggregate(threat.intensity, math.clamp(event.score, 0, 1))
+    end
+    if Helpers.isFiniteNumber(event.urgency) then
+        Helpers.updateAggregate(threat.urgency, event.urgency)
+    end
+    if Helpers.isFiniteNumber(event.logistic) then
+        Helpers.updateAggregate(threat.logistic, event.logistic)
+    end
+    if Helpers.isFiniteNumber(event.distance) then
+        Helpers.updateAggregate(threat.distance, event.distance)
+    end
+    if Helpers.isFiniteNumber(event.speed) then
+        Helpers.updateAggregate(threat.speed, event.speed)
+    end
+    if Helpers.isFiniteNumber(event.confidence) then
+        Helpers.updateAggregate(threat.confidence, event.confidence)
+    end
+    if Helpers.isFiniteNumber(event.detectionConfidence) then
+        Helpers.updateAggregate(threat.detectionConfidence, event.detectionConfidence)
+    end
+    if Helpers.isFiniteNumber(event.load) then
+        Helpers.updateAggregate(threat.load, event.load)
+    end
+    if Helpers.isFiniteNumber(event.spectralFast) then
+        Helpers.updateAggregate(threat.spectralFast, event.spectralFast)
+    end
+    if Helpers.isFiniteNumber(event.spectralMedium) then
+        Helpers.updateAggregate(threat.spectralMedium, event.spectralMedium)
+    end
+    if Helpers.isFiniteNumber(event.spectralSlow) then
+        Helpers.updateAggregate(threat.spectralSlow, event.spectralSlow)
+    end
+    if Helpers.isFiniteNumber(event.momentum) then
+        Helpers.updateAggregate(threat.momentum, event.momentum)
+    end
+    if Helpers.isFiniteNumber(event.volatility) then
+        Helpers.updateAggregate(threat.volatility, event.volatility)
+    end
+    if Helpers.isFiniteNumber(event.stability) then
+        Helpers.updateAggregate(threat.stability, event.stability)
+    end
+    if Helpers.isFiniteNumber(event.acceleration) then
+        Helpers.updateAggregate(threat.acceleration, event.acceleration)
+    end
+    if Helpers.isFiniteNumber(event.jerk) then
+        Helpers.updateAggregate(threat.jerk, event.jerk)
+    end
+    if Helpers.isFiniteNumber(event.detectionBoost) then
+        Helpers.updateAggregate(threat.detectionBoost, event.detectionBoost)
+    end
+    if Helpers.isFiniteNumber(event.tempo) then
+        Helpers.updateAggregate(threat.tempo, event.tempo)
+    end
+    if Helpers.isFiniteNumber(event.momentumBoost) then
+        Helpers.updateAggregate(threat.momentumBoost, event.momentumBoost)
+    end
+    if Helpers.isFiniteNumber(event.readinessMomentum) then
+        Helpers.updateAggregate(threat.readinessMomentum, event.readinessMomentum)
+    end
+    if Helpers.isFiniteNumber(event.detectionMomentumBoost) then
+        Helpers.updateAggregate(threat.detectionMomentumBoost, event.detectionMomentumBoost)
+    end
+    if Helpers.isFiniteNumber(event.scheduleSlackScale) then
+        Helpers.updateAggregate(threat.scheduleSlackScale, event.scheduleSlackScale)
+    end
+    if Helpers.isFiniteNumber(event.volatilityPenalty) then
+        Helpers.updateAggregate(threat.volatilityPenalty, event.volatilityPenalty)
+    end
+    if Helpers.isFiniteNumber(event.stabilityBoost) then
+        Helpers.updateAggregate(threat.stabilityBoost, event.stabilityBoost)
+    end
+    if Helpers.isFiniteNumber(event.loadBoost) then
+        Helpers.updateAggregate(threat.loadBoost, event.loadBoost)
+    end
+    Helpers.updateAggregate(threat.momentumReady, event.momentumReady and 1 or 0)
+    if Helpers.isFiniteNumber(event.budget) then
+        Helpers.updateAggregate(threat.budget, event.budget)
+    end
+    if Helpers.isFiniteNumber(event.horizon) then
+        Helpers.updateAggregate(threat.horizon, event.horizon)
+    end
+    if Helpers.isFiniteNumber(event.latencyGap) then
+        Helpers.updateAggregate(threat.latencyGap, event.latencyGap)
+    end
+    Helpers.updateAggregate(threat.budgetPressure, event.budgetPressure or 0)
+    Helpers.updateAggregate(threat.budgetRatio, event.budgetRatio or 0)
+    Helpers.updateAggregate(threat.readiness, event.readiness or 0)
+    Helpers.updateAggregate(threat.budgetConfidenceGain, event.budgetConfidenceGain or 0)
+    Helpers.updateAggregate(threat.budgetReady, event.budgetReady and 1 or 0)
+
+    if event.status then
+        threat.statusCounts[event.status] = (threat.statusCounts[event.status] or 0) + 1
+    end
+
+    if Helpers.isFiniteNumber(event.transitions) then
+        threat.transitions = math.max(threat.transitions or 0, event.transitions)
     end
 end
 
 function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
-    incrementCounter("press", 1)
+    Helpers.incrementCounter("press", 1)
     local metrics = TelemetryAnalytics.metrics
     if typeof(event) ~= "table" or typeof(metrics) ~= "table" then
         return
@@ -978,7 +2698,7 @@ function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
         metrics.press.scheduledCount += 1
 
         if scheduledSnapshot.reason then
-            incrementCount(metrics.press.scheduledReasons, scheduledSnapshot.reason, 1)
+            Helpers.incrementCount(metrics.press.scheduledReasons, scheduledSnapshot.reason, 1)
             if scheduledSnapshot.reason == "immediate-press" then
                 isImmediate = true
             end
@@ -986,38 +2706,38 @@ function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
 
         local eventTime = event.time or os.clock()
         local scheduleTime = scheduledSnapshot.scheduleTime
-        if not isFiniteNumber(scheduleTime) then
+        if not Helpers.isFiniteNumber(scheduleTime) then
             scheduleTime = eventTime
         end
 
         local pressAt = scheduledSnapshot.pressAt
-        if not isFiniteNumber(pressAt) then
+        if not Helpers.isFiniteNumber(pressAt) then
             pressAt = scheduleTime
         end
 
         local actualWait = nil
-        if isFiniteNumber(eventTime) and isFiniteNumber(scheduleTime) then
+        if Helpers.isFiniteNumber(eventTime) and Helpers.isFiniteNumber(scheduleTime) then
             actualWait = eventTime - scheduleTime
-            updateAggregate(metrics.press.actualWait, actualWait)
-            updateAggregate(metrics.timeline.scheduleLifetime, actualWait)
+            Helpers.updateAggregate(metrics.press.actualWait, actualWait)
+            Helpers.updateAggregate(metrics.timeline.scheduleLifetime, actualWait)
         end
 
         local expectedWait = 0
-        if isFiniteNumber(pressAt) and isFiniteNumber(scheduleTime) then
+        if Helpers.isFiniteNumber(pressAt) and Helpers.isFiniteNumber(scheduleTime) then
             expectedWait = math.max(pressAt - scheduleTime, 0)
         end
 
         if actualWait ~= nil then
             local waitDelta = actualWait - expectedWait
-            updateAggregate(metrics.press.waitDelta, waitDelta)
+            Helpers.updateAggregate(metrics.press.waitDelta, waitDelta)
         end
 
         local predictedImpact = scheduledSnapshot.predictedImpact
-        if isFiniteNumber(predictedImpact) and actualWait ~= nil then
+        if Helpers.isFiniteNumber(predictedImpact) and actualWait ~= nil then
             local achievedLead = predictedImpact - actualWait
-            updateAggregate(metrics.timeline.achievedLead, achievedLead)
+            Helpers.updateAggregate(metrics.timeline.achievedLead, achievedLead)
             leadDelta = achievedLead - (scheduledSnapshot.lead or 0)
-            updateAggregate(metrics.timeline.leadDelta, leadDelta)
+            Helpers.updateAggregate(metrics.timeline.leadDelta, leadDelta)
         end
 
         if scheduledSnapshot.ballId then
@@ -1034,41 +2754,41 @@ function TelemetryAnalytics.recordPress(event, scheduledSnapshot)
         metrics.press.immediateCount += 1
     end
 
-    if isFiniteNumber(event.activationLatency) then
-        updateAggregate(metrics.press.activationLatency, event.activationLatency)
-        updateAggregate(metrics.latency.activation, event.activationLatency)
+    if Helpers.isFiniteNumber(event.activationLatency) then
+        Helpers.updateAggregate(metrics.press.activationLatency, event.activationLatency)
+        Helpers.updateAggregate(metrics.latency.activation, event.activationLatency)
     end
 
-    if isFiniteNumber(event.adaptiveBias) then
-        updateAggregate(metrics.press.adaptiveBias, event.adaptiveBias)
+    if Helpers.isFiniteNumber(event.adaptiveBias) then
+        Helpers.updateAggregate(metrics.press.adaptiveBias, event.adaptiveBias)
     end
 
-    if isFiniteNumber(event.reactionTime) then
-        updateAggregate(metrics.press.reactionTime, event.reactionTime)
+    if Helpers.isFiniteNumber(event.reactionTime) then
+        Helpers.updateAggregate(metrics.press.reactionTime, event.reactionTime)
     end
 
-    if isFiniteNumber(event.decisionTime) then
-        updateAggregate(metrics.press.decisionTime, event.decisionTime)
+    if Helpers.isFiniteNumber(event.decisionTime) then
+        Helpers.updateAggregate(metrics.press.decisionTime, event.decisionTime)
     end
 
-    if isFiniteNumber(event.decisionToPressTime) then
-        updateAggregate(metrics.press.decisionToPressTime, event.decisionToPressTime)
+    if Helpers.isFiniteNumber(event.decisionToPressTime) then
+        Helpers.updateAggregate(metrics.press.decisionToPressTime, event.decisionToPressTime)
     end
 
-    if metrics.quantiles and isFiniteNumber(event.decisionToPressTime) then
-        updateQuantileEstimator(metrics.quantiles.commitLatency, event.decisionToPressTime)
+    if metrics.quantiles and Helpers.isFiniteNumber(event.decisionToPressTime) then
+        Helpers.updateQuantileEstimator(metrics.quantiles.commitLatency, event.decisionToPressTime)
     end
 
     if typeof(event.smartTuning) == "table" then
-        if isFiniteNumber(event.smartTuning.latency) then
-            updateAggregate(metrics.press.smartLatency, event.smartTuning.latency)
+        if Helpers.isFiniteNumber(event.smartTuning.latency) then
+            Helpers.updateAggregate(metrics.press.smartLatency, event.smartTuning.latency)
         end
 
         local applied = event.smartTuning.applied
         if typeof(applied) == "table" then
-            updateAggregate(metrics.press.smartReaction, applied.reactionBias)
-            updateAggregate(metrics.press.smartSlack, applied.scheduleSlack)
-            updateAggregate(metrics.press.smartConfidence, applied.confidencePadding)
+            Helpers.updateAggregate(metrics.press.smartReaction, applied.reactionBias)
+            Helpers.updateAggregate(metrics.press.smartSlack, applied.scheduleSlack)
+            Helpers.updateAggregate(metrics.press.smartConfidence, applied.confidencePadding)
         end
     end
 
@@ -1105,6 +2825,7 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.pressCount = counters.press or 0
     summary.scheduleCount = counters.schedule or 0
     summary.latencyCount = counters.latency or 0
+    summary.threatCount = counters.threat or 0
     summary.immediateCount = stats.press and stats.press.immediateCount or 0
     if summary.pressCount > 0 then
         summary.immediateRate = summary.immediateCount / summary.pressCount
@@ -1124,6 +2845,36 @@ function TelemetryAnalytics.computeSummary(stats)
     summary.adaptiveBias = stats.adaptiveState and stats.adaptiveState.reactionBias or 0
     summary.cancellationCount = stats.cancellations and stats.cancellations.total or 0
     summary.topCancellationReason, summary.topCancellationCount = TelemetryAnalytics.selectTopReason(stats.cancellations and stats.cancellations.reasonCounts)
+    summary.averageThreatScore = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.score)
+    summary.averageThreatSeverity = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.severity)
+    summary.averageThreatIntensity = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.intensity)
+    summary.averageThreatUrgency = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.urgency)
+    summary.averageThreatLogistic = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.logistic)
+    summary.averageThreatDistance = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.distance)
+    summary.averageThreatSpeed = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.speed)
+    summary.averageThreatConfidence = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.confidence)
+    summary.averageDetectionConfidence = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.detectionConfidence)
+    summary.averageThreatLoad = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.load)
+    summary.averageThreatSpectralFast = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.spectralFast)
+    summary.averageThreatSpectralMedium = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.spectralMedium)
+    summary.averageThreatSpectralSlow = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.spectralSlow)
+    summary.averageThreatMomentum = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.momentum)
+    summary.averageThreatVolatility = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.volatility)
+    summary.averageThreatStability = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.stability)
+    summary.averageThreatAcceleration = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.acceleration)
+    summary.averageThreatJerk = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.jerk)
+    summary.averageThreatBoost = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.detectionBoost)
+    summary.averageThreatTempo = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.tempo)
+    summary.averageThreatBudget = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budget)
+    summary.averageThreatBudgetPressure = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetPressure)
+    summary.averageThreatBudgetRatio = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetRatio)
+    summary.averageThreatReadiness = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.readiness)
+    summary.averageThreatLatencyGap = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.latencyGap)
+    summary.averageThreatHorizon = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.horizon)
+    summary.averageThreatBudgetConfidenceGain = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetConfidenceGain)
+    summary.averageThreatBudgetReadyRate = TelemetryAnalytics.aggregateMean(stats.threat and stats.threat.budgetReady)
+    summary.topThreatStatus, summary.topThreatStatusCount = TelemetryAnalytics.selectTopReason(stats.threat and stats.threat.statusCounts)
+    summary.threatTransitions = stats.threat and stats.threat.transitions or 0
 
     if stats.quantiles then
         local commit = stats.quantiles.commitLatency
@@ -1186,8 +2937,8 @@ function TelemetryAnalytics.buildRecommendations(stats, summary)
     end
 
     local commitP99 = summary.commitLatencyP99
-    local commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
-    if isFiniteNumber(commitP99) and commitP99 > commitTarget then
+    local commitTarget = Defaults.SMART_TUNING.commitP99Target or 0.01
+    if Helpers.isFiniteNumber(commitP99) and commitP99 > commitTarget then
         table.insert(
             recommendations,
             string.format(
@@ -1198,9 +2949,9 @@ function TelemetryAnalytics.buildRecommendations(stats, summary)
         )
     end
 
-    local lookaheadGoal = DEFAULT_SMART_TUNING.lookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or 0
+    local lookaheadGoal = Defaults.SMART_TUNING.lookaheadGoal or Defaults.CONFIG.pressLookaheadGoal or 0
     local lookaheadP10 = summary.scheduleLookaheadP10
-    if isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
+    if Helpers.isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and Helpers.isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
         table.insert(
             recommendations,
             string.format(
@@ -1259,9 +3010,20 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
     stats = stats or TelemetryAnalytics.clone()
     summary = summary or TelemetryAnalytics.computeSummary(stats)
 
-    local minSamples = options.minSamples or TELEMETRY_ADJUSTMENT_MIN_SAMPLES
-    local leadTolerance = options.leadTolerance or TELEMETRY_ADJUSTMENT_LEAD_TOLERANCE
-    local waitTolerance = options.waitTolerance or TELEMETRY_ADJUSTMENT_WAIT_TOLERANCE
+    local minSamples = options.minSamples
+    if not Helpers.isFiniteNumber(minSamples) or minSamples < 0 then
+        minSamples = TELEMETRY_ADJUSTMENT_MIN_SAMPLES or 4
+    end
+
+    local leadTolerance = options.leadTolerance
+    if not Helpers.isFiniteNumber(leadTolerance) or leadTolerance < 0 then
+        leadTolerance = TELEMETRY_ADJUSTMENT_LEAD_TOLERANCE or 0.004
+    end
+
+    local waitTolerance = options.waitTolerance
+    if not Helpers.isFiniteNumber(waitTolerance) or waitTolerance < 0 then
+        waitTolerance = TELEMETRY_ADJUSTMENT_WAIT_TOLERANCE or 0.003
+    end
 
     local counters = stats.counters or {}
     local pressCount = summary.pressCount or 0
@@ -1332,7 +3094,7 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
     end
 
     local leadDelta = summary.leadDeltaMean or 0
-    if pressCount >= minSamples and isFiniteNumber(leadDelta) then
+    if pressCount >= minSamples and Helpers.isFiniteNumber(leadDelta) then
         local magnitude = math.abs(leadDelta)
         if magnitude <= leadTolerance then
             addStatus("timing", "info", "Press lead aligns with configured targets.", { leadDelta = leadDelta })
@@ -1352,7 +3114,7 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
     end
 
     local waitDelta = summary.averageWaitDelta or 0
-    if pressCount >= minSamples and isFiniteNumber(waitDelta) then
+    if pressCount >= minSamples and Helpers.isFiniteNumber(waitDelta) then
         local magnitude = math.abs(waitDelta)
         if magnitude <= waitTolerance then
             addStatus("slack", "info", "Schedule slack is balanced with observed waits.", { waitDelta = waitDelta })
@@ -1372,7 +3134,7 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
     end
 
     local averageLatency = summary.averageLatency or 0
-    if isFiniteNumber(averageLatency) and averageLatency > 0 then
+    if Helpers.isFiniteNumber(averageLatency) and averageLatency > 0 then
         local latencySeverity = "info"
         local message = string.format("Average activation latency is %.0f ms.", averageLatency * 1000)
         if averageLatency >= 0.22 then
@@ -1423,10 +3185,10 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
         )
     end
 
-    local commitTarget = options.commitTarget or DEFAULT_SMART_TUNING.commitP99Target or 0.01
+    local commitTarget = options.commitTarget or Defaults.SMART_TUNING.commitP99Target or 0.01
     local commitSamples = summary.commitLatencySampleCount or 0
     local commitP99 = summary.commitLatencyP99
-    if commitSamples > 0 and isFiniteNumber(commitP99) and commitTarget > 0 then
+    if commitSamples > 0 and Helpers.isFiniteNumber(commitP99) and commitTarget > 0 then
         local level = "info"
         local message = string.format("Commit latency P99 is %.0f ms (target %.0f ms).", commitP99 * 1000, commitTarget * 1000)
         if commitP99 > commitTarget then
@@ -1438,10 +3200,10 @@ function TelemetryAnalytics.computeInsights(stats, summary, adjustments, options
         addStatus("commit-latency", level, message, { commitP99 = commitP99, target = commitTarget, samples = commitSamples })
     end
 
-    local lookaheadGoal = options.lookaheadGoal or DEFAULT_SMART_TUNING.lookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or 0
+    local lookaheadGoal = options.lookaheadGoal or Defaults.SMART_TUNING.lookaheadGoal or Defaults.CONFIG.pressLookaheadGoal or 0
     local lookaheadSamples = summary.scheduleLookaheadSampleCount or 0
     local lookaheadP10 = summary.scheduleLookaheadP10
-    if lookaheadSamples > 0 and isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and isFiniteNumber(lookaheadP10) then
+    if lookaheadSamples > 0 and Helpers.isFiniteNumber(lookaheadGoal) and lookaheadGoal > 0 and Helpers.isFiniteNumber(lookaheadP10) then
         local level = "info"
         local message = string.format("Lookahead P10 is %.0f ms (goal %.0f ms).", lookaheadP10 * 1000, lookaheadGoal * 1000)
         if lookaheadP10 < lookaheadGoal then
@@ -1507,20 +3269,20 @@ local smartTuningState = {
 
 local autoTuningState = {
     enabled = false,
-    intervalSeconds = DEFAULT_AUTO_TUNING.intervalSeconds,
-    minSamples = DEFAULT_AUTO_TUNING.minSamples,
-    allowWhenSmartTuning = DEFAULT_AUTO_TUNING.allowWhenSmartTuning,
-    dryRun = DEFAULT_AUTO_TUNING.dryRun,
-    leadGain = DEFAULT_AUTO_TUNING.leadGain,
-    slackGain = DEFAULT_AUTO_TUNING.slackGain,
-    latencyGain = DEFAULT_AUTO_TUNING.latencyGain,
-    leadTolerance = DEFAULT_AUTO_TUNING.leadTolerance,
-    waitTolerance = DEFAULT_AUTO_TUNING.waitTolerance,
-    maxReactionBias = DEFAULT_AUTO_TUNING.maxReactionBias,
-    maxScheduleSlack = DEFAULT_AUTO_TUNING.maxScheduleSlack,
-    maxActivationLatency = DEFAULT_AUTO_TUNING.maxActivationLatency,
-    minDelta = DEFAULT_AUTO_TUNING.minDelta,
-    maxAdjustmentsPerRun = DEFAULT_AUTO_TUNING.maxAdjustmentsPerRun,
+    intervalSeconds = Defaults.AUTO_TUNING.intervalSeconds,
+    minSamples = Defaults.AUTO_TUNING.minSamples,
+    allowWhenSmartTuning = Defaults.AUTO_TUNING.allowWhenSmartTuning,
+    dryRun = Defaults.AUTO_TUNING.dryRun,
+    leadGain = Defaults.AUTO_TUNING.leadGain,
+    slackGain = Defaults.AUTO_TUNING.slackGain,
+    latencyGain = Defaults.AUTO_TUNING.latencyGain,
+    leadTolerance = Defaults.AUTO_TUNING.leadTolerance,
+    waitTolerance = Defaults.AUTO_TUNING.waitTolerance,
+    maxReactionBias = Defaults.AUTO_TUNING.maxReactionBias,
+    maxScheduleSlack = Defaults.AUTO_TUNING.maxScheduleSlack,
+    maxActivationLatency = Defaults.AUTO_TUNING.maxActivationLatency,
+    minDelta = Defaults.AUTO_TUNING.minDelta,
+    maxAdjustmentsPerRun = Defaults.AUTO_TUNING.maxAdjustmentsPerRun,
     lastRun = 0,
     lastStatus = nil :: string?,
     lastAdjustments = nil :: { [string]: any }?,
@@ -1529,12 +3291,12 @@ local autoTuningState = {
     lastSummary = nil :: { [string]: any }?,
 }
 
-local function normalizeAutoTuningConfig(value)
+function Helpers.normalizeAutoTuningConfig(value)
     if value == false then
         return false
     end
 
-    local base = Util.deepCopy(DEFAULT_AUTO_TUNING)
+    local base = Util.deepCopy(Defaults.AUTO_TUNING)
 
     if value == nil then
         return base
@@ -1556,21 +3318,21 @@ local function normalizeAutoTuningConfig(value)
     end
 
     if base.intervalSeconds ~= nil then
-        if not isFiniteNumber(base.intervalSeconds) or base.intervalSeconds < 0 then
-            base.intervalSeconds = DEFAULT_AUTO_TUNING.intervalSeconds
+        if not Helpers.isFiniteNumber(base.intervalSeconds) or base.intervalSeconds < 0 then
+            base.intervalSeconds = Defaults.AUTO_TUNING.intervalSeconds
         end
     end
     if base.minSamples ~= nil then
-        if not isFiniteNumber(base.minSamples) or base.minSamples < 1 then
-            base.minSamples = DEFAULT_AUTO_TUNING.minSamples
+        if not Helpers.isFiniteNumber(base.minSamples) or base.minSamples < 1 then
+            base.minSamples = Defaults.AUTO_TUNING.minSamples
         end
     end
-    if base.minDelta ~= nil and (not isFiniteNumber(base.minDelta) or base.minDelta < 0) then
-        base.minDelta = DEFAULT_AUTO_TUNING.minDelta
+    if base.minDelta ~= nil and (not Helpers.isFiniteNumber(base.minDelta) or base.minDelta < 0) then
+        base.minDelta = Defaults.AUTO_TUNING.minDelta
     end
     if base.maxAdjustmentsPerRun ~= nil then
-        if not isFiniteNumber(base.maxAdjustmentsPerRun) or base.maxAdjustmentsPerRun < 0 then
-            base.maxAdjustmentsPerRun = DEFAULT_AUTO_TUNING.maxAdjustmentsPerRun
+        if not Helpers.isFiniteNumber(base.maxAdjustmentsPerRun) or base.maxAdjustmentsPerRun < 0 then
+            base.maxAdjustmentsPerRun = Defaults.AUTO_TUNING.maxAdjustmentsPerRun
         end
     end
 
@@ -1581,38 +3343,38 @@ local function normalizeAutoTuningConfig(value)
     return base
 end
 
-local function syncAutoTuningState()
-    local normalized = normalizeAutoTuningConfig(config.autoTuning)
+function Helpers.syncAutoTuningState()
+    local normalized = Helpers.normalizeAutoTuningConfig(config.autoTuning)
     config.autoTuning = normalized
 
     if normalized == false then
         autoTuningState.enabled = false
-        autoTuningState.intervalSeconds = DEFAULT_AUTO_TUNING.intervalSeconds
-        autoTuningState.minSamples = DEFAULT_AUTO_TUNING.minSamples
-        autoTuningState.allowWhenSmartTuning = DEFAULT_AUTO_TUNING.allowWhenSmartTuning
-        autoTuningState.dryRun = DEFAULT_AUTO_TUNING.dryRun
-        autoTuningState.leadGain = DEFAULT_AUTO_TUNING.leadGain
-        autoTuningState.slackGain = DEFAULT_AUTO_TUNING.slackGain
-        autoTuningState.latencyGain = DEFAULT_AUTO_TUNING.latencyGain
-        autoTuningState.leadTolerance = DEFAULT_AUTO_TUNING.leadTolerance
-        autoTuningState.waitTolerance = DEFAULT_AUTO_TUNING.waitTolerance
-        autoTuningState.maxReactionBias = DEFAULT_AUTO_TUNING.maxReactionBias
-        autoTuningState.maxScheduleSlack = DEFAULT_AUTO_TUNING.maxScheduleSlack
-        autoTuningState.maxActivationLatency = DEFAULT_AUTO_TUNING.maxActivationLatency
-        autoTuningState.minDelta = DEFAULT_AUTO_TUNING.minDelta
-        autoTuningState.maxAdjustmentsPerRun = DEFAULT_AUTO_TUNING.maxAdjustmentsPerRun
+        autoTuningState.intervalSeconds = Defaults.AUTO_TUNING.intervalSeconds
+        autoTuningState.minSamples = Defaults.AUTO_TUNING.minSamples
+        autoTuningState.allowWhenSmartTuning = Defaults.AUTO_TUNING.allowWhenSmartTuning
+        autoTuningState.dryRun = Defaults.AUTO_TUNING.dryRun
+        autoTuningState.leadGain = Defaults.AUTO_TUNING.leadGain
+        autoTuningState.slackGain = Defaults.AUTO_TUNING.slackGain
+        autoTuningState.latencyGain = Defaults.AUTO_TUNING.latencyGain
+        autoTuningState.leadTolerance = Defaults.AUTO_TUNING.leadTolerance
+        autoTuningState.waitTolerance = Defaults.AUTO_TUNING.waitTolerance
+        autoTuningState.maxReactionBias = Defaults.AUTO_TUNING.maxReactionBias
+        autoTuningState.maxScheduleSlack = Defaults.AUTO_TUNING.maxScheduleSlack
+        autoTuningState.maxActivationLatency = Defaults.AUTO_TUNING.maxActivationLatency
+        autoTuningState.minDelta = Defaults.AUTO_TUNING.minDelta
+        autoTuningState.maxAdjustmentsPerRun = Defaults.AUTO_TUNING.maxAdjustmentsPerRun
         return
     end
 
-    local spec = normalized or DEFAULT_AUTO_TUNING
+    local spec = normalized or Defaults.AUTO_TUNING
     autoTuningState.enabled = spec.enabled ~= false
-    autoTuningState.intervalSeconds = spec.intervalSeconds or DEFAULT_AUTO_TUNING.intervalSeconds
-    if not isFiniteNumber(autoTuningState.intervalSeconds) or autoTuningState.intervalSeconds < 0 then
-        autoTuningState.intervalSeconds = DEFAULT_AUTO_TUNING.intervalSeconds
+    autoTuningState.intervalSeconds = spec.intervalSeconds or Defaults.AUTO_TUNING.intervalSeconds
+    if not Helpers.isFiniteNumber(autoTuningState.intervalSeconds) or autoTuningState.intervalSeconds < 0 then
+        autoTuningState.intervalSeconds = Defaults.AUTO_TUNING.intervalSeconds
     end
-    autoTuningState.minSamples = spec.minSamples or DEFAULT_AUTO_TUNING.minSamples
-    if not isFiniteNumber(autoTuningState.minSamples) or autoTuningState.minSamples < 1 then
-        autoTuningState.minSamples = DEFAULT_AUTO_TUNING.minSamples
+    autoTuningState.minSamples = spec.minSamples or Defaults.AUTO_TUNING.minSamples
+    if not Helpers.isFiniteNumber(autoTuningState.minSamples) or autoTuningState.minSamples < 1 then
+        autoTuningState.minSamples = Defaults.AUTO_TUNING.minSamples
     end
     autoTuningState.minSamples = math.floor(autoTuningState.minSamples + 0.5)
     if autoTuningState.minSamples < 1 then
@@ -1620,260 +3382,43 @@ local function syncAutoTuningState()
     end
     autoTuningState.allowWhenSmartTuning = spec.allowWhenSmartTuning == true
     autoTuningState.dryRun = spec.dryRun == true
-    autoTuningState.leadGain = spec.leadGain or DEFAULT_AUTO_TUNING.leadGain
-    autoTuningState.slackGain = spec.slackGain or DEFAULT_AUTO_TUNING.slackGain
-    autoTuningState.latencyGain = spec.latencyGain or DEFAULT_AUTO_TUNING.latencyGain
-    autoTuningState.leadTolerance = spec.leadTolerance or DEFAULT_AUTO_TUNING.leadTolerance
-    autoTuningState.waitTolerance = spec.waitTolerance or DEFAULT_AUTO_TUNING.waitTolerance
-    autoTuningState.maxReactionBias = spec.maxReactionBias or DEFAULT_AUTO_TUNING.maxReactionBias
-    autoTuningState.maxScheduleSlack = spec.maxScheduleSlack or DEFAULT_AUTO_TUNING.maxScheduleSlack
-    autoTuningState.maxActivationLatency = spec.maxActivationLatency or DEFAULT_AUTO_TUNING.maxActivationLatency
-    autoTuningState.minDelta = spec.minDelta or DEFAULT_AUTO_TUNING.minDelta
+    autoTuningState.leadGain = spec.leadGain or Defaults.AUTO_TUNING.leadGain
+    autoTuningState.slackGain = spec.slackGain or Defaults.AUTO_TUNING.slackGain
+    autoTuningState.latencyGain = spec.latencyGain or Defaults.AUTO_TUNING.latencyGain
+    autoTuningState.leadTolerance = spec.leadTolerance or Defaults.AUTO_TUNING.leadTolerance
+    autoTuningState.waitTolerance = spec.waitTolerance or Defaults.AUTO_TUNING.waitTolerance
+    autoTuningState.maxReactionBias = spec.maxReactionBias or Defaults.AUTO_TUNING.maxReactionBias
+    autoTuningState.maxScheduleSlack = spec.maxScheduleSlack or Defaults.AUTO_TUNING.maxScheduleSlack
+    autoTuningState.maxActivationLatency = spec.maxActivationLatency or Defaults.AUTO_TUNING.maxActivationLatency
+    autoTuningState.minDelta = spec.minDelta or Defaults.AUTO_TUNING.minDelta
     if autoTuningState.minDelta < 0 then
         autoTuningState.minDelta = 0
     end
-    autoTuningState.maxAdjustmentsPerRun = spec.maxAdjustmentsPerRun or DEFAULT_AUTO_TUNING.maxAdjustmentsPerRun
+    autoTuningState.maxAdjustmentsPerRun = spec.maxAdjustmentsPerRun or Defaults.AUTO_TUNING.maxAdjustmentsPerRun
     if autoTuningState.maxAdjustmentsPerRun < 0 then
         autoTuningState.maxAdjustmentsPerRun = 0
     end
 end
 
 function TelemetryAnalytics.computeAdjustments(stats, summary, configSnapshot, options)
-    options = options or {}
-    stats = stats or TelemetryAnalytics.clone()
-    summary = summary or TelemetryAnalytics.computeSummary(stats)
-    configSnapshot = configSnapshot or {}
+    local context = prepareAdjustmentContext(stats, summary, configSnapshot, options)
+    local adjustments = context.adjustments
 
-    local adjustments = {
-        updates = {},
-        deltas = {},
-        reasons = {},
-        stats = stats,
-        summary = summary,
-        minSamples = options.minSamples or TELEMETRY_ADJUSTMENT_MIN_SAMPLES,
-    }
-
-    local pressCount = summary.pressCount or 0
-    if pressCount < adjustments.minSamples then
-        adjustments.status = "insufficient"
-        table.insert(
-            adjustments.reasons,
-            string.format(
-                "Need at least %d presses (observed %d) before telemetry-based tuning can stabilise.",
-                adjustments.minSamples,
-                pressCount
-            )
-        )
+    if context.finished then
         return adjustments
     end
 
-    if smartTuningState and smartTuningState.enabled and not options.allowWhenSmartTuning then
-        adjustments.status = "skipped"
-        table.insert(adjustments.reasons, "Smart tuning is enabled; skipping direct telemetry adjustments.")
-        return adjustments
-    end
-
-    local function resolveConfig(key, fallback)
-        local value = configSnapshot[key]
-        if value == nil then
-            value = fallback
-        end
-        if not isFiniteNumber(value) then
-            value = fallback
-        end
-        return value
-    end
-
-    local updates = adjustments.updates
-    local deltas = adjustments.deltas
-
-    local currentReaction = resolveConfig("pressReactionBias", DEFAULT_CONFIG.pressReactionBias or 0)
-    currentReaction = math.max(currentReaction, 0)
-    local leadDelta = summary.leadDeltaMean
-    if isFiniteNumber(leadDelta) and math.abs(leadDelta) > (options.leadTolerance or TELEMETRY_ADJUSTMENT_LEAD_TOLERANCE) then
-        local gain = options.leadGain or TELEMETRY_ADJUSTMENT_LEAD_GAIN
-        local change = clampNumber(-leadDelta * gain, -0.05, 0.05)
-        if change and math.abs(change) >= 1e-4 then
-            local maxReaction = options.maxReactionBias or math.max(TELEMETRY_ADJUSTMENT_MAX_REACTION, DEFAULT_CONFIG.pressReactionBias or 0)
-            maxReaction = math.max(maxReaction, currentReaction)
-            local newReaction = clampNumber(currentReaction + change, 0, maxReaction)
-            if newReaction and math.abs(newReaction - currentReaction) >= 1e-4 then
-                updates.pressReactionBias = newReaction
-                deltas.pressReactionBias = newReaction - currentReaction
-                table.insert(
-                    adjustments.reasons,
-                    string.format(
-                        "Adjusted reaction bias by %.1f ms to offset the %.1f ms average lead delta.",
-                        (deltas.pressReactionBias or 0) * 1000,
-                        leadDelta * 1000
-                    )
-                )
-            end
-        end
-    end
-
-    if updates.pressReactionBias ~= nil then
-        currentReaction = updates.pressReactionBias
-    end
-
-    local currentSlack = resolveConfig("pressScheduleSlack", DEFAULT_CONFIG.pressScheduleSlack or 0)
-    currentSlack = math.max(currentSlack, 0)
-    local waitDelta = summary.averageWaitDelta
-    if isFiniteNumber(waitDelta) and math.abs(waitDelta) > (options.waitTolerance or TELEMETRY_ADJUSTMENT_WAIT_TOLERANCE) then
-        local gain = options.slackGain or TELEMETRY_ADJUSTMENT_SLACK_GAIN
-        local change = clampNumber(waitDelta * gain, -0.03, 0.03)
-        if change and math.abs(change) >= 1e-4 then
-            local maxSlack = options.maxScheduleSlack or math.max(TELEMETRY_ADJUSTMENT_MAX_SLACK, DEFAULT_CONFIG.pressScheduleSlack or 0)
-            maxSlack = math.max(maxSlack, currentSlack)
-            local newSlack = clampNumber(currentSlack + change, 0, maxSlack)
-            if newSlack and math.abs(newSlack - currentSlack) >= 1e-4 then
-                updates.pressScheduleSlack = newSlack
-                deltas.pressScheduleSlack = newSlack - currentSlack
-                table.insert(
-                    adjustments.reasons,
-                    string.format(
-                        "Adjusted schedule slack by %.1f ms based on the %.1f ms average wait delta.",
-                        (deltas.pressScheduleSlack or 0) * 1000,
-                        waitDelta * 1000
-                    )
-                )
-            end
-        end
-    end
-
-    if updates.pressScheduleSlack ~= nil then
-        currentSlack = updates.pressScheduleSlack
-    end
-
-    local commitTarget = options.commitTarget
-    if not isFiniteNumber(commitTarget) or commitTarget <= 0 then
-        commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
-    end
-    local commitMinSamples = options.commitMinSamples or 6
-    local commitSamples = summary.commitLatencySampleCount or 0
-    local commitP99 = summary.commitLatencyP99
-    if commitSamples >= commitMinSamples and isFiniteNumber(commitP99) and commitTarget > 0 then
-        local overshoot = commitP99 - commitTarget
-        if overshoot > 0 then
-            local reactionGain = options.commitReactionGain or DEFAULT_SMART_TUNING.commitReactionGain or 0
-            if reactionGain > 0 then
-                local maxReaction = options.maxReactionBias or math.max(TELEMETRY_ADJUSTMENT_MAX_REACTION, DEFAULT_CONFIG.pressReactionBias or 0)
-                maxReaction = math.max(maxReaction, currentReaction)
-                local boost = clampNumber(overshoot * reactionGain, 0, maxReaction - currentReaction)
-                if boost and boost >= 1e-4 then
-                    local newReaction = clampNumber(currentReaction + boost, 0, maxReaction)
-                    if newReaction and math.abs(newReaction - currentReaction) >= 1e-4 then
-                        updates.pressReactionBias = newReaction
-                        deltas.pressReactionBias = newReaction - currentReaction
-                        currentReaction = newReaction
-                        table.insert(
-                            adjustments.reasons,
-                            string.format(
-                                "Raised reaction bias by %.1f ms to chase the %.0f ms commit target (P99=%.1f ms).",
-                                (deltas.pressReactionBias or 0) * 1000,
-                                commitTarget * 1000,
-                                commitP99 * 1000
-                            )
-                        )
-                    end
-                end
-            end
-
-            local slackGain = options.commitSlackGain or DEFAULT_SMART_TUNING.commitSlackGain or 0
-            if slackGain > 0 then
-                local maxSlack = options.maxScheduleSlack or math.max(TELEMETRY_ADJUSTMENT_MAX_SLACK, DEFAULT_CONFIG.pressScheduleSlack or 0)
-                maxSlack = math.max(maxSlack, currentSlack)
-                local minSlack = options.minScheduleSlack or 0
-                local newSlack = clampNumber(currentSlack - overshoot * slackGain, minSlack, maxSlack)
-                if newSlack and math.abs(newSlack - currentSlack) >= 1e-4 then
-                    updates.pressScheduleSlack = newSlack
-                    deltas.pressScheduleSlack = newSlack - currentSlack
-                    table.insert(
-                        adjustments.reasons,
-                        string.format(
-                            "Adjusted schedule slack by %.1f ms to curb commit latency overshoot (P99 %.1f ms).",
-                            (deltas.pressScheduleSlack or 0) * 1000,
-                            commitP99 * 1000
-                        )
-                    )
-                    currentSlack = newSlack
-                end
-            end
-        end
-    end
-
-    local lookaheadGoal = options.lookaheadGoal
-    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
-        lookaheadGoal = configSnapshot.pressLookaheadGoal or DEFAULT_CONFIG.pressLookaheadGoal or DEFAULT_SMART_TUNING.lookaheadGoal or 0
-    end
-    local lookaheadMinSamples = options.lookaheadMinSamples or 4
-    local lookaheadSamples = summary.scheduleLookaheadSampleCount or 0
-    local lookaheadP10 = summary.scheduleLookaheadP10
-    if
-        lookaheadGoal > 0
-        and lookaheadSamples >= lookaheadMinSamples
-        and isFiniteNumber(lookaheadP10)
-        and lookaheadP10 < lookaheadGoal
-    then
-        local currentLookahead = resolveConfig("pressMaxLookahead", DEFAULT_CONFIG.pressMaxLookahead or lookaheadGoal)
-        currentLookahead = math.max(currentLookahead, lookaheadGoal)
-        local gain = options.lookaheadGain or 0.5
-        local delta = clampNumber((lookaheadGoal - lookaheadP10) * gain, 0, options.maxPressLookaheadDelta or 0.75)
-        if delta and delta >= 1e-4 then
-            local maxLookahead = options.maxPressLookahead or math.max(currentLookahead, lookaheadGoal) + 0.6
-            local newLookahead = clampNumber(currentLookahead + delta, lookaheadGoal, maxLookahead)
-            if newLookahead and newLookahead - currentLookahead >= 1e-4 then
-                updates.pressMaxLookahead = newLookahead
-                deltas.pressMaxLookahead = newLookahead - currentLookahead
-                table.insert(
-                    adjustments.reasons,
-                    string.format(
-                        "Raised pressMaxLookahead by %.0f ms to meet the %.0f ms lookahead goal (P10=%.0f ms).",
-                        (deltas.pressMaxLookahead or 0) * 1000,
-                        lookaheadGoal * 1000,
-                        lookaheadP10 * 1000
-                    )
-                )
-            end
-        end
-    end
-
-    local currentLatency = resolveConfig("activationLatency", DEFAULT_CONFIG.activationLatency or 0.12)
-    currentLatency = math.max(currentLatency, 0)
-    local observedLatency = summary.averageActivationLatency
-    if isFiniteNumber(observedLatency) and observedLatency > 0 then
-        local gain = options.latencyGain or TELEMETRY_ADJUSTMENT_LATENCY_GAIN
-        local maxLatency = options.maxActivationLatency or TELEMETRY_ADJUSTMENT_MAX_LATENCY
-        maxLatency = math.max(maxLatency, currentLatency)
-        local target = clampNumber(observedLatency, 0, maxLatency)
-        local blended = clampNumber(currentLatency + (target - currentLatency) * gain, 0, maxLatency)
-        if blended and math.abs(blended - currentLatency) >= 1e-4 then
-            updates.activationLatency = blended
-            deltas.activationLatency = blended - currentLatency
-            table.insert(
-                adjustments.reasons,
-                string.format(
-                    "Blended activation latency by %.1f ms toward the %.1f ms observed latency sample.",
-                    (deltas.activationLatency or 0) * 1000,
-                    observedLatency * 1000
-                )
-            )
-        end
-    end
-
-    if next(updates) then
-        adjustments.status = "updates"
-    else
-        adjustments.status = adjustments.status or "stable"
-        if #adjustments.reasons == 0 then
-            table.insert(adjustments.reasons, "Telemetry averages are within tolerance; no config changes suggested.")
-        end
-    end
+    applyLeadAdjustment(context)
+    applySlackAdjustment(context)
+    applyCommitAdjustments(context)
+    applyLookaheadAdjustment(context)
+    applyLatencyAdjustment(context)
+    finalizeAdjustmentStatus(context)
 
     return adjustments
 end
 
-local function ensurePawsSettings()
+function Helpers.ensurePawsSettings()
     local settings = GlobalEnv.Paws
     if typeof(settings) ~= "table" then
         settings = {}
@@ -1882,8 +3427,8 @@ local function ensurePawsSettings()
     return settings
 end
 
-local function noteVirtualInputFailure(delay)
-    virtualInputUnavailable = true
+function Helpers.noteVirtualInputFailure(delay)
+    Context.runtime.virtualInputUnavailable = true
     local retry = state.virtualInputRetry
     if typeof(retry) ~= "table" then
         retry = { failureCount = 0, min = 0.05, max = 0.25, base = 0.12, growth = 1.5 }
@@ -1922,31 +3467,31 @@ local function noteVirtualInputFailure(delay)
         finalDelay = minDelay
     end
 
-    virtualInputRetryAt = os.clock() + finalDelay
+    Context.runtime.virtualInputRetryAt = os.clock() + finalDelay
 
     if state.enabled then
-        setStage("waiting-input", { reason = "virtual-input" })
-        updateStatusLabel({ "Auto-Parry F", "Status: waiting for input permissions" })
+        Context.hooks.setStage("waiting-input", { reason = "virtual-input" })
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: waiting for input permissions" })
     end
 end
 
-local function noteVirtualInputSuccess()
-    if virtualInputUnavailable then
-        virtualInputUnavailable = false
-        virtualInputRetryAt = 0
+function Helpers.noteVirtualInputSuccess()
+    if Context.runtime.virtualInputUnavailable then
+        Context.runtime.virtualInputUnavailable = false
+        Context.runtime.virtualInputRetryAt = 0
         local retry = state.virtualInputRetry
         if typeof(retry) == "table" then
             retry.failureCount = 0
         end
 
         if state.enabled and initProgress.stage == "waiting-input" then
-            publishReadyStatus()
+            Context.hooks.publishReadyStatus()
         end
 
-        if pendingParryRelease then
-            pendingParryRelease = false
-            if not sendParryKeyEvent(false) then
-                pendingParryRelease = true
+        if Context.runtime.pendingParryRelease then
+            Context.runtime.pendingParryRelease = false
+            if not Context.hooks.sendParryKeyEvent(false) then
+                Context.runtime.pendingParryRelease = true
             end
         end
     end
@@ -1955,27 +3500,27 @@ end
 local immortalController = ImmortalModule and ImmortalModule.new({}) or nil
 local immortalMissingMethodWarnings = {}
 
-local function resolveVirtualInputManager()
-    if VirtualInputManager then
-        return VirtualInputManager
+function Helpers.resolveVirtualInputManager()
+    if Services.VirtualInputManager then
+        return Services.VirtualInputManager
     end
 
     local ok, manager = pcall(game.GetService, game, "VirtualInputManager")
     if ok and manager then
-        VirtualInputManager = manager
-        return VirtualInputManager
+        Services.VirtualInputManager = manager
+        return Services.VirtualInputManager
     end
 
     ok, manager = pcall(game.FindService, game, "VirtualInputManager")
     if ok and manager then
-        VirtualInputManager = manager
-        return VirtualInputManager
+        Services.VirtualInputManager = manager
+        return Services.VirtualInputManager
     end
 
     return nil
 end
 
-local function warnOnceImmortalMissing(methodName)
+function Helpers.warnOnceImmortalMissing(methodName)
     if immortalMissingMethodWarnings[methodName] then
         return
     end
@@ -1984,34 +3529,34 @@ local function warnOnceImmortalMissing(methodName)
     warn(("AutoParry: Immortal controller missing '%s' support; disabling Immortal features."):format(tostring(methodName)))
 end
 
-local function disableImmortalSupport()
+function Helpers.disableImmortalSupport()
     if not state.immortalEnabled then
         return false
     end
 
     state.immortalEnabled = false
-    updateImmortalButton()
-    syncGlobalSettings()
+    Helpers.updateImmortalButton()
+    Helpers.syncGlobalSettings()
     immortalStateChanged:fire(false)
     return true
 end
 
-local function callImmortalController(methodName, ...)
+function Helpers.callImmortalController(methodName, ...)
     if not immortalController then
         return false
     end
 
     local method = immortalController[methodName]
     if typeof(method) ~= "function" then
-        warnOnceImmortalMissing(methodName)
-        disableImmortalSupport()
+        Helpers.warnOnceImmortalMissing(methodName)
+        Helpers.disableImmortalSupport()
         return false
     end
 
     local ok, result = pcall(method, immortalController, ...)
     if not ok then
         warn(("AutoParry: Immortal controller '%s' call failed: %s"):format(tostring(methodName), tostring(result)))
-        disableImmortalSupport()
+        Helpers.disableImmortalSupport()
         return false
     end
 
@@ -2067,12 +3612,12 @@ type TelemetryState = {
 
 local telemetryStates: { [string]: TelemetryState } = {}
 local telemetryTimeoutSeconds = 3
-local activationLatencyEstimate = DEFAULT_CONFIG.activationLatency
+local activationLatencyEstimate = Defaults.CONFIG.activationLatency
 local perfectParrySnapshot = {
     mu = 0,
     sigma = 0,
     delta = 0,
-    z = DEFAULT_CONFIG.confidenceZ,
+    z = Defaults.CONFIG.confidenceZ,
 }
 
 local pingSample = { value = 0, time = 0 }
@@ -2080,11 +3625,11 @@ local PING_REFRESH_INTERVAL = 0.1
 local PROXIMITY_PRESS_GRACE = 0.05
 local PROXIMITY_HOLD_GRACE = 0.1
 
-local function newRollingStat(): RollingStat
+function Helpers.newRollingStat(): RollingStat
     return { count = 0, mean = 0, m2 = 0 }
 end
 
-local function cubeRoot(value: number)
+function Helpers.cubeRoot(value: number)
     if value >= 0 then
         return value ^ (1 / 3)
     end
@@ -2092,14 +3637,14 @@ local function cubeRoot(value: number)
     return -((-value) ^ (1 / 3))
 end
 
-local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
-    if math.abs(a) < EPSILON then
-        if math.abs(b) < EPSILON then
+function Helpers.smallestPositiveQuadraticRoot(a: number, b: number, c: number)
+    if math.abs(a) < Constants.EPSILON then
+        if math.abs(b) < Constants.EPSILON then
             return nil
         end
 
         local root = -c / b
-        if isFiniteNumber(root) and root > EPSILON then
+        if Helpers.isFiniteNumber(root) and root > Constants.EPSILON then
             return root
         end
 
@@ -2107,7 +3652,7 @@ local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
     end
 
     local discriminant = b * b - 4 * a * c
-    if discriminant < -EPSILON then
+    if discriminant < -Constants.EPSILON then
         return nil
     end
 
@@ -2119,7 +3664,7 @@ local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
         q / a,
     }
 
-    if math.abs(q) > EPSILON then
+    if math.abs(q) > Constants.EPSILON then
         candidates[#candidates + 1] = c / q
     else
         candidates[#candidates + 1] = (-b - sqrtDiscriminant) / (2 * a)
@@ -2127,7 +3672,7 @@ local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
 
     local best: number?
     for _, root in ipairs(candidates) do
-        if isFiniteNumber(root) and root > EPSILON then
+        if Helpers.isFiniteNumber(root) and root > Constants.EPSILON then
             if not best or root < best then
                 best = root
             end
@@ -2137,9 +3682,9 @@ local function smallestPositiveQuadraticRoot(a: number, b: number, c: number)
     return best
 end
 
-local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: number)
-    if math.abs(a) < EPSILON then
-        return smallestPositiveQuadraticRoot(b, c, d)
+function Helpers.smallestPositiveCubicRoot(a: number, b: number, c: number, d: number)
+    if math.abs(a) < Constants.EPSILON then
+        return Helpers.smallestPositiveQuadraticRoot(b, c, d)
     end
 
     local invA = 1 / a
@@ -2154,13 +3699,13 @@ local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: num
     local discriminant = (q * q) / 4 + (p * p * p) / 27
     local roots = {}
 
-    if discriminant > EPSILON then
+    if discriminant > Constants.EPSILON then
         local sqrtDiscriminant = math.sqrt(discriminant)
-        local u = cubeRoot(-q / 2 + sqrtDiscriminant)
-        local v = cubeRoot(-q / 2 - sqrtDiscriminant)
+        local u = Helpers.cubeRoot(-q / 2 + sqrtDiscriminant)
+        local v = Helpers.cubeRoot(-q / 2 - sqrtDiscriminant)
         roots[1] = u + v - A / 3
-    elseif discriminant >= -EPSILON then
-        local u = cubeRoot(-q / 2)
+    elseif discriminant >= -Constants.EPSILON then
+        local u = Helpers.cubeRoot(-q / 2)
         roots[1] = 2 * u - A / 3
         roots[2] = -u - A / 3
     else
@@ -2169,7 +3714,7 @@ local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: num
             roots[1] = -A / 3
         else
             local sqp = math.sqrt(negPOver3)
-            if sqp < EPSILON then
+            if sqp < Constants.EPSILON then
                 roots[1] = -A / 3
             else
                 local angle = math.acos(math.clamp((-q / 2) / (sqp * sqp * sqp), -1, 1))
@@ -2183,7 +3728,7 @@ local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: num
 
     local best: number?
     for _, root in ipairs(roots) do
-        if isFiniteNumber(root) and root > EPSILON then
+        if Helpers.isFiniteNumber(root) and root > Constants.EPSILON then
             if not best or root < best then
                 best = root
             end
@@ -2193,8 +3738,8 @@ local function smallestPositiveCubicRoot(a: number, b: number, c: number, d: num
     return best
 end
 
-local function solveRadialImpactTime(d0: number, vr: number, ar: number, jr: number)
-    if not (isFiniteNumber(d0) and isFiniteNumber(vr) and isFiniteNumber(ar) and isFiniteNumber(jr)) then
+function Helpers.solveRadialImpactTime(d0: number, vr: number, ar: number, jr: number)
+    if not (Helpers.isFiniteNumber(d0) and Helpers.isFiniteNumber(vr) and Helpers.isFiniteNumber(ar) and Helpers.isFiniteNumber(jr)) then
         return nil
     end
 
@@ -2203,15 +3748,15 @@ local function solveRadialImpactTime(d0: number, vr: number, ar: number, jr: num
     local c = vr
     local d = d0
 
-    return smallestPositiveCubicRoot(a, b, c, d)
+    return Helpers.smallestPositiveCubicRoot(a, b, c, d)
 end
 
-local function updateRollingStat(stat: RollingStat, sample: number)
+function Helpers.updateRollingStat(stat: RollingStat, sample: number)
     if not stat then
         return
     end
 
-    if not isFiniteNumber(sample) then
+    if not Helpers.isFiniteNumber(sample) then
         return
     end
 
@@ -2223,7 +3768,7 @@ local function updateRollingStat(stat: RollingStat, sample: number)
     stat.m2 += delta * delta2
 end
 
-local function trimHistory(history, cutoff)
+function Helpers.trimHistory(history, cutoff)
     if not history then
         return
     end
@@ -2233,7 +3778,7 @@ local function trimHistory(history, cutoff)
     end
 end
 
-local function evaluateOscillation(telemetry: TelemetryState?, now: number)
+function Helpers.evaluateOscillation(telemetry: TelemetryState?, now: number)
     if not telemetry then
         return false, 0, 0, 0
     end
@@ -2265,7 +3810,7 @@ local function evaluateOscillation(telemetry: TelemetryState?, now: number)
     local firstIndex = math.max(1, lastIndex - requiredFlips + 1)
     local earliest = flips[firstIndex].time
     local latest = flips[lastIndex].time
-    local span = math.max(latest - earliest, EPSILON)
+    local span = math.max(latest - earliest, Constants.EPSILON)
     local intervals = lastIndex - firstIndex
     local frequency = intervals / span
 
@@ -2299,7 +3844,62 @@ local function evaluateOscillation(telemetry: TelemetryState?, now: number)
     return triggered, frequency, flipCount, maxDelta
 end
 
-local function getRollingStd(stat: RollingStat?, floor: number)
+function Helpers.shouldForceOscillationPress(decision, telemetry, now, config)
+    if not telemetry then
+        return false
+    end
+
+    local fallbackCooldown = config.oscillationSpamCooldown
+    if fallbackCooldown == nil then
+        fallbackCooldown = Defaults.CONFIG.oscillationSpamCooldown
+    end
+    if not Helpers.isFiniteNumber(fallbackCooldown) or fallbackCooldown < 0 then
+        fallbackCooldown = 0
+    end
+
+    local fallbackLookahead = config.oscillationMaxLookahead
+    if fallbackLookahead == nil then
+        fallbackLookahead = Defaults.CONFIG.oscillationMaxLookahead
+    end
+    if not Helpers.isFiniteNumber(fallbackLookahead) or fallbackLookahead <= 0 then
+        fallbackLookahead = math.huge
+    end
+
+    local predictedImpact = decision and decision.predictedImpact or math.huge
+    if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+        predictedImpact = math.huge
+    end
+    if predictedImpact > fallbackLookahead then
+        return false
+    end
+
+    local detectionGate = true
+    if decision and decision.targetingMe then
+        local detectionAge = decision.detectionAge
+        if not Helpers.isFiniteNumber(detectionAge) and telemetry.targetDetectedAt then
+            detectionAge = math.max(now - telemetry.targetDetectedAt, 0)
+        end
+        local minDetectionTime = decision and decision.minDetectionTime or 0
+        if detectionAge then
+            detectionGate = detectionAge >= minDetectionTime
+        else
+            detectionGate = minDetectionTime <= 0
+        end
+    end
+    if not detectionGate then
+        return false
+    end
+
+    local lastApplied = telemetry.lastOscillationApplied or 0
+    local minSpacing = math.max(fallbackCooldown, 1 / 60)
+    if now - lastApplied < minSpacing then
+        return false
+    end
+
+    return true
+end
+
+function Helpers.getRollingStd(stat: RollingStat?, floor: number)
     if not stat or stat.count < 2 then
         return floor
     end
@@ -2328,9 +3928,8 @@ local latencySamples = {
 local pendingLatencyPresses = {}
 
 local publishTelemetryHistory
-local pushTelemetryEvent
 
-local function publishLatencyTelemetry()
+function Helpers.publishLatencyTelemetry()
     local settings = GlobalEnv.Paws
     if typeof(settings) ~= "table" then
         settings = {}
@@ -2344,7 +3943,7 @@ local function publishLatencyTelemetry()
     end
 end
 
-local function recordLatencySample(
+function Helpers.recordLatencySample(
     sample: number?,
     source: string?,
     ballId: string?,
@@ -2352,7 +3951,7 @@ local function recordLatencySample(
     now: number?
 )
     local timestamp = now or os.clock()
-    if not isFiniteNumber(sample) or not sample or sample <= 0 or sample > MAX_LATENCY_SAMPLE_SECONDS then
+    if not Helpers.isFiniteNumber(sample) or not sample or sample <= 0 or sample > MAX_LATENCY_SAMPLE_SECONDS then
         local eventPayload = {
             ballId = ballId,
             source = source or "unknown",
@@ -2362,11 +3961,11 @@ local function recordLatencySample(
             time = timestamp,
         }
         TelemetryAnalytics.recordLatency(eventPayload)
-        pushTelemetryEvent("latency-sample", eventPayload)
+        emitTelemetryEvent("latency-sample", eventPayload)
         return false
     end
 
-    activationLatencyEstimate = emaScalar(activationLatencyEstimate, sample, ACTIVATION_LATENCY_ALPHA)
+    activationLatencyEstimate = Helpers.emaScalar(activationLatencyEstimate, sample, Constants.ACTIVATION_LATENCY_ALPHA)
     if activationLatencyEstimate < 0 then
         activationLatencyEstimate = 0
     end
@@ -2389,7 +3988,7 @@ local function recordLatencySample(
         latencySamples.lastLocalSample = entry
     end
 
-    publishLatencyTelemetry()
+    Helpers.publishLatencyTelemetry()
     local eventPayload = {
         ballId = ballId,
         source = source or "unknown",
@@ -2408,11 +4007,11 @@ local function recordLatencySample(
         }
     end
     TelemetryAnalytics.recordLatency(eventPayload)
-    pushTelemetryEvent("latency-sample", eventPayload)
+    emitTelemetryEvent("latency-sample", eventPayload)
     return true
 end
 
-local function prunePendingLatencyPresses(now: number)
+function Helpers.prunePendingLatencyPresses(now: number)
     if #pendingLatencyPresses == 0 then
         return
     end
@@ -2425,7 +4024,7 @@ local function prunePendingLatencyPresses(now: number)
     end
 end
 
-local function handleParrySuccessLatency(...)
+function Helpers.handleParrySuccessLatency(...)
     local now = os.clock()
     if #pendingLatencyPresses == 0 then
         return
@@ -2437,7 +4036,7 @@ local function handleParrySuccessLatency(...)
         if entry and entry.time then
             local elapsed = now - entry.time
             local telemetry = entry.ballId and telemetryStates[entry.ballId] or nil
-            local accepted = recordLatencySample(elapsed, "remote", entry.ballId, telemetry, now)
+            local accepted = Helpers.recordLatencySample(elapsed, "remote", entry.ballId, telemetry, now)
             local successEvent = {
                 ballId = entry.ballId,
                 latency = elapsed,
@@ -2446,7 +4045,7 @@ local function handleParrySuccessLatency(...)
                 time = now,
             }
             TelemetryAnalytics.recordSuccess(successEvent)
-            pushTelemetryEvent("success", successEvent)
+            emitTelemetryEvent("success", successEvent)
             if accepted then
                 return
             end
@@ -2454,9 +4053,9 @@ local function handleParrySuccessLatency(...)
     end
 end
 
-parrySuccessSignal:connect(handleParrySuccessLatency)
+parrySuccessSignal:connect(Helpers.handleParrySuccessLatency)
 
-local function clampWithOverflow(value: number, limit: number?)
+function Helpers.clampWithOverflow(value: number, limit: number?)
     if not limit or limit <= 0 then
         return value, 0
     end
@@ -2471,7 +4070,7 @@ local function clampWithOverflow(value: number, limit: number?)
     return sign * limit, overflow
 end
 
-local function ensureTelemetry(ballId: string, now: number): TelemetryState
+function Helpers.ensureTelemetry(ballId: string, now: number): TelemetryState
     local telemetry = telemetryStates[ballId]
     if telemetry then
         return telemetry
@@ -2503,10 +4102,10 @@ local function ensureTelemetry(ballId: string, now: number): TelemetryState
         oscillationActive = false,
         lastOscillationTrigger = 0,
         lastOscillationApplied = 0,
-        statsD = newRollingStat(),
-        statsVr = newRollingStat(),
-        statsAr = newRollingStat(),
-        statsJr = newRollingStat(),
+        statsD = Helpers.newRollingStat(),
+        statsVr = Helpers.newRollingStat(),
+        statsAr = Helpers.newRollingStat(),
+        statsJr = Helpers.newRollingStat(),
         lastUpdate = now,
         triggerTime = nil,
         latencySampled = true,
@@ -2516,13 +4115,15 @@ local function ensureTelemetry(ballId: string, now: number): TelemetryState
         lastReactionTimestamp = nil,
         lastDecisionLatency = nil,
         lastDecisionToPressLatency = nil,
+        ballisticCache = nil,
+        threat = nil,
     }
 
     telemetryStates[ballId] = telemetry
     return telemetry
 end
 
-local function cleanupTelemetry(now: number)
+function Helpers.cleanupTelemetry(now: number)
     for id, telemetry in pairs(telemetryStates) do
         if now - (telemetry.lastUpdate or 0) > telemetryTimeoutSeconds then
             telemetryStates[id] = nil
@@ -2530,33 +4131,29 @@ local function cleanupTelemetry(now: number)
     end
 end
 
-local function resetActivationLatency()
-    activationLatencyEstimate = config.activationLatency or DEFAULT_CONFIG.activationLatency or 0
+function Helpers.resetActivationLatency()
+    activationLatencyEstimate = config.activationLatency or Defaults.CONFIG.activationLatency or 0
     if activationLatencyEstimate < 0 then
         activationLatencyEstimate = 0
     end
     perfectParrySnapshot.mu = 0
     perfectParrySnapshot.sigma = 0
     perfectParrySnapshot.delta = 0
-    perfectParrySnapshot.z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ or perfectParrySnapshot.z
+    perfectParrySnapshot.z = config.confidenceZ or Defaults.CONFIG.confidenceZ or perfectParrySnapshot.z
     latencySamples.lastSample = nil
     latencySamples.lastLocalSample = nil
     latencySamples.lastRemoteSample = nil
     pendingLatencyPresses = {}
-    publishLatencyTelemetry()
+    Helpers.publishLatencyTelemetry()
 end
 
 local AutoParry
-local updateCharacter
-local beginInitialization
-local setBallsFolderWatcher
-local maybeRunAutoTuning
 
-local function cloneTable(tbl)
+function Helpers.cloneTable(tbl)
     return Util.deepCopy(tbl)
 end
 
-local function cloneAutoTuningSnapshot()
+function Helpers.cloneAutoTuningSnapshot()
     return {
         enabled = autoTuningState.enabled,
         intervalSeconds = autoTuningState.intervalSeconds,
@@ -2576,36 +4173,36 @@ local function cloneAutoTuningSnapshot()
         lastRun = autoTuningState.lastRun,
         lastStatus = autoTuningState.lastStatus,
         lastError = autoTuningState.lastError,
-        lastSummary = autoTuningState.lastSummary and cloneTable(autoTuningState.lastSummary) or nil,
-        lastAdjustments = autoTuningState.lastAdjustments and cloneTable(autoTuningState.lastAdjustments) or nil,
-        lastResult = autoTuningState.lastResult and cloneTable(autoTuningState.lastResult) or nil,
+        lastSummary = autoTuningState.lastSummary and Helpers.cloneTable(autoTuningState.lastSummary) or nil,
+        lastAdjustments = autoTuningState.lastAdjustments and Helpers.cloneTable(autoTuningState.lastAdjustments) or nil,
+        lastResult = autoTuningState.lastResult and Helpers.cloneTable(autoTuningState.lastResult) or nil,
     }
 end
 
 captureScheduledPressSnapshot = function(ballId)
-    if not ballId or scheduledPressState.ballId ~= ballId then
+    if not ballId or Context.scheduledPressState.ballId ~= ballId then
         return nil
     end
 
     local snapshot = {
         ballId = ballId,
-        pressAt = scheduledPressState.pressAt,
-        predictedImpact = scheduledPressState.predictedImpact,
-        lead = scheduledPressState.lead,
-        slack = scheduledPressState.slack,
-        reason = scheduledPressState.reason,
-        scheduleTime = scheduledPressState.lastUpdate,
-        immediate = scheduledPressState.immediate,
+        pressAt = Context.scheduledPressState.pressAt,
+        predictedImpact = Context.scheduledPressState.predictedImpact,
+        lead = Context.scheduledPressState.lead,
+        slack = Context.scheduledPressState.slack,
+        reason = Context.scheduledPressState.reason,
+        scheduleTime = Context.scheduledPressState.lastUpdate,
+        immediate = Context.scheduledPressState.immediate,
     }
 
-    if scheduledPressState.smartTuning then
-        snapshot.smartTuning = cloneTable(scheduledPressState.smartTuning)
+    if Context.scheduledPressState.smartTuning then
+        snapshot.smartTuning = Helpers.cloneTable(Context.scheduledPressState.smartTuning)
     end
 
     return snapshot
 end
 
-local function resetSmartTuningState()
+function Helpers.resetSmartTuningState()
     smartTuningState.enabled = false
     smartTuningState.lastUpdate = 0
     smartTuningState.lastBallId = nil
@@ -2629,16 +4226,16 @@ local function resetSmartTuningState()
     smartTuningState.updateCount = 0
 end
 
-local function snapshotSmartTuningState()
-    return cloneTable(smartTuningState)
+function Helpers.snapshotSmartTuningState()
+    return Helpers.cloneTable(smartTuningState)
 end
 
-local function normalizeSmartTuningConfig(value)
+function Helpers.normalizeSmartTuningConfig(value)
     if value == false then
         return false
     end
 
-    local base = Util.deepCopy(DEFAULT_SMART_TUNING)
+    local base = Util.deepCopy(Defaults.SMART_TUNING)
 
     if value == nil then
         return base
@@ -2667,7 +4264,7 @@ local function normalizeSmartTuningConfig(value)
     return base
 end
 
-local function normalizeSmartTuningPayload(payload)
+function Helpers.normalizeSmartTuningPayload(payload)
     if typeof(payload) ~= "table" then
         return payload
     end
@@ -2710,7 +4307,7 @@ local function normalizeSmartTuningPayload(payload)
     return normalized
 end
 
-local function getSmartTuningConfig()
+function Helpers.getSmartTuningConfig()
     local tuning = config.smartTuning
     if tuning == false then
         return false
@@ -2718,44 +4315,44 @@ local function getSmartTuningConfig()
     if typeof(tuning) == "table" then
         return tuning
     end
-    return DEFAULT_CONFIG.smartTuning
+    return Defaults.CONFIG.smartTuning
 end
 
-local function resolvePerformanceTargets()
-    local smartConfig = getSmartTuningConfig()
+function Helpers.resolvePerformanceTargets()
+    local smartConfig = Helpers.getSmartTuningConfig()
 
-    local commitTarget = DEFAULT_SMART_TUNING.commitP99Target or 0.01
-    if smartConfig and smartConfig ~= false and isFiniteNumber(smartConfig.commitP99Target) then
+    local commitTarget = Defaults.SMART_TUNING.commitP99Target or 0.01
+    if smartConfig and smartConfig ~= false and Helpers.isFiniteNumber(smartConfig.commitP99Target) then
         commitTarget = smartConfig.commitP99Target
     end
-    if not isFiniteNumber(commitTarget) or commitTarget <= 0 then
+    if not Helpers.isFiniteNumber(commitTarget) or commitTarget <= 0 then
         commitTarget = 0.01
     end
 
     local lookaheadGoal = config.pressLookaheadGoal
     if lookaheadGoal == nil then
-        lookaheadGoal = DEFAULT_CONFIG.pressLookaheadGoal
+        lookaheadGoal = Defaults.CONFIG.pressLookaheadGoal
     end
-    if smartConfig and smartConfig ~= false and isFiniteNumber(smartConfig.lookaheadGoal) then
+    if smartConfig and smartConfig ~= false and Helpers.isFiniteNumber(smartConfig.lookaheadGoal) then
         lookaheadGoal = smartConfig.lookaheadGoal
     end
-    if not isFiniteNumber(lookaheadGoal) then
-        lookaheadGoal = DEFAULT_SMART_TUNING.lookaheadGoal or 0
+    if not Helpers.isFiniteNumber(lookaheadGoal) then
+        lookaheadGoal = Defaults.SMART_TUNING.lookaheadGoal or 0
     end
-    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal < 0 then
+    if not Helpers.isFiniteNumber(lookaheadGoal) or lookaheadGoal < 0 then
         lookaheadGoal = 0
     end
 
     return commitTarget, lookaheadGoal
 end
 
-local function applySmartTuning(params)
-    local tuning = getSmartTuningConfig()
+function Helpers.applySmartTuning(params)
+    local tuning = Helpers.getSmartTuningConfig()
     local now = params.now or os.clock()
 
     if not tuning or tuning == false or tuning.enabled == false then
         if smartTuningState.enabled then
-            resetSmartTuningState()
+            Helpers.resetSmartTuningState()
             smartTuningState.lastUpdate = now
             smartTuningState.lastBallId = params.ballId
         end
@@ -2775,7 +4372,7 @@ local function applySmartTuning(params)
     smartTuningState.baseConfidencePadding = baseConfidencePadding
 
     local sigma = params.sigma
-    if not isFiniteNumber(sigma) or sigma < 0 then
+    if not Helpers.isFiniteNumber(sigma) or sigma < 0 then
         sigma = 0
     end
     local sigmaFloor = math.max(tuning.sigmaFloor or 0, 0)
@@ -2789,40 +4386,40 @@ local function applySmartTuning(params)
     smartTuningState.muMinus = params.muMinus or 0
 
     local delta = params.delta
-    if not isFiniteNumber(delta) or delta < 0 then
+    if not Helpers.isFiniteNumber(delta) or delta < 0 then
         delta = 0
     end
     local deltaAlpha = math.clamp(tuning.deltaAlpha or 0.2, 0, 1)
-    smartTuningState.delta = emaScalar(smartTuningState.delta, delta, deltaAlpha)
+    smartTuningState.delta = Helpers.emaScalar(smartTuningState.delta, delta, deltaAlpha)
 
     local ping = params.ping
-    if not isFiniteNumber(ping) or ping < 0 then
+    if not Helpers.isFiniteNumber(ping) or ping < 0 then
         ping = 0
     end
     local pingAlpha = math.clamp(tuning.pingAlpha or 0.3, 0, 1)
-    smartTuningState.ping = emaScalar(smartTuningState.ping, ping, pingAlpha)
+    smartTuningState.ping = Helpers.emaScalar(smartTuningState.ping, ping, pingAlpha)
 
     local overshoot = params.muPlus
-    if not isFiniteNumber(overshoot) or overshoot < 0 then
+    if not Helpers.isFiniteNumber(overshoot) or overshoot < 0 then
         overshoot = 0
     end
     local overshootAlpha = math.clamp(tuning.overshootAlpha or 0.25, 0, 1)
-    smartTuningState.overshoot = emaScalar(smartTuningState.overshoot, overshoot, overshootAlpha)
+    smartTuningState.overshoot = Helpers.emaScalar(smartTuningState.overshoot, overshoot, overshootAlpha)
 
     local metrics = TelemetryAnalytics.metrics
     local commitSummary
     local lookaheadSummary
     if typeof(metrics) == "table" and typeof(metrics.quantiles) == "table" then
-        commitSummary = summariseQuantileEstimator(metrics.quantiles.commitLatency)
-        lookaheadSummary = summariseQuantileEstimator(metrics.quantiles.scheduleLookahead)
+        commitSummary = Helpers.summariseQuantileEstimator(metrics.quantiles.commitLatency)
+        lookaheadSummary = Helpers.summariseQuantileEstimator(metrics.quantiles.scheduleLookahead)
     end
 
     local commitP99 = commitSummary and commitSummary.value or nil
     local commitSamples = commitSummary and commitSummary.count or 0
     local lookaheadP10 = lookaheadSummary and lookaheadSummary.value or nil
     local lookaheadSamples = lookaheadSummary and lookaheadSummary.count or 0
-    local commitTarget, lookaheadGoal = resolvePerformanceTargets()
-    if params and isFiniteNumber(params.lookaheadGoal) and params.lookaheadGoal > 0 then
+    local commitTarget, lookaheadGoal = Helpers.resolvePerformanceTargets()
+    if params and Helpers.isFiniteNumber(params.lookaheadGoal) and params.lookaheadGoal > 0 then
         lookaheadGoal = params.lookaheadGoal
     end
 
@@ -2833,7 +4430,7 @@ local function applySmartTuning(params)
     end
     local slackTarget = math.clamp(sigma * (tuning.sigmaLead or 1), minSlack, maxSlack)
 
-    if commitTarget > 0 and commitSamples >= 6 and isFiniteNumber(commitP99) and commitP99 > commitTarget then
+    if commitTarget > 0 and commitSamples >= 6 and Helpers.isFiniteNumber(commitP99) and commitP99 > commitTarget then
         local overshoot = commitP99 - commitTarget
         local slackGain = math.max(tuning.commitSlackGain or 0, 0)
         if slackGain > 0 then
@@ -2841,7 +4438,7 @@ local function applySmartTuning(params)
         end
     end
 
-    if lookaheadGoal > 0 and lookaheadSamples >= 4 and isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
+    if lookaheadGoal > 0 and lookaheadSamples >= 4 and Helpers.isFiniteNumber(lookaheadP10) and lookaheadP10 < lookaheadGoal then
         local deficit = lookaheadGoal - lookaheadP10
         local slackGain = math.max(tuning.lookaheadSlackGain or 0, 0)
         if slackGain > 0 then
@@ -2854,7 +4451,7 @@ local function applySmartTuning(params)
     end
     smartTuningState.targetScheduleSlack = slackTarget
     local slackAlpha = math.clamp(tuning.slackAlpha or 0.35, 0, 1)
-    smartTuningState.scheduleSlack = emaScalar(smartTuningState.scheduleSlack or baseScheduleSlack, slackTarget, slackAlpha)
+    smartTuningState.scheduleSlack = Helpers.emaScalar(smartTuningState.scheduleSlack or baseScheduleSlack, slackTarget, slackAlpha)
 
     local minConfidence = math.max(tuning.minConfidence or 0, 0)
     local maxConfidence = tuning.maxConfidence or math.max(minConfidence, 0.4)
@@ -2867,7 +4464,7 @@ local function applySmartTuning(params)
     end
     smartTuningState.targetConfidencePadding = confidenceTarget
     local confidenceAlpha = math.clamp(tuning.confidenceAlpha or 0.3, 0, 1)
-    smartTuningState.confidencePadding = emaScalar(
+    smartTuningState.confidencePadding = Helpers.emaScalar(
         smartTuningState.confidencePadding or baseConfidencePadding,
         confidenceTarget,
         confidenceAlpha
@@ -2882,7 +4479,7 @@ local function applySmartTuning(params)
     reactionTarget += smartTuningState.overshoot * (tuning.overshootShare or 0.2)
     reactionTarget = math.clamp(reactionTarget, minReaction, maxReaction)
 
-    if commitTarget > 0 and commitSamples >= 6 and isFiniteNumber(commitP99) then
+    if commitTarget > 0 and commitSamples >= 6 and Helpers.isFiniteNumber(commitP99) then
         local overshoot = commitP99 - commitTarget
         local reactionGain = math.max(tuning.commitReactionGain or 0, 0)
         if overshoot > 0 and reactionGain > 0 then
@@ -2893,7 +4490,7 @@ local function applySmartTuning(params)
         end
     end
 
-    if lookaheadGoal > 0 and lookaheadSamples >= 4 and isFiniteNumber(lookaheadP10) then
+    if lookaheadGoal > 0 and lookaheadSamples >= 4 and Helpers.isFiniteNumber(lookaheadP10) then
         local deficit = lookaheadGoal - lookaheadP10
         local lookaheadGain = math.max(tuning.lookaheadReactionGain or 0, 0)
         if deficit > 0 and lookaheadGain > 0 then
@@ -2908,7 +4505,7 @@ local function applySmartTuning(params)
     end
     smartTuningState.targetReactionBias = reactionTarget
     local reactionAlpha = math.clamp(tuning.reactionAlpha or 0.25, 0, 1)
-    smartTuningState.reactionBias = emaScalar(
+    smartTuningState.reactionBias = Helpers.emaScalar(
         smartTuningState.reactionBias or baseReactionBias,
         reactionTarget,
         reactionAlpha
@@ -2949,8 +4546,8 @@ local function applySmartTuning(params)
     }
 end
 
-local function ensureTelemetryStore()
-    local settings = ensurePawsSettings()
+function Helpers.ensureTelemetryStore()
+    local settings = Helpers.ensurePawsSettings()
     local telemetryStore = settings.Telemetry
     if typeof(telemetryStore) ~= "table" then
         telemetryStore = {}
@@ -2959,19 +4556,19 @@ local function ensureTelemetryStore()
     return settings, telemetryStore
 end
 
-local function cloneTelemetryEvent(event)
+function Helpers.cloneTelemetryEvent(event)
     if typeof(event) ~= "table" then
         return event
     end
-    return cloneTable(event)
+    return Helpers.cloneTable(event)
 end
 
 publishTelemetryHistory = function()
-    local settings, telemetryStore = ensureTelemetryStore()
-    telemetryStore.history = telemetryHistory
-    telemetryStore.sequence = telemetrySequence
-    telemetryStore.lastEvent = telemetryHistory[#telemetryHistory]
-    telemetryStore.smartTuning = snapshotSmartTuningState()
+    local settings, telemetryStore = Helpers.ensureTelemetryStore()
+    telemetryStore.history = Context.telemetry.history
+    telemetryStore.sequence = Context.telemetry.sequence
+    telemetryStore.lastEvent = Context.telemetry.history[#Context.telemetry.history]
+    telemetryStore.smartTuning = Helpers.snapshotSmartTuningState()
     telemetryStore.metrics = TelemetryAnalytics.clone()
     if telemetryStore.metrics then
         telemetryStore.adaptiveState = telemetryStore.metrics.adaptiveState
@@ -2984,56 +4581,58 @@ publishTelemetryHistory = function()
     return settings, telemetryStore
 end
 
-pushTelemetryEvent = function(eventType: string, payload: { [string]: any }?)
-    telemetrySequence += 1
+telemetryDispatcher = function(eventType: string, payload: { [string]: any }?)
+    Context.telemetry.sequence += 1
 
     local event: { [string]: any } = {}
     if typeof(payload) == "table" then
-        event = cloneTelemetryEvent(payload)
+        event = Helpers.cloneTelemetryEvent(payload)
     elseif payload ~= nil then
         event.value = payload
     end
 
     event.type = eventType
-    event.sequence = telemetrySequence
+    event.sequence = Context.telemetry.sequence
     event.time = event.time or os.clock()
 
-    telemetryHistory[#telemetryHistory + 1] = event
-    if #telemetryHistory > TELEMETRY_HISTORY_LIMIT then
-        table.remove(telemetryHistory, 1)
+    Context.telemetry.history[#Context.telemetry.history + 1] = event
+    if #Context.telemetry.history > Context.telemetry.historyLimit then
+        table.remove(Context.telemetry.history, 1)
     end
 
     publishTelemetryHistory()
-    telemetrySignal:fire(cloneTelemetryEvent(event))
+    telemetrySignal:fire(Helpers.cloneTelemetryEvent(event))
     return event
 end
 
-local function resetTelemetryHistory(reason: string?)
+flushPendingTelemetryEvents()
+
+function Helpers.resetTelemetryHistory(reason: string?)
     local previousResets = 0
     if TelemetryAnalytics.metrics and TelemetryAnalytics.metrics.counters and typeof(TelemetryAnalytics.metrics.counters.resets) == "number" then
         previousResets = TelemetryAnalytics.metrics.counters.resets
     end
     TelemetryAnalytics.resetMetrics(previousResets + 1)
     TelemetryAnalytics.resetAdaptive()
-    telemetryHistory = {}
+    Context.telemetry.history = {}
     publishTelemetryHistory()
     if reason then
-        pushTelemetryEvent("telemetry-reset", { reason = reason })
+        emitTelemetryEvent("telemetry-reset", { reason = reason })
     end
 end
 
 publishTelemetryHistory()
 
-resetActivationLatency()
-resetSmartTuningState()
+Helpers.resetActivationLatency()
+Helpers.resetSmartTuningState()
 
-local function safeCall(fn, ...)
+function Helpers.safeCall(fn, ...)
     if typeof(fn) == "function" then
         return fn(...)
     end
 end
 
-local function safeDisconnect(connection)
+function Helpers.safeDisconnect(connection)
     if not connection then
         return
     end
@@ -3047,15 +4646,15 @@ local function safeDisconnect(connection)
     end
 end
 
-local function disconnectConnections(connections)
+function Helpers.disconnectConnections(connections)
     for index = #connections, 1, -1 do
         local connection = connections[index]
-        safeDisconnect(connection)
+        Helpers.safeDisconnect(connection)
         connections[index] = nil
     end
 end
 
-local function connectSignal(signal, handler)
+function Helpers.connectSignal(signal, handler)
     if not signal or typeof(handler) ~= "function" then
         return nil
     end
@@ -3076,7 +4675,7 @@ local function connectSignal(signal, handler)
     return nil
 end
 
-local function connectInstanceEvent(instance, eventName, handler)
+function Helpers.connectInstanceEvent(instance, eventName, handler)
     if not instance or typeof(handler) ~= "function" then
         return nil
     end
@@ -3089,10 +4688,10 @@ local function connectInstanceEvent(instance, eventName, handler)
         return nil
     end
 
-    return connectSignal(event, handler)
+    return Helpers.connectSignal(event, handler)
 end
 
-local function connectPropertyChangedSignal(instance, propertyName, handler)
+function Helpers.connectPropertyChangedSignal(instance, propertyName, handler)
     if not instance or typeof(handler) ~= "function" then
         return nil
     end
@@ -3110,10 +4709,10 @@ local function connectPropertyChangedSignal(instance, propertyName, handler)
         return nil
     end
 
-    return connectSignal(signal, handler)
+    return Helpers.connectSignal(signal, handler)
 end
 
-local function connectClientEvent(remote, handler)
+function Helpers.connectClientEvent(remote, handler)
     if not remote or typeof(handler) ~= "function" then
         return nil
     end
@@ -3150,12 +4749,12 @@ end
 
 local remoteQueueGuardTargets: { [string]: boolean } = {}
 
-local function rebuildRemoteQueueGuardTargets()
+function Helpers.rebuildRemoteQueueGuardTargets()
     for name in pairs(remoteQueueGuardTargets) do
         remoteQueueGuardTargets[name] = nil
     end
 
-    local defaults = DEFAULT_CONFIG.remoteQueueGuards
+    local defaults = Defaults.CONFIG.remoteQueueGuards
     if typeof(defaults) == "table" then
         for _, entry in pairs(defaults) do
             if typeof(entry) == "string" and entry ~= "" then
@@ -3174,38 +4773,38 @@ local function rebuildRemoteQueueGuardTargets()
     end
 end
 
-rebuildRemoteQueueGuardTargets()
+Helpers.rebuildRemoteQueueGuardTargets()
 
-local function clearRemoteQueueGuards()
-    if remoteQueueGuardWatchers then
-        disconnectConnections(remoteQueueGuardWatchers)
-        remoteQueueGuardWatchers = nil
+function Helpers.clearRemoteQueueGuards()
+    if Context.watchers.remoteQueueGuardWatchers then
+        Helpers.disconnectConnections(Context.watchers.remoteQueueGuardWatchers)
+        Context.watchers.remoteQueueGuardWatchers = nil
     end
 
-    for name, guard in pairs(remoteQueueGuardConnections) do
-        safeDisconnect(guard.connection)
-        safeDisconnect(guard.destroying)
-        safeDisconnect(guard.nameChanged)
-        remoteQueueGuardConnections[name] = nil
+    for name, guard in pairs(Context.watchers.remoteQueueGuards) do
+        Helpers.safeDisconnect(guard.connection)
+        Helpers.safeDisconnect(guard.destroying)
+        Helpers.safeDisconnect(guard.nameChanged)
+        Context.watchers.remoteQueueGuards[name] = nil
     end
 end
 
-local function dropRemoteQueueGuard(remote)
+function Helpers.dropRemoteQueueGuard(remote)
     if not remote then
         return
     end
 
     local name = remote.Name
-    local guard = remoteQueueGuardConnections[name]
+    local guard = Context.watchers.remoteQueueGuards[name]
     if guard and guard.remote == remote then
-        safeDisconnect(guard.connection)
-        safeDisconnect(guard.destroying)
-        safeDisconnect(guard.nameChanged)
-        remoteQueueGuardConnections[name] = nil
+        Helpers.safeDisconnect(guard.connection)
+        Helpers.safeDisconnect(guard.destroying)
+        Helpers.safeDisconnect(guard.nameChanged)
+        Context.watchers.remoteQueueGuards[name] = nil
     end
 end
 
-local function attachRemoteQueueGuard(remote)
+function Helpers.attachRemoteQueueGuard(remote)
     if not remote or not remoteQueueGuardTargets[remote.Name] then
         return
     end
@@ -3219,16 +4818,16 @@ local function attachRemoteQueueGuard(remote)
     end
 
     local name = remote.Name
-    local existing = remoteQueueGuardConnections[name]
+    local existing = Context.watchers.remoteQueueGuards[name]
     if existing and existing.remote == remote and existing.connection then
         return
     end
 
     if existing then
-        safeDisconnect(existing.connection)
-        safeDisconnect(existing.destroying)
-        safeDisconnect(existing.nameChanged)
-        remoteQueueGuardConnections[name] = nil
+        Helpers.safeDisconnect(existing.connection)
+        Helpers.safeDisconnect(existing.destroying)
+        Helpers.safeDisconnect(existing.nameChanged)
+        Context.watchers.remoteQueueGuards[name] = nil
     end
 
     local okSignal, signal = pcall(function()
@@ -3247,32 +4846,32 @@ local function attachRemoteQueueGuard(remote)
         return
     end
 
-    local destroyingConnection = connectInstanceEvent(remote, "Destroying", function()
-        dropRemoteQueueGuard(remote)
+    local destroyingConnection = Helpers.connectInstanceEvent(remote, "Destroying", function()
+        Helpers.dropRemoteQueueGuard(remote)
     end)
 
-    local nameChangedConnection = connectPropertyChangedSignal(remote, "Name", function()
+    local nameChangedConnection = Helpers.connectPropertyChangedSignal(remote, "Name", function()
         local newName = remote.Name
         if not remoteQueueGuardTargets[newName] then
-            dropRemoteQueueGuard(remote)
+            Helpers.dropRemoteQueueGuard(remote)
             return
         end
 
-        local existingGuard = remoteQueueGuardConnections[newName]
+        local existingGuard = Context.watchers.remoteQueueGuards[newName]
         if existingGuard and existingGuard.remote ~= remote then
-            dropRemoteQueueGuard(existingGuard.remote)
+            Helpers.dropRemoteQueueGuard(existingGuard.remote)
         end
 
-        local currentGuard = remoteQueueGuardConnections[name]
+        local currentGuard = Context.watchers.remoteQueueGuards[name]
         if currentGuard and currentGuard.remote == remote then
-            remoteQueueGuardConnections[name] = nil
-            remoteQueueGuardConnections[newName] = currentGuard
+            Context.watchers.remoteQueueGuards[name] = nil
+            Context.watchers.remoteQueueGuards[newName] = currentGuard
         end
 
         name = newName
     end)
 
-    remoteQueueGuardConnections[name] = {
+    Context.watchers.remoteQueueGuards[name] = {
         remote = remote,
         connection = connection,
         destroying = destroyingConnection,
@@ -3280,8 +4879,8 @@ local function attachRemoteQueueGuard(remote)
     }
 end
 
-local function setRemoteQueueGuardFolder(folder)
-    clearRemoteQueueGuards()
+function Helpers.setRemoteQueueGuardFolder(folder)
+    Helpers.clearRemoteQueueGuards()
 
     if not folder then
         return
@@ -3290,73 +4889,73 @@ local function setRemoteQueueGuardFolder(folder)
     for name in pairs(remoteQueueGuardTargets) do
         local remote = folder:FindFirstChild(name)
         if remote then
-            attachRemoteQueueGuard(remote)
+            Helpers.attachRemoteQueueGuard(remote)
         end
     end
 
     local watchers = {}
 
     local addedConnection = folder.ChildAdded:Connect(function(child)
-        attachRemoteQueueGuard(child)
+        Helpers.attachRemoteQueueGuard(child)
     end)
     table.insert(watchers, addedConnection)
 
     local removedConnection = folder.ChildRemoved:Connect(function(child)
-        dropRemoteQueueGuard(child)
+        Helpers.dropRemoteQueueGuard(child)
     end)
     table.insert(watchers, removedConnection)
 
-    local destroyingConnection = connectInstanceEvent(folder, "Destroying", function()
-        clearRemoteQueueGuards()
+    local destroyingConnection = Helpers.connectInstanceEvent(folder, "Destroying", function()
+        Helpers.clearRemoteQueueGuards()
     end)
     if destroyingConnection then
         table.insert(watchers, destroyingConnection)
     end
 
-    remoteQueueGuardWatchers = watchers
+    Context.watchers.remoteQueueGuardWatchers = watchers
 end
 
-local function disconnectVerificationWatchers()
-    for index = #verificationWatchers, 1, -1 do
-        local connections = verificationWatchers[index]
+function Helpers.disconnectVerificationWatchers()
+    for index = #Context.watchers.verification, 1, -1 do
+        local connections = Context.watchers.verification[index]
         if connections then
-            disconnectConnections(connections)
+            Helpers.disconnectConnections(connections)
         end
-        verificationWatchers[index] = nil
+        Context.watchers.verification[index] = nil
     end
 end
 
-local function disconnectSuccessListeners()
-    disconnectConnections(successConnections)
-    successStatusSnapshot = nil
+function Helpers.disconnectSuccessListeners()
+    Helpers.disconnectConnections(Context.watchers.success)
+    Context.watchers.successSnapshot = nil
     if state.remoteEstimatorActive then
         state.remoteEstimatorActive = false
-        publishLatencyTelemetry()
+        Helpers.publishLatencyTelemetry()
     end
 end
 
-local function clearRemoteState()
-    disconnectVerificationWatchers()
-    disconnectSuccessListeners()
-    ParryInputInfo = nil
-    RemotesFolder = nil
-    clearRemoteQueueGuards()
-    if ballsFolderConnections then
-        disconnectConnections(ballsFolderConnections)
-        ballsFolderConnections = nil
+function Helpers.clearRemoteState()
+    Helpers.disconnectVerificationWatchers()
+    Helpers.disconnectSuccessListeners()
+    Context.player.ParryInputInfo = nil
+    Context.player.RemotesFolder = nil
+    Helpers.clearRemoteQueueGuards()
+    if Context.watchers.ballsConnections then
+        Helpers.disconnectConnections(Context.watchers.ballsConnections)
+        Context.watchers.ballsConnections = nil
     end
-    BallsFolder = nil
-    watchedBallsFolder = nil
+    Context.player.BallsFolder = nil
+    Context.player.WatchedBallsFolder = nil
     pendingBallsFolderSearch = false
-    ballsFolderStatusSnapshot = nil
+    Context.watchers.ballsSnapshot = nil
     pendingLatencyPresses = {}
-    if syncImmortalContext then
-        syncImmortalContext()
+    if Context.runtime.syncImmortalContext then
+        Context.runtime.syncImmortalContext()
     end
 end
 
-local function configureSuccessListeners(successRemotes)
-    disconnectSuccessListeners()
+function Helpers.configureSuccessListeners(successRemotes)
+    Helpers.disconnectSuccessListeners()
 
     local status = {
         ParrySuccess = false,
@@ -3364,7 +4963,7 @@ local function configureSuccessListeners(successRemotes)
     }
 
     if not successRemotes then
-        successStatusSnapshot = status
+        Context.watchers.successSnapshot = status
         return status
     end
 
@@ -3383,9 +4982,9 @@ local function configureSuccessListeners(successRemotes)
             return
         end
 
-        local connection = connectClientEvent(remote, callback)
+        local connection = Helpers.connectClientEvent(remote, callback)
         if connection then
-            table.insert(successConnections, connection)
+            table.insert(Context.watchers.success, connection)
             status[key] = true
         end
     end
@@ -3403,13 +5002,13 @@ local function configureSuccessListeners(successRemotes)
     end)
 
     state.remoteEstimatorActive = status.ParrySuccess == true
-    publishLatencyTelemetry()
+    Helpers.publishLatencyTelemetry()
 
-    successStatusSnapshot = status
+    Context.watchers.successSnapshot = status
     return status
 end
 
-local function watchResource(instance, reason)
+function Helpers.watchResource(instance, reason)
     if not instance then
         return
     end
@@ -3422,10 +5021,10 @@ local function watchResource(instance, reason)
             return
         end
         triggered = true
-        scheduleRestart(reason)
+        Context.runtime.scheduleRestart(reason)
     end
 
-    local parentConnection = connectPropertyChangedSignal(instance, "Parent", function()
+    local parentConnection = Helpers.connectPropertyChangedSignal(instance, "Parent", function()
         local ok, parent = pcall(function()
             return instance.Parent
         end)
@@ -3439,7 +5038,7 @@ local function watchResource(instance, reason)
         table.insert(connections, parentConnection)
     end
 
-    local ancestryConnection = connectInstanceEvent(instance, "AncestryChanged", function(_, parent)
+    local ancestryConnection = Helpers.connectInstanceEvent(instance, "AncestryChanged", function(_, parent)
         if parent == nil then
             restart()
         end
@@ -3449,7 +5048,7 @@ local function watchResource(instance, reason)
         table.insert(connections, ancestryConnection)
     end
 
-    local destroyingConnection = connectInstanceEvent(instance, "Destroying", function()
+    local destroyingConnection = Helpers.connectInstanceEvent(instance, "Destroying", function()
         restart()
     end)
 
@@ -3458,17 +5057,17 @@ local function watchResource(instance, reason)
     end
 
     if #connections > 0 then
-        table.insert(verificationWatchers, connections)
+        table.insert(Context.watchers.verification, connections)
     end
 end
 
 
-scheduleRestart = function(reason)
-    if restartPending or initialization.destroyed then
+Context.runtime.scheduleRestart = function(reason)
+    if Context.runtime.restartPending or initialization.destroyed then
         return
     end
 
-    restartPending = true
+    Context.runtime.restartPending = true
     initialization.completed = false
     initialization.token += 1
     initialization.started = false
@@ -3476,41 +5075,41 @@ scheduleRestart = function(reason)
 
     local payload = { stage = "restarting", reason = reason }
 
-    if ParryInputInfo then
-        if ParryInputInfo.remoteName then
-            payload.remoteName = ParryInputInfo.remoteName
+    if Context.player.ParryInputInfo then
+        if Context.player.ParryInputInfo.remoteName then
+            payload.remoteName = Context.player.ParryInputInfo.remoteName
         end
-        if ParryInputInfo.variant then
-            payload.remoteVariant = ParryInputInfo.variant
+        if Context.player.ParryInputInfo.variant then
+            payload.remoteVariant = Context.player.ParryInputInfo.variant
         end
-        if ParryInputInfo.className then
-            payload.remoteClass = ParryInputInfo.className
+        if Context.player.ParryInputInfo.className then
+            payload.remoteClass = Context.player.ParryInputInfo.className
         end
-        if ParryInputInfo.keyCode then
-            payload.inputKey = ParryInputInfo.keyCode
+        if Context.player.ParryInputInfo.keyCode then
+            payload.inputKey = Context.player.ParryInputInfo.keyCode
         end
-        if ParryInputInfo.method then
-            payload.inputMethod = ParryInputInfo.method
+        if Context.player.ParryInputInfo.method then
+            payload.inputMethod = Context.player.ParryInputInfo.method
         end
     end
 
-    applyInitStatus(payload)
+    Helpers.applyInitStatus(payload)
 
     task.defer(function()
-        restartPending = false
+        Context.runtime.restartPending = false
         if initialization.destroyed then
             return
         end
 
-        clearRemoteState()
-        beginInitialization()
+        Helpers.clearRemoteState()
+        Helpers.beginInitialization()
     end)
 end
 
-function setBallsFolderWatcher(folder)
-    if ballsFolderConnections then
-        disconnectConnections(ballsFolderConnections)
-        ballsFolderConnections = nil
+function Helpers.setBallsFolderWatcher(folder)
+    if Context.watchers.ballsConnections then
+        Helpers.disconnectConnections(Context.watchers.ballsConnections)
+        Context.watchers.ballsConnections = nil
     end
 
     if not folder then
@@ -3525,7 +5124,7 @@ function setBallsFolderWatcher(folder)
             return
         end
         triggered = true
-        scheduleRestart(reason)
+        Context.runtime.scheduleRestart(reason)
     end
 
     local function currentParent()
@@ -3538,7 +5137,7 @@ function setBallsFolderWatcher(folder)
         return nil
     end
 
-    local parentConnection = connectPropertyChangedSignal(folder, "Parent", function()
+    local parentConnection = Helpers.connectPropertyChangedSignal(folder, "Parent", function()
         if currentParent() == nil then
             restart("balls-folder-missing")
         end
@@ -3547,7 +5146,7 @@ function setBallsFolderWatcher(folder)
         table.insert(connections, parentConnection)
     end
 
-    local ancestryConnection = connectInstanceEvent(folder, "AncestryChanged", function(_, parent)
+    local ancestryConnection = Helpers.connectInstanceEvent(folder, "AncestryChanged", function(_, parent)
         if parent == nil then
             restart("balls-folder-missing")
         end
@@ -3556,14 +5155,14 @@ function setBallsFolderWatcher(folder)
         table.insert(connections, ancestryConnection)
     end
 
-    local destroyingConnection = connectInstanceEvent(folder, "Destroying", function()
+    local destroyingConnection = Helpers.connectInstanceEvent(folder, "Destroying", function()
         restart("balls-folder-missing")
     end)
     if destroyingConnection then
         table.insert(connections, destroyingConnection)
     end
 
-    local nameConnection = connectPropertyChangedSignal(folder, "Name", function()
+    local nameConnection = Helpers.connectPropertyChangedSignal(folder, "Name", function()
         local okName, currentName = pcall(function()
             return folder.Name
         end)
@@ -3575,10 +5174,10 @@ function setBallsFolderWatcher(folder)
         table.insert(connections, nameConnection)
     end
 
-    ballsFolderConnections = connections
+    Context.watchers.ballsConnections = connections
 end
 
-local function applyInitStatus(update)
+function Helpers.applyInitStatus(update)
     for key in pairs(initProgress) do
         if update[key] == nil and key ~= "stage" then
             initProgress[key] = initProgress[key]
@@ -3589,45 +5188,45 @@ local function applyInitStatus(update)
         initProgress[key] = value
     end
 
-    initStatus:fire(cloneTable(initProgress))
+    initStatus:fire(Helpers.cloneTable(initProgress))
 end
 
-setStage = function(stage, extra)
+Context.hooks.setStage = function(stage, extra)
     local payload = { stage = stage }
     if typeof(extra) == "table" then
         for key, value in pairs(extra) do
             payload[key] = value
         end
     end
-    applyInitStatus(payload)
+    Helpers.applyInitStatus(payload)
 end
 
-local function formatToggleText(enabled)
+function Helpers.formatToggleText(enabled)
     return enabled and "Auto-Parry: ON" or "Auto-Parry: OFF"
 end
 
-local function formatToggleColor(enabled)
+function Helpers.formatToggleColor(enabled)
     if enabled then
         return Color3.fromRGB(0, 120, 0)
     end
     return Color3.fromRGB(40, 40, 40)
 end
 
-local function formatImmortalText(enabled)
+function Helpers.formatImmortalText(enabled)
     if enabled then
         return "IMMORTAL: ON"
     end
     return "IMMORTAL: OFF"
 end
 
-local function formatImmortalColor(enabled)
+function Helpers.formatImmortalColor(enabled)
     if enabled then
         return Color3.fromRGB(0, 170, 85)
     end
     return Color3.fromRGB(40, 40, 40)
 end
 
-local function syncGlobalSettings()
+function Helpers.syncGlobalSettings()
     local settings = GlobalEnv.Paws
     if typeof(settings) ~= "table" then
         settings = {}
@@ -3648,115 +5247,128 @@ local function syncGlobalSettings()
         maxLookahead = config.pressMaxLookahead,
         confidencePadding = config.pressConfidencePadding,
     }
-    settings.SmartTuning = snapshotSmartTuningState()
-    settings.AutoTuning = cloneAutoTuningSnapshot()
+    settings.SmartTuning = Helpers.snapshotSmartTuningState()
+    settings.AutoTuning = Helpers.cloneAutoTuningSnapshot()
 end
 
-local function updateToggleButton()
-    if not ToggleButton then
+function Helpers.updateToggleButton()
+    local toggleButton = Context.ui.ToggleButton
+    if not toggleButton then
         return
     end
 
-    ToggleButton.Text = formatToggleText(state.enabled)
-    ToggleButton.BackgroundColor3 = formatToggleColor(state.enabled)
+    toggleButton.Text = Helpers.formatToggleText(state.enabled)
+    toggleButton.BackgroundColor3 = Helpers.formatToggleColor(state.enabled)
 end
 
-local function updateImmortalButton()
-    if not ImmortalButton then
+function Helpers.updateImmortalButton()
+    local immortalButton = Context.ui.ImmortalButton
+    if not immortalButton then
         return
     end
 
-    ImmortalButton.Text = formatImmortalText(state.immortalEnabled)
-    ImmortalButton.BackgroundColor3 = formatImmortalColor(state.immortalEnabled)
+    immortalButton.Text = Helpers.formatImmortalText(state.immortalEnabled)
+    immortalButton.BackgroundColor3 = Helpers.formatImmortalColor(state.immortalEnabled)
 end
 
-updateStatusLabel = function(lines)
-    if not StatusLabel then
+Context.hooks.updateStatusLabel = function(lines)
+    local statusLabel = Context.ui.StatusLabel
+    if not statusLabel then
         return
     end
 
     if typeof(lines) == "table" then
-        StatusLabel.Text = table.concat(lines, "\n")
+        statusLabel.Text = table.concat(lines, "\n")
     else
-        StatusLabel.Text = tostring(lines)
+        statusLabel.Text = tostring(lines)
     end
 end
 
-local function syncImmortalContextImpl()
+function Helpers.syncImmortalContextImpl()
     if not immortalController then
         return
     end
 
-    local okContext = callImmortalController("setContext", {
-        player = LocalPlayer,
-        character = Character,
-        humanoid = Humanoid,
-        rootPart = RootPart,
-        ballsFolder = BallsFolder,
+    local playerContext = Context.player
+    local okContext = Helpers.callImmortalController("setContext", {
+        player = playerContext.LocalPlayer,
+        character = playerContext.Character,
+        humanoid = playerContext.Humanoid,
+        rootPart = playerContext.RootPart,
+        ballsFolder = playerContext.BallsFolder,
     })
 
     if not okContext then
         return
     end
 
-    if not callImmortalController("setBallsFolder", BallsFolder) then
+    if not Helpers.callImmortalController("setBallsFolder", playerContext.BallsFolder) then
         return
     end
 
-    callImmortalController("setEnabled", state.immortalEnabled)
+    Helpers.callImmortalController("setEnabled", state.immortalEnabled)
 end
 
-syncImmortalContext = syncImmortalContextImpl
+Context.runtime.syncImmortalContext = Helpers.syncImmortalContextImpl
 
-local function enterRespawnWaitState()
-    if LocalPlayer then
-        setStage("waiting-character", { player = LocalPlayer.Name })
-    else
-        setStage("waiting-character")
+function Helpers.enterRespawnWaitState()
+    local playerContext = Context.player
+    local stageHook = Context.hooks.setStage
+    if stageHook then
+        if playerContext.LocalPlayer then
+            stageHook("waiting-character", { player = playerContext.LocalPlayer.Name })
+        else
+            stageHook("waiting-character")
+        end
     end
 
-    updateStatusLabel({ "Auto-Parry F", "Status: waiting for respawn" })
+    Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: waiting for respawn" })
 end
 
-local function clearBallVisualsInternal()
-    if BallHighlight then
-        BallHighlight.Enabled = false
-        BallHighlight.Adornee = nil
+function Helpers.clearBallVisualsInternal()
+    local ui = Context.ui
+    local runtime = Context.runtime
+
+    if ui.BallHighlight then
+        ui.BallHighlight.Enabled = false
+        ui.BallHighlight.Adornee = nil
     end
-    if BallBillboard then
-        BallBillboard.Enabled = false
-        BallBillboard.Adornee = nil
+    if ui.BallBillboard then
+        ui.BallBillboard.Enabled = false
+        ui.BallBillboard.Adornee = nil
     end
-    trackedBall = nil
+    runtime.trackedBall = nil
 end
 
-local function safeClearBallVisuals()
+function Helpers.safeClearBallVisuals()
     -- Some exploit environments aggressively nil out locals when reloading the
     -- module; guard the call so we gracefully fall back instead of throwing.
-    if typeof(clearBallVisualsInternal) == "function" then
-        clearBallVisualsInternal()
+    if typeof(Helpers.clearBallVisualsInternal) == "function" then
+        Helpers.clearBallVisualsInternal()
         return
     end
 
-    if BallHighlight then
-        BallHighlight.Enabled = false
-        BallHighlight.Adornee = nil
+    local ui = Context.ui
+    Context.runtime.trackedBall = nil
+
+    if ui.BallHighlight then
+        ui.BallHighlight.Enabled = false
+        ui.BallHighlight.Adornee = nil
     end
-    if BallBillboard then
-        BallBillboard.Enabled = false
-        BallBillboard.Adornee = nil
+    if ui.BallBillboard then
+        ui.BallBillboard.Enabled = false
+        ui.BallBillboard.Adornee = nil
     end
-    trackedBall = nil
 end
 
-sendParryKeyEvent = function(isPressed)
-    local manager = resolveVirtualInputManager()
+Context.hooks.sendParryKeyEvent = function(isPressed)
+    local manager = Helpers.resolveVirtualInputManager()
     if not manager then
-        if not virtualInputWarningIssued then
-            virtualInputWarningIssued = true
+        if not Context.runtime.virtualInputWarningIssued then
+            Context.runtime.virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager unavailable; cannot issue parry input.")
         end
-        noteVirtualInputFailure(3)
+        Helpers.noteVirtualInputFailure(3)
         return false
     end
 
@@ -3765,48 +5377,49 @@ sendParryKeyEvent = function(isPressed)
     end)
 
     if not okMethod or typeof(method) ~= "function" then
-        if not virtualInputWarningIssued then
-            virtualInputWarningIssued = true
+        if not Context.runtime.virtualInputWarningIssued then
+            Context.runtime.virtualInputWarningIssued = true
             warn("AutoParry: VirtualInputManager.SendKeyEvent missing; cannot issue parry input.")
         end
-        noteVirtualInputFailure(3)
+        Helpers.noteVirtualInputFailure(3)
         return false
     end
 
     local success, result = pcall(method, manager, isPressed, Enum.KeyCode.F, false, game)
     if not success then
-        if not virtualInputWarningIssued then
-            virtualInputWarningIssued = true
+        if not Context.runtime.virtualInputWarningIssued then
+            Context.runtime.virtualInputWarningIssued = true
             warn("AutoParry: failed to send parry input via VirtualInputManager:", result)
         end
-        noteVirtualInputFailure(2)
+        Helpers.noteVirtualInputFailure(2)
         return false
     end
 
-    if virtualInputWarningIssued then
-        virtualInputWarningIssued = false
+    if Context.runtime.virtualInputWarningIssued then
+        Context.runtime.virtualInputWarningIssued = false
     end
 
-    noteVirtualInputSuccess()
+    Helpers.noteVirtualInputSuccess()
 
     return true
 end
 
-local function destroyDashboardUi()
-    if not CoreGui then
+function Helpers.destroyDashboardUi()
+    local coreGui = Services.CoreGui
+    if not coreGui then
         return
     end
 
     for _, name in ipairs({ "AutoParryUI", "AutoParryLoadingOverlay" }) do
-        local screen = CoreGui:FindFirstChild(name)
+        local screen = coreGui:FindFirstChild(name)
         if screen then
             screen:Destroy()
         end
     end
 end
 
-local function removePlayerGuiUi()
-    local player = Players.LocalPlayer
+function Helpers.removePlayerGuiUi()
+    local player = Services.Players.LocalPlayer
     if not player then
         return
     end
@@ -3832,7 +5445,7 @@ local function removePlayerGuiUi()
     end
 end
 
-local function removeAutoParryExperience()
+function Helpers.removeAutoParryExperience()
     local destroyOk, destroyErr = pcall(function()
         if typeof(AutoParry) == "table" and typeof(AutoParry.destroy) == "function" then
             AutoParry.destroy()
@@ -3845,31 +5458,31 @@ local function removeAutoParryExperience()
     GlobalEnv.Paws = nil
 
     local cleanupOk, cleanupErr = pcall(function()
-        removePlayerGuiUi()
-        destroyDashboardUi()
+        Helpers.removePlayerGuiUi()
+        Helpers.destroyDashboardUi()
     end)
     if not cleanupOk then
         warn("AutoParry: failed to clear UI:", cleanupErr)
     end
 end
 
-local function ensureUi()
-    if UiRoot or not LocalPlayer then
+function Helpers.ensureUi()
+    if Context.ui.Root or not Context.player.LocalPlayer then
         return
     end
 
     local playerGui
-    if LocalPlayer then
-        local finder = LocalPlayer.FindFirstChildOfClass or LocalPlayer.FindFirstChildWhichIsA
+    if Context.player.LocalPlayer then
+        local finder = Context.player.LocalPlayer.FindFirstChildOfClass or Context.player.LocalPlayer.FindFirstChildWhichIsA
         if typeof(finder) == "function" then
-            local ok, result = pcall(finder, LocalPlayer, "PlayerGui")
+            local ok, result = pcall(finder, Context.player.LocalPlayer, "PlayerGui")
             if ok then
                 playerGui = result
             end
         end
 
-        if not playerGui and typeof(LocalPlayer.WaitForChild) == "function" then
-            local okWait, result = pcall(LocalPlayer.WaitForChild, LocalPlayer, "PlayerGui", 5)
+        if not playerGui and typeof(Context.player.LocalPlayer.WaitForChild) == "function" then
+            local okWait, result = pcall(Context.player.LocalPlayer.WaitForChild, Context.player.LocalPlayer, "PlayerGui", 5)
             if okWait then
                 playerGui = result
             end
@@ -3890,12 +5503,12 @@ local function ensureUi()
     local toggleBtn = Instance.new("TextButton")
     toggleBtn.Size = UDim2.fromOffset(180, 40)
     toggleBtn.Position = UDim2.fromOffset(10, 10)
-    toggleBtn.BackgroundColor3 = formatToggleColor(state.enabled)
+    toggleBtn.BackgroundColor3 = Helpers.formatToggleColor(state.enabled)
     toggleBtn.TextColor3 = Color3.new(1, 1, 1)
     toggleBtn.Font = Enum.Font.GothamBold
     toggleBtn.TextSize = 20
     toggleBtn.BorderSizePixel = 0
-    toggleBtn.Text = formatToggleText(state.enabled)
+    toggleBtn.Text = Helpers.formatToggleText(state.enabled)
     toggleBtn.Parent = gui
     toggleBtn.MouseButton1Click:Connect(function()
         AutoParry.toggle()
@@ -3904,12 +5517,12 @@ local function ensureUi()
     local immortalBtn = Instance.new("TextButton")
     immortalBtn.Size = UDim2.fromOffset(180, 34)
     immortalBtn.Position = UDim2.fromOffset(10, 54)
-    immortalBtn.BackgroundColor3 = formatImmortalColor(state.immortalEnabled)
+    immortalBtn.BackgroundColor3 = Helpers.formatImmortalColor(state.immortalEnabled)
     immortalBtn.TextColor3 = Color3.new(1, 1, 1)
     immortalBtn.Font = Enum.Font.GothamBold
     immortalBtn.TextSize = 18
     immortalBtn.BorderSizePixel = 0
-    immortalBtn.Text = formatImmortalText(state.immortalEnabled)
+    immortalBtn.Text = Helpers.formatImmortalText(state.immortalEnabled)
     immortalBtn.Parent = gui
     immortalBtn.MouseButton1Click:Connect(function()
         AutoParry.toggleImmortal()
@@ -3926,7 +5539,7 @@ local function ensureUi()
     removeBtn.Text = "REMOVE Auto-Parry"
     removeBtn.Parent = gui
     removeBtn.MouseButton1Click:Connect(function()
-        removeAutoParryExperience()
+        Helpers.removeAutoParryExperience()
     end)
 
     local status = Instance.new("TextLabel")
@@ -3972,45 +5585,45 @@ local function ensureUi()
     statsLabel.Text = ""
     statsLabel.Parent = billboard
 
-    UiRoot = gui
-    ToggleButton = toggleBtn
-    ImmortalButton = immortalBtn
-    RemoveButton = removeBtn
-    StatusLabel = status
-    BallHighlight = highlight
-    BallBillboard = billboard
-    BallStatsLabel = statsLabel
+    Context.ui.Root = gui
+    Context.ui.ToggleButton = toggleBtn
+    Context.ui.ImmortalButton = immortalBtn
+    Context.ui.RemoveButton = removeBtn
+    Context.ui.StatusLabel = status
+    Context.ui.BallHighlight = highlight
+    Context.ui.BallBillboard = billboard
+    Context.ui.BallStatsLabel = statsLabel
 
-    updateToggleButton()
-    updateImmortalButton()
-    updateStatusLabel({ "Auto-Parry F", "Status: initializing" })
+    Helpers.updateToggleButton()
+    Helpers.updateImmortalButton()
+    Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: initializing" })
 end
 
-local function destroyUi()
-    safeClearBallVisuals()
-    if UiRoot then
-        UiRoot:Destroy()
+function Helpers.destroyUi()
+    Helpers.safeClearBallVisuals()
+    if Context.ui.Root then
+        Context.ui.Root:Destroy()
     end
-    UiRoot = nil
-    ToggleButton = nil
-    ImmortalButton = nil
-    RemoveButton = nil
-    StatusLabel = nil
-    BallHighlight = nil
-    BallBillboard = nil
-    BallStatsLabel = nil
+    Context.ui.Root = nil
+    Context.ui.ToggleButton = nil
+    Context.ui.ImmortalButton = nil
+    Context.ui.RemoveButton = nil
+    Context.ui.StatusLabel = nil
+    Context.ui.BallHighlight = nil
+    Context.ui.BallBillboard = nil
+    Context.ui.BallStatsLabel = nil
 end
 
-local function getPingTime()
+function Helpers.getPingTime()
     local now = os.clock()
     if now - pingSample.time < PING_REFRESH_INTERVAL then
         return pingSample.value
     end
 
     local seconds = pingSample.value
-    if Stats then
+    if Services.Stats then
         local okStat, stat = pcall(function()
-            return Stats.Network.ServerStatsItem["Data Ping"]
+            return Services.Stats.Network.ServerStatsItem["Data Ping"]
         end)
 
         if okStat and stat then
@@ -4021,7 +5634,7 @@ local function getPingTime()
         end
     end
 
-    if not isFiniteNumber(seconds) or seconds < 0 then
+    if not Helpers.isFiniteNumber(seconds) or seconds < 0 then
         seconds = 0
     end
 
@@ -4031,9 +5644,9 @@ local function getPingTime()
     return seconds
 end
 
-local function isTargetingMe(now)
-    if not Character then
-        targetingGraceUntil = 0
+function Helpers.isTargetingMe(now)
+    if not Context.player.Character then
+        Context.runtime.targetingGraceUntil = 0
         return false
     end
 
@@ -4041,27 +5654,27 @@ local function isTargetingMe(now)
     now = now or os.clock()
 
     if not highlightName or highlightName == "" then
-        targetingGraceUntil = math.max(targetingGraceUntil, now + TARGETING_GRACE_SECONDS)
+        Context.runtime.targetingGraceUntil = math.max(Context.runtime.targetingGraceUntil, now + Constants.TARGETING_GRACE_SECONDS)
         return true
     end
 
     local ok, result = pcall(function()
-        return Character:FindFirstChild(highlightName)
+        return Context.player.Character:FindFirstChild(highlightName)
     end)
 
     if ok and result ~= nil then
-        targetingGraceUntil = now + TARGETING_GRACE_SECONDS
+        Context.runtime.targetingGraceUntil = now + Constants.TARGETING_GRACE_SECONDS
         return true
     end
 
-    if targetingGraceUntil > now then
+    if Context.runtime.targetingGraceUntil > now then
         return true
     end
 
     return false
 end
 
-local function findRealBall(folder)
+function Helpers.findRealBall(folder)
     if not folder then
         return nil
     end
@@ -4083,7 +5696,7 @@ end
 
 local pendingBallsFolderSearch = false
 
-local function isValidBallsFolder(candidate, expectedName)
+function Helpers.isValidBallsFolder(candidate, expectedName)
     if not candidate then
         return false
     end
@@ -4105,56 +5718,56 @@ local function isValidBallsFolder(candidate, expectedName)
     return true
 end
 
-local function ensureBallsFolder(allowYield: boolean?)
+function Helpers.ensureBallsFolder(allowYield: boolean?)
     local expectedName = config.ballsFolderName
     if typeof(expectedName) ~= "string" or expectedName == "" then
         return nil
     end
 
-    if not isValidBallsFolder(BallsFolder, expectedName) then
-        BallsFolder = nil
-        watchedBallsFolder = nil
-        setBallsFolderWatcher(nil)
-        syncImmortalContext()
+    if not Helpers.isValidBallsFolder(Context.player.BallsFolder, expectedName) then
+        Context.player.BallsFolder = nil
+        Context.player.WatchedBallsFolder = nil
+        Helpers.setBallsFolderWatcher(nil)
+        Context.runtime.syncImmortalContext()
 
-        local found = Workspace:FindFirstChild(expectedName)
-        if isValidBallsFolder(found, expectedName) then
-            BallsFolder = found
-            syncImmortalContext()
+        local found = Services.Workspace:FindFirstChild(expectedName)
+        if Helpers.isValidBallsFolder(found, expectedName) then
+            Context.player.BallsFolder = found
+            Context.runtime.syncImmortalContext()
         end
     end
 
-    if BallsFolder then
-        if watchedBallsFolder ~= BallsFolder and initialization.completed then
-            setBallsFolderWatcher(BallsFolder)
-            watchedBallsFolder = BallsFolder
-            publishReadyStatus()
+    if Context.player.BallsFolder then
+        if Context.player.WatchedBallsFolder ~= Context.player.BallsFolder and initialization.completed then
+            Helpers.setBallsFolderWatcher(Context.player.BallsFolder)
+            Context.player.WatchedBallsFolder = Context.player.BallsFolder
+            Context.hooks.publishReadyStatus()
         end
 
-        syncImmortalContext()
-        return BallsFolder
+        Context.runtime.syncImmortalContext()
+        return Context.player.BallsFolder
     end
 
     if allowYield then
         local timeout = config.ballsFolderTimeout
         local ok, result = pcall(function()
             if timeout and timeout > 0 then
-                return Workspace:WaitForChild(expectedName, timeout)
+                return Services.Workspace:WaitForChild(expectedName, timeout)
             end
-            return Workspace:WaitForChild(expectedName)
+            return Services.Workspace:WaitForChild(expectedName)
         end)
 
-        if ok and isValidBallsFolder(result, expectedName) then
-            BallsFolder = result
+        if ok and Helpers.isValidBallsFolder(result, expectedName) then
+            Context.player.BallsFolder = result
 
             if initialization.completed then
-                setBallsFolderWatcher(BallsFolder)
-                watchedBallsFolder = BallsFolder
-                publishReadyStatus()
+                Helpers.setBallsFolderWatcher(Context.player.BallsFolder)
+                Context.player.WatchedBallsFolder = Context.player.BallsFolder
+                Context.hooks.publishReadyStatus()
             end
 
-            syncImmortalContext()
-            return BallsFolder
+            Context.runtime.syncImmortalContext()
+            return Context.player.BallsFolder
         end
 
         return nil
@@ -4168,16 +5781,16 @@ local function ensureBallsFolder(allowYield: boolean?)
                 return
             end
 
-            ensureBallsFolder(true)
+            Helpers.ensureBallsFolder(true)
         end)
     end
 
     return nil
 end
 
-local function getBallsFolderLabel()
+function Helpers.getBallsFolderLabel()
     local folderLabel = config.ballsFolderName
-    local folder = BallsFolder
+    local folder = Context.player.BallsFolder
 
     if folder then
         local okName, fullName = pcall(folder.GetFullName, folder)
@@ -4191,58 +5804,58 @@ local function getBallsFolderLabel()
     return folderLabel
 end
 
-function publishReadyStatus()
+function Context.hooks.publishReadyStatus()
     local payload = {
         stage = "ready",
-        player = LocalPlayer and LocalPlayer.Name or "Unknown",
-        ballsFolder = getBallsFolderLabel(),
+        player = Context.player.LocalPlayer and Context.player.LocalPlayer.Name or "Unknown",
+        ballsFolder = Helpers.getBallsFolderLabel(),
     }
 
-    if ParryInputInfo then
-        if ParryInputInfo.remoteName then
-            payload.remoteName = ParryInputInfo.remoteName
+    if Context.player.ParryInputInfo then
+        if Context.player.ParryInputInfo.remoteName then
+            payload.remoteName = Context.player.ParryInputInfo.remoteName
         end
-        if ParryInputInfo.className then
-            payload.remoteClass = ParryInputInfo.className
+        if Context.player.ParryInputInfo.className then
+            payload.remoteClass = Context.player.ParryInputInfo.className
         end
-        if ParryInputInfo.variant then
-            payload.remoteVariant = ParryInputInfo.variant
+        if Context.player.ParryInputInfo.variant then
+            payload.remoteVariant = Context.player.ParryInputInfo.variant
         end
-        if ParryInputInfo.method then
-            payload.remoteMethod = ParryInputInfo.method
+        if Context.player.ParryInputInfo.method then
+            payload.remoteMethod = Context.player.ParryInputInfo.method
         end
-        if ParryInputInfo.keyCode then
-            payload.inputKey = ParryInputInfo.keyCode
+        if Context.player.ParryInputInfo.keyCode then
+            payload.inputKey = Context.player.ParryInputInfo.keyCode
         end
     end
 
-    if successStatusSnapshot then
-        payload.successEvents = cloneTable(successStatusSnapshot)
+    if Context.watchers.successSnapshot then
+        payload.successEvents = Helpers.cloneTable(Context.watchers.successSnapshot)
     end
 
-    if ballsFolderStatusSnapshot then
-        payload.ballsFolderStatus = cloneTable(ballsFolderStatusSnapshot)
+    if Context.watchers.ballsSnapshot then
+        payload.ballsFolderStatus = Helpers.cloneTable(Context.watchers.ballsSnapshot)
     end
 
-    applyInitStatus(payload)
+    Helpers.applyInitStatus(payload)
 end
 
-local function setBallVisuals(ball, text)
-    if BallHighlight then
-        BallHighlight.Adornee = ball
-        BallHighlight.Enabled = ball ~= nil
+function Helpers.setBallVisuals(ball, text)
+    if Context.ui.BallHighlight then
+        Context.ui.BallHighlight.Adornee = ball
+        Context.ui.BallHighlight.Enabled = ball ~= nil
     end
-    if BallBillboard then
-        BallBillboard.Adornee = ball
-        BallBillboard.Enabled = ball ~= nil
+    if Context.ui.BallBillboard then
+        Context.ui.BallBillboard.Adornee = ball
+        Context.ui.BallBillboard.Enabled = ball ~= nil
     end
-    if BallStatsLabel then
-        BallStatsLabel.Text = text or ""
+    if Context.ui.BallStatsLabel then
+        Context.ui.BallStatsLabel.Text = text or ""
     end
-    trackedBall = ball
+    Context.runtime.trackedBall = ball
 end
 
-local function getBallIdentifier(ball)
+function Helpers.getBallIdentifier(ball)
     if not ball then
         return nil
     end
@@ -4256,28 +5869,28 @@ local function getBallIdentifier(ball)
 end
 
 
-local function clearScheduledPress(targetBallId: string?, reason: string?, metadata: { [string]: any }?)
-    if targetBallId and scheduledPressState.ballId ~= targetBallId then
+function Helpers.clearScheduledPress(targetBallId: string?, reason: string?, metadata: { [string]: any }?)
+    if targetBallId and Context.scheduledPressState.ballId ~= targetBallId then
         return
     end
 
-    local previousBallId = scheduledPressState.ballId
-    local previousPressAt = scheduledPressState.pressAt
-    local previousPredictedImpact = scheduledPressState.predictedImpact
-    local previousLead = scheduledPressState.lead
-    local previousSlack = scheduledPressState.slack
-    local previousReason = scheduledPressState.reason
-    local lastUpdate = scheduledPressState.lastUpdate
+    local previousBallId = Context.scheduledPressState.ballId
+    local previousPressAt = Context.scheduledPressState.pressAt
+    local previousPredictedImpact = Context.scheduledPressState.predictedImpact
+    local previousLead = Context.scheduledPressState.lead
+    local previousSlack = Context.scheduledPressState.slack
+    local previousReason = Context.scheduledPressState.reason
+    local lastUpdate = Context.scheduledPressState.lastUpdate
 
-    scheduledPressState.ballId = nil
-    scheduledPressState.pressAt = 0
-    scheduledPressState.predictedImpact = math.huge
-    scheduledPressState.lead = 0
-    scheduledPressState.slack = 0
-    scheduledPressState.reason = nil
-    scheduledPressState.lastUpdate = 0
-    scheduledPressState.smartTuning = nil
-    scheduledPressState.immediate = false
+    Context.scheduledPressState.ballId = nil
+    Context.scheduledPressState.pressAt = 0
+    Context.scheduledPressState.predictedImpact = math.huge
+    Context.scheduledPressState.lead = 0
+    Context.scheduledPressState.slack = 0
+    Context.scheduledPressState.reason = nil
+    Context.scheduledPressState.lastUpdate = 0
+    Context.scheduledPressState.smartTuning = nil
+    Context.scheduledPressState.immediate = false
 
     if previousBallId then
         local now = os.clock()
@@ -4302,7 +5915,7 @@ local function clearScheduledPress(targetBallId: string?, reason: string?, metad
             end
         end
 
-        local snapshot = scheduledPressState.lastSnapshot
+        local snapshot = Context.scheduledPressState.lastSnapshot
         if snapshot and snapshot.ballId == previousBallId then
             snapshot.clearedReason = event.reason
             snapshot.clearedAt = now
@@ -4315,11 +5928,11 @@ local function clearScheduledPress(targetBallId: string?, reason: string?, metad
             end
         end
         TelemetryAnalytics.recordScheduleCleared(event)
-        pushTelemetryEvent("schedule-cleared", event)
+        emitTelemetryEvent("schedule-cleared", event)
     end
 end
 
-local function updateScheduledPress(
+function Helpers.updateScheduledPress(
     ballId: string,
     predictedImpact: number,
     lead: number,
@@ -4331,27 +5944,27 @@ local function updateScheduledPress(
     local pressDelay = math.max(predictedImpact - lead, 0)
     local pressAt = now + pressDelay
 
-    if scheduledPressState.ballId ~= ballId then
-        scheduledPressState.ballId = ballId
-    elseif math.abs(scheduledPressState.pressAt - pressAt) > SMART_PRESS_TRIGGER_GRACE then
-        scheduledPressState.ballId = ballId
+    if Context.scheduledPressState.ballId ~= ballId then
+        Context.scheduledPressState.ballId = ballId
+    elseif math.abs(Context.scheduledPressState.pressAt - pressAt) > Context.smartPress.triggerGrace then
+        Context.scheduledPressState.ballId = ballId
     end
 
-    scheduledPressState.pressAt = pressAt
-    scheduledPressState.predictedImpact = predictedImpact
-    scheduledPressState.lead = lead
-    scheduledPressState.slack = slack
-    scheduledPressState.reason = reason
-    scheduledPressState.lastUpdate = now
+    Context.scheduledPressState.pressAt = pressAt
+    Context.scheduledPressState.predictedImpact = predictedImpact
+    Context.scheduledPressState.lead = lead
+    Context.scheduledPressState.slack = slack
+    Context.scheduledPressState.reason = reason
+    Context.scheduledPressState.lastUpdate = now
     if typeof(context) == "table" and context.immediate ~= nil then
-        scheduledPressState.immediate = context.immediate == true
+        Context.scheduledPressState.immediate = context.immediate == true
     else
-        scheduledPressState.immediate = false
+        Context.scheduledPressState.immediate = false
     end
     if typeof(context) == "table" and context.smartTuning ~= nil then
-        scheduledPressState.smartTuning = normalizeSmartTuningPayload(context.smartTuning)
+        Context.scheduledPressState.smartTuning = Helpers.normalizeSmartTuningPayload(context.smartTuning)
     else
-        scheduledPressState.smartTuning = nil
+        Context.scheduledPressState.smartTuning = nil
     end
 
     local event = {
@@ -4379,67 +5992,67 @@ local function updateScheduledPress(
         end
     end
 
-    scheduledPressState.lastSnapshot = cloneTable(event)
+    Context.scheduledPressState.lastSnapshot = Helpers.cloneTable(event)
 
     if event.immediate == nil then
-        event.immediate = scheduledPressState.immediate
+        event.immediate = Context.scheduledPressState.immediate
     end
 
     TelemetryAnalytics.recordSchedule(event)
-    pushTelemetryEvent("schedule", event)
+    emitTelemetryEvent("schedule", event)
 end
 
 
-local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
+function Helpers.pressParry(ball: BasePart?, ballId: string?, force: boolean?, decisionPayload: { [string]: any }?)
     local forcing = force == true
-    if virtualInputUnavailable and virtualInputRetryAt > os.clock() and not forcing then
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > os.clock() and not forcing then
         return false
     end
 
-    if parryHeld then
-        local sameBall = parryHeldBallId == ballId
+    if Context.runtime.parryHeld then
+        local sameBall = Context.runtime.parryHeldBallId == ballId
         if sameBall and not forcing then
             return false
         end
 
         -- release the existing hold before pressing again or for a new ball
-        if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
-            pendingParryRelease = true
+        if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > os.clock() then
+            Context.runtime.pendingParryRelease = true
         else
-            if not sendParryKeyEvent(false) then
-                pendingParryRelease = true
+            if not Context.hooks.sendParryKeyEvent(false) then
+                Context.runtime.pendingParryRelease = true
             else
-                pendingParryRelease = false
+                Context.runtime.pendingParryRelease = false
             end
         end
-        parryHeld = false
-        parryHeldBallId = nil
+        Context.runtime.parryHeld = false
+        Context.runtime.parryHeldBallId = nil
     end
 
-    if not sendParryKeyEvent(true) then
+    if not Context.hooks.sendParryKeyEvent(true) then
         return false
     end
 
-    pendingParryRelease = false
+    Context.runtime.pendingParryRelease = false
 
-    parryHeld = true
-    parryHeldBallId = ballId
+    Context.runtime.parryHeld = true
+    Context.runtime.parryHeldBallId = ballId
 
     local now = os.clock()
     state.lastParry = now
 
-    local smartContext = scheduledPressState.smartTuning
+    local smartContext = Context.scheduledPressState.smartTuning
     if smartContext == nil and smartTuningState.enabled then
-        smartContext = snapshotSmartTuningState()
+        smartContext = Helpers.snapshotSmartTuningState()
     end
     local normalizedSmartContext = nil
     if smartContext ~= nil then
-        normalizedSmartContext = normalizeSmartTuningPayload(smartContext)
+        normalizedSmartContext = Helpers.normalizeSmartTuningPayload(smartContext)
     end
 
     local scheduledSnapshot = nil
     if ballId then
-        local hasSchedule = scheduledPressState.ballId == ballId and scheduledPressState.lastUpdate and scheduledPressState.lastUpdate > 0
+        local hasSchedule = Context.scheduledPressState.ballId == ballId and Context.scheduledPressState.lastUpdate and Context.scheduledPressState.lastUpdate > 0
         if not hasSchedule then
             local immediateContext = {
                 immediate = true,
@@ -4448,11 +6061,11 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
             if normalizedSmartContext ~= nil then
                 immediateContext.smartTuning = normalizedSmartContext
             end
-            updateScheduledPress(ballId, 0, 0, 0, "immediate-press", now, immediateContext)
+            Helpers.updateScheduledPress(ballId, 0, 0, 0, "immediate-press", now, immediateContext)
         end
         scheduledSnapshot = captureScheduledPressSnapshot(ballId)
     end
-    prunePendingLatencyPresses(now)
+    Helpers.prunePendingLatencyPresses(now)
     pendingLatencyPresses[#pendingLatencyPresses + 1] = { time = now, ballId = ballId }
 
     local telemetry = nil
@@ -4461,8 +6074,8 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     end
 
     local scheduledReason = nil
-    if ballId and scheduledPressState.ballId == ballId then
-        scheduledReason = scheduledPressState.reason
+    if ballId and Context.scheduledPressState.ballId == ballId then
+        scheduledReason = Context.scheduledPressState.reason
     end
 
     local pressEvent = {
@@ -4474,17 +6087,77 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
         scheduledReason = scheduledReason,
     }
 
+    if typeof(decisionPayload) == "table" then
+        local simulationSnapshot = Helpers.cloneTelemetryEvent(decisionPayload.proximitySimulation)
+        local decisionSnapshot = {
+            pressRadius = decisionPayload.pressRadius,
+            holdRadius = decisionPayload.holdRadius,
+            baseLead = decisionPayload.proximityBaseLead,
+            adaptiveLead = decisionPayload.proximityAdaptiveLead,
+            manifold = decisionPayload.proximityManifold or decisionPayload.proximitySynthesis,
+            synthesis = decisionPayload.proximitySynthesis,
+            logistic = decisionPayload.proximityLogistic,
+            threatScore = decisionPayload.threatScore,
+            threatStatus = decisionPayload.threatStatus,
+            threatIntensity = decisionPayload.threatIntensity,
+            threatTempo = decisionPayload.threatTempo,
+            threatConfidence = decisionPayload.threatConfidence,
+            threatLoad = decisionPayload.threatLoad,
+            threatSpectralFast = decisionPayload.threatSpectralFast,
+            threatSpectralMedium = decisionPayload.threatSpectralMedium,
+            threatSpectralSlow = decisionPayload.threatSpectralSlow,
+            threatMomentum = decisionPayload.threatMomentum,
+            threatVolatility = decisionPayload.threatVolatility,
+            threatStability = decisionPayload.threatStability,
+            threatAcceleration = decisionPayload.threatAcceleration,
+            threatJerk = decisionPayload.threatJerk,
+            threatBoost = decisionPayload.threatBoost,
+            threatInstantReady = decisionPayload.threatInstantReady,
+            threatBudget = decisionPayload.threatBudget,
+            threatBudgetHorizon = decisionPayload.threatBudgetHorizon,
+            threatBudgetRatio = decisionPayload.threatBudgetRatio,
+            threatBudgetPressure = decisionPayload.threatBudgetPressure,
+            threatLatencyGap = decisionPayload.threatLatencyGap,
+            threatBudgetReady = decisionPayload.threatBudgetReady,
+            threatReadiness = decisionPayload.threatReadiness,
+            threatBudgetConfidenceGain = decisionPayload.threatBudgetConfidenceGain,
+            detectionConfidence = decisionPayload.detectionConfidence,
+            simulationCached = decisionPayload.proximitySimulationCached,
+            simulationCacheKey = decisionPayload.proximitySimulationCacheKey,
+            simulationCacheHits = decisionPayload.proximitySimulationCacheHits,
+            simulationCacheStreak = decisionPayload.proximitySimulationCacheStreak,
+            envelope = decisionPayload.proximityEnvelope,
+            simulationEnergy = decisionPayload.proximitySimulationEnergy,
+            simulationUrgency = decisionPayload.proximitySimulationUrgency,
+            simulationQuality = decisionPayload.proximitySimulationQuality,
+            velocitySignature = decisionPayload.proximityVelocityImprint,
+            weightedIntrusion = decisionPayload.proximityWeightedIntrusion,
+            ballisticGain = decisionPayload.proximityBallisticGain,
+            distanceSuppression = decisionPayload.proximityDistanceSuppression,
+            lookaheadGain = decisionPayload.proximityLookaheadGain,
+            impactRatio = decisionPayload.proximityImpactRatio,
+            responseWindow = decisionPayload.responseWindow,
+            holdWindow = decisionPayload.holdWindow,
+            timeToImpact = decisionPayload.timeToImpact,
+            predictedImpact = decisionPayload.predictedImpact,
+        }
+        if simulationSnapshot ~= nil then
+            decisionSnapshot.simulation = simulationSnapshot
+        end
+        pressEvent.decision = Helpers.cloneTelemetryEvent(decisionSnapshot)
+    end
+
     if TelemetryAnalytics.adaptiveState then
         pressEvent.adaptiveBias = TelemetryAnalytics.adaptiveState.reactionBias
     end
 
-    local eventSmartContext = normalizedSmartContext or scheduledPressState.smartTuning
+    local eventSmartContext = normalizedSmartContext or Context.scheduledPressState.smartTuning
     if eventSmartContext == nil and smartTuningState.enabled then
-        eventSmartContext = normalizeSmartTuningPayload(snapshotSmartTuningState())
+        eventSmartContext = Helpers.normalizeSmartTuningPayload(Helpers.snapshotSmartTuningState())
     end
     if eventSmartContext ~= nil then
         if typeof(eventSmartContext) == "table" then
-            pressEvent.smartTuning = cloneTable(eventSmartContext)
+            pressEvent.smartTuning = Helpers.cloneTable(eventSmartContext)
         else
             pressEvent.smartTuning = eventSmartContext
         end
@@ -4522,9 +6195,9 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
                 filteredJr = telemetry.filteredJr,
             }
         end
-        clearScheduledPress(ballId, "pressed", { pressedAt = now })
+        Helpers.clearScheduledPress(ballId, "pressed", { pressedAt = now })
     else
-        clearScheduledPress(nil, "pressed", { pressedAt = now })
+        Helpers.clearScheduledPress(nil, "pressed", { pressedAt = now })
     end
 
     if telemetry then
@@ -4533,30 +6206,38 @@ local function pressParry(ball: BasePart?, ballId: string?, force: boolean?)
     end
 
     TelemetryAnalytics.recordPress(pressEvent, scheduledSnapshot)
-    pushTelemetryEvent("press", pressEvent)
+    local clonedPressEvent = Helpers.cloneTelemetryEvent(pressEvent)
+    if typeof(clonedPressEvent) == "table" then
+        local pawsSettings = Helpers.ensurePawsSettings()
+        pawsSettings.LastPressEvent = clonedPressEvent
+        GlobalEnv.LastPressEvent = clonedPressEvent
+        ensurePressEventProxy()
+    end
+
+    emitTelemetryEvent("press", pressEvent)
     parryEvent:fire(ball, now)
     return true
 end
 
-local function releaseParry()
-    if not parryHeld then
+function Helpers.releaseParry()
+    if not Context.runtime.parryHeld then
         return
     end
 
-    local ballId = parryHeldBallId
-    parryHeld = false
-    parryHeldBallId = nil
-    if virtualInputUnavailable and virtualInputRetryAt > os.clock() then
-        pendingParryRelease = true
+    local ballId = Context.runtime.parryHeldBallId
+    Context.runtime.parryHeld = false
+    Context.runtime.parryHeldBallId = nil
+    if Context.runtime.virtualInputUnavailable and Context.runtime.virtualInputRetryAt > os.clock() then
+        Context.runtime.pendingParryRelease = true
     else
-        if not sendParryKeyEvent(false) then
-            pendingParryRelease = true
+        if not Context.hooks.sendParryKeyEvent(false) then
+            Context.runtime.pendingParryRelease = true
         else
-            pendingParryRelease = false
+            Context.runtime.pendingParryRelease = false
         end
     end
 
-    clearScheduledPress(ballId, "released")
+    Helpers.clearScheduledPress(ballId, "released")
 
     if ballId then
         local telemetry = telemetryStates[ballId]
@@ -4567,37 +6248,37 @@ local function releaseParry()
     end
 end
 
-local function handleHumanoidDied()
-    clearScheduledPress(nil, "humanoid-died")
-    safeCall(releaseParry)
-    safeCall(safeClearBallVisuals)
-    safeCall(enterRespawnWaitState)
-    safeCall(updateCharacter, nil)
-    callImmortalController("handleHumanoidDied")
+function Helpers.handleHumanoidDied()
+    Helpers.clearScheduledPress(nil, "humanoid-died")
+    Helpers.safeCall(Helpers.releaseParry)
+    Helpers.safeCall(Helpers.safeClearBallVisuals)
+    Helpers.safeCall(Helpers.enterRespawnWaitState)
+    Helpers.safeCall(Helpers.updateCharacter, nil)
+    Helpers.callImmortalController("handleHumanoidDied")
 end
 
-local function updateCharacter(character)
-    Character = character
-    RootPart = nil
-    Humanoid = nil
-    targetingGraceUntil = 0
+function Helpers.updateCharacter(character)
+    Context.player.Character = character
+    Context.player.RootPart = nil
+    Context.player.Humanoid = nil
+    Context.runtime.targetingGraceUntil = 0
 
-    if humanoidDiedConnection then
-        humanoidDiedConnection:Disconnect()
-        humanoidDiedConnection = nil
+    if Context.connections.humanoidDied then
+        Context.connections.humanoidDied:Disconnect()
+        Context.connections.humanoidDied = nil
     end
 
     if not character then
         return
     end
 
-    RootPart = character:FindFirstChild("HumanoidRootPart")
-    if not RootPart then
+    Context.player.RootPart = character:FindFirstChild("HumanoidRootPart")
+    if not Context.player.RootPart then
         local ok, root = pcall(function()
             return character:WaitForChild("HumanoidRootPart", 5)
         end)
         if ok then
-            RootPart = root
+            Context.player.RootPart = root
         end
     end
 
@@ -4611,33 +6292,33 @@ local function updateCharacter(character)
         end
     end
 
-    Humanoid = humanoid
+    Context.player.Humanoid = humanoid
 
     if humanoid then
-        humanoidDiedConnection = humanoid.Died:Connect(handleHumanoidDied)
+        Context.connections.humanoidDied = humanoid.Died:Connect(Helpers.handleHumanoidDied)
     end
 
     if initialization.completed and character then
-        ensureBallsFolder(false)
-        publishReadyStatus()
+        Helpers.ensureBallsFolder(false)
+        Context.hooks.publishReadyStatus()
     end
 
-    syncImmortalContext()
+    Context.runtime.syncImmortalContext()
 end
 
-local function handleCharacterAdded(character)
-    updateCharacter(character)
+function Helpers.handleCharacterAdded(character)
+    Helpers.updateCharacter(character)
 end
 
-local function handleCharacterRemoving()
-    clearScheduledPress(nil, "character-removing")
-    safeCall(releaseParry)
-    safeCall(safeClearBallVisuals)
-    safeCall(enterRespawnWaitState)
-    safeCall(updateCharacter, nil)
+function Helpers.handleCharacterRemoving()
+    Helpers.clearScheduledPress(nil, "character-removing")
+    Helpers.safeCall(Helpers.releaseParry)
+    Helpers.safeCall(Helpers.safeClearBallVisuals)
+    Helpers.safeCall(Helpers.enterRespawnWaitState)
+    Helpers.safeCall(Helpers.updateCharacter, nil)
 end
 
-local function beginInitialization()
+function Helpers.beginInitialization()
     if initialization.destroyed then
         return
     end
@@ -4655,7 +6336,7 @@ local function beginInitialization()
                 return
             end
 
-            applyInitStatus(status)
+            Helpers.applyInitStatus(status)
         end
 
         local ok, result = pcall(function()
@@ -4692,118 +6373,126 @@ local function beginInitialization()
                 payload.elapsed = initProgress.elapsed
             end
 
-            applyInitStatus(payload)
+            Helpers.applyInitStatus(payload)
             initialization.started = false
             return
         end
 
         local verificationResult = result
 
-        LocalPlayer = verificationResult.player
-        RemotesFolder = verificationResult.remotesFolder
-        ParryInputInfo = verificationResult.parryInputInfo
+        Context.player.LocalPlayer = verificationResult.player
+        Context.player.RemotesFolder = verificationResult.remotesFolder
+        Context.player.ParryInputInfo = verificationResult.parryInputInfo
 
-        syncImmortalContext()
+        Context.runtime.syncImmortalContext()
 
-        disconnectVerificationWatchers()
+        Helpers.disconnectVerificationWatchers()
 
-        if RemotesFolder then
-            watchResource(RemotesFolder, "remotes-folder-removed")
+        if Context.player.RemotesFolder then
+            Helpers.watchResource(Context.player.RemotesFolder, "remotes-folder-removed")
         end
 
-        configureSuccessListeners(verificationResult.successRemotes)
-        setRemoteQueueGuardFolder(RemotesFolder)
+        Helpers.configureSuccessListeners(verificationResult.successRemotes)
+        Helpers.setRemoteQueueGuardFolder(Context.player.RemotesFolder)
 
         if verificationResult.successRemotes then
             local localEntry = verificationResult.successRemotes.ParrySuccess
             if localEntry and localEntry.remote then
-                watchResource(localEntry.remote, "removeevents-local-missing")
+                Helpers.watchResource(localEntry.remote, "removeevents-local-missing")
             end
 
             local broadcastEntry = verificationResult.successRemotes.ParrySuccessAll
             if broadcastEntry and broadcastEntry.remote then
-                watchResource(broadcastEntry.remote, "removeevents-all-missing")
+                Helpers.watchResource(broadcastEntry.remote, "removeevents-all-missing")
             end
         end
 
         if verificationResult.ballsFolder then
-            BallsFolder = verificationResult.ballsFolder
+            Context.player.BallsFolder = verificationResult.ballsFolder
         else
-            BallsFolder = nil
+            Context.player.BallsFolder = nil
         end
-        setBallsFolderWatcher(BallsFolder)
-        watchedBallsFolder = BallsFolder
+        Helpers.setBallsFolderWatcher(Context.player.BallsFolder)
+        Context.player.WatchedBallsFolder = Context.player.BallsFolder
 
-        syncImmortalContext()
+        Context.runtime.syncImmortalContext()
 
-        if LocalPlayer then
-            safeDisconnect(characterAddedConnection)
-            safeDisconnect(characterRemovingConnection)
+        if Context.player.LocalPlayer then
+            Helpers.safeDisconnect(Context.connections.characterAdded)
+            Helpers.safeDisconnect(Context.connections.characterRemoving)
 
-            local characterAddedSignal = LocalPlayer.CharacterAdded
-            local characterRemovingSignal = LocalPlayer.CharacterRemoving
+            local characterAddedSignal = Context.player.LocalPlayer.CharacterAdded
+            local characterRemovingSignal = Context.player.LocalPlayer.CharacterRemoving
 
             if characterAddedSignal and typeof(characterAddedSignal.Connect) == "function" then
-                characterAddedConnection = characterAddedSignal:Connect(handleCharacterAdded)
+                Context.connections.characterAdded = characterAddedSignal:Connect(Helpers.handleCharacterAdded)
             else
-                characterAddedConnection = nil
+                Context.connections.characterAdded = nil
             end
 
             if characterRemovingSignal and typeof(characterRemovingSignal.Connect) == "function" then
-                characterRemovingConnection = characterRemovingSignal:Connect(handleCharacterRemoving)
+                Context.connections.characterRemoving = characterRemovingSignal:Connect(Helpers.handleCharacterRemoving)
             else
-                characterRemovingConnection = nil
+                Context.connections.characterRemoving = nil
             end
 
-            local currentCharacter = LocalPlayer.Character
+            local currentCharacter = Context.player.LocalPlayer.Character
             if currentCharacter then
-                updateCharacter(currentCharacter)
+                Helpers.updateCharacter(currentCharacter)
             elseif characterAddedSignal and typeof(characterAddedSignal.Wait) == "function" then
                 local okChar, char = pcall(function()
                     return characterAddedSignal:Wait()
                 end)
                 if okChar and char then
-                    updateCharacter(char)
+                    Helpers.updateCharacter(char)
                 end
             end
         end
 
-        ensureUi()
+        Helpers.ensureUi()
 
-        setStage("waiting-character", { player = LocalPlayer and LocalPlayer.Name or "Unknown" })
+        Context.hooks.setStage("waiting-character", { player = Context.player.LocalPlayer and Context.player.LocalPlayer.Name or "Unknown" })
 
-        setStage("waiting-balls")
-        ensureBallsFolder(true)
+        Context.hooks.setStage("waiting-balls")
+        Helpers.ensureBallsFolder(true)
 
-        if BallsFolder then
-            setBallsFolderWatcher(BallsFolder)
-            watchedBallsFolder = BallsFolder
+        if Context.player.BallsFolder then
+            Helpers.setBallsFolderWatcher(Context.player.BallsFolder)
+            Context.player.WatchedBallsFolder = Context.player.BallsFolder
         else
-            setBallsFolderWatcher(nil)
+            Helpers.setBallsFolderWatcher(nil)
         end
 
         if verificationResult.ballsStatus then
-            ballsFolderStatusSnapshot = cloneTable(verificationResult.ballsStatus)
+            Context.watchers.ballsSnapshot = Helpers.cloneTable(verificationResult.ballsStatus)
         else
-            ballsFolderStatusSnapshot = nil
+            Context.watchers.ballsSnapshot = nil
         end
 
-        publishReadyStatus()
+        Context.hooks.publishReadyStatus()
         initialization.completed = true
     end)
 end
 
-local function ensureInitialization()
+function Helpers.ensureInitialization()
     if initialization.destroyed then
         initialization.destroyed = false
     end
     if initialization.completed or initialization.started then
         return
     end
-    beginInitialization()
+    Helpers.beginInitialization()
 end
 
-local function computeBallDebug(
+local BallKinematics = {}
+
+local PressDecision = {
+    scratch = {},
+    output = {},
+    ballisticScratch = {},
+}
+
+function BallKinematics.computeBallDebug(
     speed,
     distance,
     safeRadius,
@@ -4834,155 +6523,182 @@ local function computeBallDebug(
     )
 end
 
-local function renderLoop()
-    if initialization.destroyed then
-        clearScheduledPress(nil, "destroyed")
-        return
-    end
-
-    if not LocalPlayer then
-        clearScheduledPress(nil, "missing-player")
-        return
-    end
-
-    if not Character or not RootPart then
-        updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-character")
-        releaseParry()
-        return
-    end
-
-    ensureBallsFolder(false)
-    local folder = BallsFolder
-    if not folder then
-        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-balls-folder")
-        releaseParry()
-        return
-    end
-
-    if not state.enabled then
-        clearScheduledPress(nil, "disabled")
-        releaseParry()
-        updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
-        safeClearBallVisuals()
-        updateToggleButton()
-        return
-    end
-
-    local now = os.clock()
-    cleanupTelemetry(now)
-    prunePendingLatencyPresses(now)
-    maybeRunAutoTuning(now)
-
-    local ball = findRealBall(folder)
-    if not ball or not ball:IsDescendantOf(Workspace) then
-        updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "no-ball")
-        releaseParry()
-        return
-    end
-
-    local ballId = getBallIdentifier(ball)
-    if not ballId then
-        updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
-        safeClearBallVisuals()
-        clearScheduledPress(nil, "missing-identifier")
-        releaseParry()
-        return
-    end
-
-    if scheduledPressState.ballId and scheduledPressState.ballId ~= ballId then
-        clearScheduledPress(nil, "ball-changed")
-    elseif scheduledPressState.ballId == ballId and now - scheduledPressState.lastUpdate > SMART_PRESS_STALE_SECONDS then
-        clearScheduledPress(ballId, "schedule-stale")
-    end
-
-    local telemetry = ensureTelemetry(ballId, now)
+function BallKinematics.computeUpdateTiming(telemetry, now)
     local previousUpdate = telemetry.lastUpdate or now
     local dt = now - previousUpdate
-    if not isFiniteNumber(dt) or dt <= 0 then
+    if not Helpers.isFiniteNumber(dt) or dt <= 0 then
         dt = 1 / 240
     end
     dt = math.clamp(dt, 1 / 240, 0.5)
     telemetry.lastUpdate = now
+    return dt
+end
 
-    local ballPosition = ball.Position
-    local playerPosition = RootPart.Position
+function BallKinematics.computeSpatialContext(context, ballPosition, playerPosition, safeRadius)
     local relative = ballPosition - playerPosition
     local distance = relative.Magnitude
     local unit = Vector3.zero
-    if distance > EPSILON then
+    if distance > Constants.EPSILON then
         unit = relative / distance
     end
 
-    local safeRadius = config.safeRadius or 0
-    local d0 = distance - safeRadius
+    context.relative = relative
+    context.distance = distance
+    context.unit = unit
+    context.d0 = distance - safeRadius
+end
+
+function BallKinematics.computeRawMotion(context, telemetry, dt)
+    local position = context.ballPosition
 
     local rawVelocity = Vector3.zero
-    if telemetry.lastPosition then
-        rawVelocity = (ballPosition - telemetry.lastPosition) / dt
+    local lastPosition = telemetry.lastPosition
+    if lastPosition then
+        rawVelocity = (position - lastPosition) / dt
     end
-    telemetry.lastPosition = ballPosition
+    telemetry.lastPosition = position
+    context.rawVelocity = rawVelocity
 
     local rawAcceleration = Vector3.zero
-    if telemetry.lastVelocity then
-        rawAcceleration = (rawVelocity - telemetry.lastVelocity) / dt
+    local lastVelocity = telemetry.lastVelocity
+    if lastVelocity then
+        rawAcceleration = (rawVelocity - lastVelocity) / dt
     end
+    telemetry.lastVelocity = rawVelocity
+    context.rawAcceleration = rawAcceleration
 
     local rawJerk = Vector3.zero
-    if telemetry.lastAcceleration then
-        rawJerk = (rawAcceleration - telemetry.lastAcceleration) / dt
+    local lastAcceleration = telemetry.lastAcceleration
+    if lastAcceleration then
+        rawJerk = (rawAcceleration - lastAcceleration) / dt
     end
-
-    telemetry.lastVelocity = rawVelocity
     telemetry.lastAcceleration = rawAcceleration
+    context.rawJerk = rawJerk
+end
 
-    local velocity = emaVector(telemetry.velocity, rawVelocity, SMOOTH_ALPHA)
+function BallKinematics.computeFilteredMotion(context, telemetry)
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawJerk = context.rawJerk
+
+    local velocity = Helpers.emaVector(telemetry.velocity, rawVelocity, Constants.SMOOTH_ALPHA)
     telemetry.velocity = velocity
-    local acceleration = emaVector(telemetry.acceleration, rawAcceleration, SMOOTH_ALPHA)
+    context.velocity = velocity
+    context.velocityMagnitude = velocity.Magnitude
+
+    local acceleration = Helpers.emaVector(telemetry.acceleration, rawAcceleration, Constants.SMOOTH_ALPHA)
     telemetry.acceleration = acceleration
-    local jerk = emaVector(telemetry.jerk, rawJerk, SMOOTH_ALPHA)
+    context.acceleration = acceleration
+
+    local jerk = Helpers.emaVector(telemetry.jerk, rawJerk, Constants.SMOOTH_ALPHA)
     telemetry.jerk = jerk
+    context.jerk = jerk
 
     local vNorm2 = velocity:Dot(velocity)
-    if vNorm2 < EPSILON then
-        vNorm2 = EPSILON
+    if vNorm2 < Constants.EPSILON then
+        vNorm2 = Constants.EPSILON
     end
+    context.vNorm2 = vNorm2
 
-    local rawSpeed = rawVelocity.Magnitude
     local rawSpeedSq = rawVelocity:Dot(rawVelocity)
-    local rawKappa = 0
-    if rawSpeed > EPSILON then
-        rawKappa = rawVelocity:Cross(rawAcceleration).Magnitude / math.max(rawSpeedSq * rawSpeed, EPSILON)
-    end
+    context.rawSpeedSq = rawSpeedSq
 
-    local filteredKappaRaw = emaScalar(telemetry.kappa, rawKappa, KAPPA_ALPHA)
-    local filteredKappa, kappaOverflow = clampWithOverflow(filteredKappaRaw, PHYSICS_LIMITS.curvature)
+    context.rawSpeed = rawVelocity.Magnitude
+end
+
+function BallKinematics.computeCurvature(context, telemetry, dt)
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawSpeed = context.rawSpeed
+    local rawSpeedSq = context.rawSpeedSq
+    local vNorm2 = context.vNorm2
+
+    local rawKappa = 0
+    if rawSpeed > Constants.EPSILON then
+        rawKappa = rawVelocity:Cross(rawAcceleration).Magnitude / math.max(rawSpeedSq * rawSpeed, Constants.EPSILON)
+    end
+    context.rawKappa = rawKappa
+
+    local filteredKappaRaw = Helpers.emaScalar(telemetry.kappa, rawKappa, Constants.KAPPA_ALPHA)
+    local filteredKappa, kappaOverflow = Helpers.clampWithOverflow(filteredKappaRaw, Constants.PHYSICS_LIMITS.curvature)
     telemetry.kappa = filteredKappa
+    context.filteredKappa = filteredKappa
+    context.kappaOverflow = kappaOverflow
 
     local dkappaRaw = 0
     if telemetry.lastRawKappa ~= nil then
-        dkappaRaw = (rawKappa - telemetry.lastRawKappa) / math.max(dt, EPSILON)
+        dkappaRaw = (rawKappa - telemetry.lastRawKappa) / math.max(dt, Constants.EPSILON)
     end
     telemetry.lastRawKappa = rawKappa
+    context.dkappaRaw = dkappaRaw
 
-    local filteredDkappaRaw = emaScalar(telemetry.dkappa, dkappaRaw, DKAPPA_ALPHA)
-    local filteredDkappa, dkappaOverflow = clampWithOverflow(filteredDkappaRaw, PHYSICS_LIMITS.curvatureRate)
+    local filteredDkappaRaw = Helpers.emaScalar(telemetry.dkappa, dkappaRaw, Constants.DKAPPA_ALPHA)
+    local filteredDkappa, dkappaOverflow = Helpers.clampWithOverflow(filteredDkappaRaw, Constants.PHYSICS_LIMITS.curvatureRate)
     telemetry.dkappa = filteredDkappa
+    context.filteredDkappa = filteredDkappa
+    context.dkappaOverflow = dkappaOverflow
+end
+
+function BallKinematics.computeRadial(
+    context,
+    telemetry
+)
+    local unit = context.unit
+    local rawVelocity = context.rawVelocity
+    local rawAcceleration = context.rawAcceleration
+    local rawJerk = context.rawJerk
+    local velocity = context.velocity
+    local acceleration = context.acceleration
+    local jerk = context.jerk
+    local vNorm2 = context.vNorm2
+    local rawKappa = context.rawKappa
+    local filteredKappa = context.filteredKappa
+    local dkappaRaw = context.dkappaRaw
+    local filteredDkappa = context.filteredDkappa
+    local rawSpeedSq = context.rawSpeedSq
 
     local rawVr = -unit:Dot(rawVelocity)
-    local filteredVr = emaScalar(telemetry.filteredVr, -unit:Dot(velocity), SMOOTH_ALPHA)
+    context.rawVr = rawVr
+
+    local filteredVr = Helpers.emaScalar(telemetry.filteredVr, -unit:Dot(velocity), Constants.SMOOTH_ALPHA)
     telemetry.filteredVr = filteredVr
+    context.filteredVr = filteredVr
+
     local vrSign = 0
-    if filteredVr > VR_SIGN_EPSILON then
+    if filteredVr > Constants.VR_SIGN_EPSILON then
         vrSign = 1
-    elseif filteredVr < -VR_SIGN_EPSILON then
+    elseif filteredVr < -Constants.VR_SIGN_EPSILON then
         vrSign = -1
     end
+    context.vrSign = vrSign
+
+    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
+    context.filteredArEstimate = filteredArEstimate
+    local filteredArRaw = Helpers.emaScalar(telemetry.filteredAr, filteredArEstimate, Constants.SMOOTH_ALPHA)
+    local filteredAr, arOverflow = Helpers.clampWithOverflow(filteredArRaw, Constants.PHYSICS_LIMITS.radialAcceleration)
+    telemetry.filteredAr = filteredAr
+    context.filteredAr = filteredAr
+    context.arOverflow = arOverflow
+
+    local dotVA = velocity:Dot(acceleration)
+    context.dotVA = dotVA
+
+    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
+    context.filteredJrEstimate = filteredJrEstimate
+    local filteredJrRaw = Helpers.emaScalar(telemetry.filteredJr, filteredJrEstimate, Constants.SMOOTH_ALPHA)
+    local filteredJr, jrOverflow = Helpers.clampWithOverflow(filteredJrRaw, Constants.PHYSICS_LIMITS.radialJerk)
+    telemetry.filteredJr = filteredJr
+    context.filteredJr = filteredJr
+    context.jrOverflow = jrOverflow
+
+    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
+    context.rawAr = rawAr
+
+    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
+    context.rawJr = rawJr
+end
+
+function BallKinematics.trackVrSignHistory(telemetry, now, vrSign)
     if vrSign ~= 0 then
         local previousSign = telemetry.lastVrSign
         if previousSign and previousSign ~= 0 and previousSign ~= vrSign then
@@ -4991,46 +6707,57 @@ local function renderLoop()
         end
         telemetry.lastVrSign = vrSign
     end
-    trimHistory(telemetry.vrSignFlips, now - OSCILLATION_HISTORY_SECONDS)
+    Helpers.trimHistory(telemetry.vrSignFlips, now - Constants.OSCILLATION_HISTORY_SECONDS)
+end
 
-    local filteredArEstimate = -unit:Dot(acceleration) + filteredKappa * vNorm2
-    local filteredArRaw = emaScalar(telemetry.filteredAr, filteredArEstimate, SMOOTH_ALPHA)
-    local filteredAr, arOverflow = clampWithOverflow(filteredArRaw, PHYSICS_LIMITS.radialAcceleration)
-    telemetry.filteredAr = filteredAr
-
-    local dotVA = velocity:Dot(acceleration)
-    local filteredJrEstimate = -unit:Dot(jerk) + filteredDkappa * vNorm2 + 2 * filteredKappa * dotVA
-    local filteredJrRaw = emaScalar(telemetry.filteredJr, filteredJrEstimate, SMOOTH_ALPHA)
-    local filteredJr, jrOverflow = clampWithOverflow(filteredJrRaw, PHYSICS_LIMITS.radialJerk)
-    telemetry.filteredJr = filteredJr
-
-    local rawAr = -unit:Dot(rawAcceleration) + rawKappa * rawSpeedSq
-    local rawJr = -unit:Dot(rawJerk) + dkappaRaw * rawSpeedSq + 2 * rawKappa * rawVelocity:Dot(rawAcceleration)
-
-    local filteredD = emaScalar(telemetry.filteredD, d0, SMOOTH_ALPHA)
+function BallKinematics.updateDistanceHistory(context, telemetry, now)
+    local d0 = context.d0
+    local filteredD = Helpers.emaScalar(telemetry.filteredD, d0, Constants.SMOOTH_ALPHA)
     telemetry.filteredD = filteredD
+    context.filteredD = filteredD
+
     local d0Delta = 0
-    if telemetry.lastD0 ~= nil then
-        d0Delta = d0 - telemetry.lastD0
+    local lastD0 = telemetry.lastD0
+    if lastD0 ~= nil then
+        d0Delta = d0 - lastD0
     end
     telemetry.lastD0 = d0
     telemetry.lastD0Delta = d0Delta
+
     local d0History = telemetry.d0DeltaHistory
     d0History[#d0History + 1] = { time = now, delta = math.abs(d0Delta) }
-    trimHistory(d0History, now - OSCILLATION_HISTORY_SECONDS)
+    Helpers.trimHistory(d0History, now - Constants.OSCILLATION_HISTORY_SECONDS)
+    context.d0Delta = d0Delta
 
-    updateRollingStat(telemetry.statsD, d0 - filteredD)
-    updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
-    updateRollingStat(telemetry.statsAr, rawAr - filteredAr)
-    updateRollingStat(telemetry.statsJr, rawJr - filteredJr)
+end
 
-    local sigmaD = getRollingStd(telemetry.statsD, SIGMA_FLOORS.d)
-    local sigmaVr = getRollingStd(telemetry.statsVr, SIGMA_FLOORS.vr)
-    local sigmaAr = getRollingStd(telemetry.statsAr, SIGMA_FLOORS.ar)
-    local sigmaJr = getRollingStd(telemetry.statsJr, SIGMA_FLOORS.jr)
+function BallKinematics.updateVariance(context, telemetry)
+    local d0 = context.d0
+    local filteredD = context.filteredD
+    local rawVr = context.rawVr
+    local filteredVr = context.filteredVr
+    local rawAr = context.rawAr
+    local filteredAr = context.filteredAr
+    local rawJr = context.rawJr
+    local filteredJr = context.filteredJr
+    local vNorm2 = context.vNorm2
+    local dotVA = context.dotVA
+    local kappaOverflow = context.kappaOverflow
+    local dkappaOverflow = context.dkappaOverflow
+    local arOverflow = context.arOverflow
+    local jrOverflow = context.jrOverflow
+
+    Helpers.updateRollingStat(telemetry.statsD, d0 - filteredD)
+    Helpers.updateRollingStat(telemetry.statsVr, rawVr - filteredVr)
+    Helpers.updateRollingStat(telemetry.statsAr, rawAr - filteredAr)
+    Helpers.updateRollingStat(telemetry.statsJr, rawJr - filteredJr)
+
+    local sigmaD = Helpers.getRollingStd(telemetry.statsD, Constants.SIGMA_FLOORS.d)
+    local sigmaVr = Helpers.getRollingStd(telemetry.statsVr, Constants.SIGMA_FLOORS.vr)
+    local sigmaAr = Helpers.getRollingStd(telemetry.statsAr, Constants.SIGMA_FLOORS.ar)
+    local sigmaJr = Helpers.getRollingStd(telemetry.statsJr, Constants.SIGMA_FLOORS.jr)
 
     local sigmaArExtraSq = 0
-    local sigmaArOverflow = 0
     if arOverflow > 0 then
         sigmaArExtraSq += arOverflow * arOverflow
     end
@@ -5038,13 +6765,14 @@ local function renderLoop()
         local extra = kappaOverflow * vNorm2
         sigmaArExtraSq += extra * extra
     end
+
+    local sigmaArOverflow = 0
     if sigmaArExtraSq > 0 then
         sigmaArOverflow = math.sqrt(sigmaArExtraSq)
         sigmaAr = math.sqrt(sigmaAr * sigmaAr + sigmaArExtraSq)
     end
 
     local sigmaJrExtraSq = 0
-    local sigmaJrOverflow = 0
     if jrOverflow > 0 then
         sigmaJrExtraSq += jrOverflow * jrOverflow
     end
@@ -5056,36 +6784,93 @@ local function renderLoop()
         local extra = dkappaOverflow * vNorm2
         sigmaJrExtraSq += extra * extra
     end
+
+    local sigmaJrOverflow = 0
     if sigmaJrExtraSq > 0 then
         sigmaJrOverflow = math.sqrt(sigmaJrExtraSq)
         sigmaJr = math.sqrt(sigmaJr * sigmaJr + sigmaJrExtraSq)
     end
 
-    local ping = getPingTime()
-    local delta = 0.5 * ping + activationLatencyEstimate
+    context.sigmaD = sigmaD
+    context.sigmaVr = sigmaVr
+    context.sigmaAr = sigmaAr
+    context.sigmaJr = sigmaJr
+    context.sigmaArOverflow = sigmaArOverflow
+    context.sigmaJrOverflow = sigmaJrOverflow
+end
 
-    local delta2 = delta * delta
-    local mu = filteredD - filteredVr * delta - 0.5 * filteredAr * delta2 - (1 / 6) * filteredJr * delta2 * delta
+function BallKinematics.build(ball, playerPosition, telemetry, safeRadius, now)
+    local context = {
+        safeRadius = safeRadius,
+    }
 
-    local sigmaSquared = sigmaD * sigmaD
-    sigmaSquared += (delta2) * (sigmaVr * sigmaVr)
-    sigmaSquared += (0.25 * delta2 * delta2) * (sigmaAr * sigmaAr)
-    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (sigmaJr * sigmaJr)
-    local sigma = math.sqrt(math.max(sigmaSquared, 0))
+    context.dt = BallKinematics.computeUpdateTiming(telemetry, now)
 
-    local z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ
-    if not isFiniteNumber(z) or z < 0 then
-        z = DEFAULT_CONFIG.confidenceZ or 2.2
+    context.ballPosition = ball.Position
+
+    BallKinematics.computeSpatialContext(context, context.ballPosition, playerPosition, safeRadius)
+
+    BallKinematics.computeRawMotion(context, telemetry, context.dt)
+
+    BallKinematics.computeFilteredMotion(context, telemetry)
+
+    BallKinematics.computeCurvature(context, telemetry, context.dt)
+
+    BallKinematics.computeRadial(context, telemetry)
+
+    BallKinematics.trackVrSignHistory(telemetry, now, context.vrSign)
+
+    BallKinematics.updateDistanceHistory(context, telemetry, now)
+
+    BallKinematics.updateVariance(context, telemetry)
+
+    return context
+end
+
+function PressDecision.clearTable(target)
+    if not target then
+        return
     end
 
-    local muValid = isFiniteNumber(mu)
-    local sigmaValid = isFiniteNumber(sigma)
+    for key in pairs(target) do
+        target[key] = nil
+    end
+end
+
+function PressDecision.computeConfidence(state, config, kinematics)
+    local ping = Helpers.getPingTime()
+    local delta = 0.5 * ping + activationLatencyEstimate
+    local delta2 = delta * delta
+
+    local mu =
+        kinematics.filteredD
+        - kinematics.filteredVr * delta
+        - 0.5 * kinematics.filteredAr * delta2
+        - (1 / 6) * kinematics.filteredJr * delta2 * delta
+
+    local sigmaSquared = kinematics.sigmaD * kinematics.sigmaD
+    sigmaSquared += delta2 * (kinematics.sigmaVr * kinematics.sigmaVr)
+    sigmaSquared += (0.25 * delta2 * delta2) * (kinematics.sigmaAr * kinematics.sigmaAr)
+    sigmaSquared += ((1 / 36) * delta2 * delta2 * delta2) * (kinematics.sigmaJr * kinematics.sigmaJr)
+    local sigma = math.sqrt(math.max(sigmaSquared, 0))
+
+    local z = config.confidenceZ
+    if z == nil then
+        z = Defaults.CONFIG.confidenceZ
+    end
+    if not Helpers.isFiniteNumber(z) or z < 0 then
+        z = Defaults.CONFIG.confidenceZ or 2.2
+    end
+
+    local muValid = Helpers.isFiniteNumber(mu)
+    local sigmaValid = Helpers.isFiniteNumber(sigma)
     if not muValid then
         mu = 0
     end
     if not sigmaValid then
         sigma = 0
     end
+
     local muPlus = math.huge
     local muMinus = math.huge
     if muValid and sigmaValid then
@@ -5098,161 +6883,415 @@ local function renderLoop()
     perfectParrySnapshot.delta = delta
     perfectParrySnapshot.z = z
 
-    local targetingMe = isTargetingMe(now)
-    if telemetry then
-        if targetingMe then
-            if telemetry.targetDetectedAt == nil then
-                telemetry.targetDetectedAt = now
-            end
-        elseif not parryHeld or parryHeldBallId ~= ballId then
-            telemetry.targetDetectedAt = nil
-            telemetry.decisionAt = nil
-        end
+    state.ping = ping
+    state.delta = delta
+    state.delta2 = delta2
+    state.mu = mu
+    state.sigma = sigma
+    state.z = z
+    state.muPlus = muPlus
+    state.muMinus = muMinus
+    state.muValid = muValid
+    state.sigmaValid = sigmaValid
+end
+
+function PressDecision.updateTelemetryState(state, telemetry, now, targetingMe, ballId)
+    if not telemetry then
+        return
     end
-    local fired = false
-    local released = false
 
-    local approachSpeed = math.max(filteredVr, rawVr, 0)
-    local approaching = approachSpeed > EPSILON
+    if targetingMe then
+        if telemetry.targetDetectedAt == nil then
+            telemetry.targetDetectedAt = now
+        end
+    elseif not Context.runtime.parryHeld or Context.runtime.parryHeldBallId ~= ballId then
+        telemetry.targetDetectedAt = nil
+        telemetry.decisionAt = nil
+    end
+end
+
+function PressDecision.computeApproach(state, kinematics, safeRadius)
+    local approachSpeed = math.max(kinematics.filteredVr, kinematics.rawVr, 0)
+    local approaching = approachSpeed > Constants.EPSILON
     local timeToImpactFallback = math.huge
-    local timeToImpactPolynomial: number?
+    local timeToImpactPolynomial
     local timeToImpact = math.huge
-    if approaching then
-        local speed = math.max(approachSpeed, EPSILON)
-        timeToImpactFallback = distance / speed
 
-        local impactRadial = filteredD
-        local polynomial = solveRadialImpactTime(impactRadial, filteredVr, filteredAr, filteredJr)
-        if polynomial and polynomial > EPSILON then
+    if approaching then
+        local speed = math.max(approachSpeed, Constants.EPSILON)
+        timeToImpactFallback = kinematics.distance / speed
+
+        local impactRadial = kinematics.filteredD
+        local polynomial =
+            Helpers.solveRadialImpactTime(impactRadial, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+        if polynomial and polynomial > Constants.EPSILON then
             timeToImpactPolynomial = polynomial
             timeToImpact = polynomial
-        elseif isFiniteNumber(timeToImpactFallback) and timeToImpactFallback >= 0 then
+        elseif Helpers.isFiniteNumber(timeToImpactFallback) and timeToImpactFallback >= 0 then
             timeToImpact = timeToImpactFallback
         end
     end
 
-    local responseWindowBase = math.max(delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+    local responseWindowBase = math.max(state.delta + PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
     if approaching and timeToImpactPolynomial then
         responseWindowBase = math.max(math.min(responseWindowBase, timeToImpactPolynomial), PROXIMITY_PRESS_GRACE)
     end
-    local responseWindow = responseWindowBase
 
-    local curveLeadTime = 0
-    local curveLeadDistance = 0
-    local curveHoldDistance = 0
-    local curveSeverity = 0
-    local curveJerkSeverity = 0
+    state.approachSpeed = approachSpeed
+    state.approaching = approaching
+    state.timeToImpactFallback = timeToImpactFallback
+    state.timeToImpactPolynomial = timeToImpactPolynomial
+    state.timeToImpact = timeToImpact
+    state.responseWindowBase = responseWindowBase
+    state.responseWindow = responseWindowBase
+    state.curveLeadTime = 0
+    state.curveLeadDistance = 0
+    state.curveHoldDistance = 0
+    state.curveSeverity = 0
+    state.curveJerkSeverity = 0
+    state.curveLeadApplied = 0
+    state.curveHoldApplied = 0
+    state.pressRadius = safeRadius
+    state.holdRadius = safeRadius
+end
 
-    if approaching then
-        local curvatureLeadScale = config.curvatureLeadScale
-        if curvatureLeadScale == nil then
-            curvatureLeadScale = DEFAULT_CONFIG.curvatureLeadScale
-        end
-
-        local curvatureHoldBoost = config.curvatureHoldBoost
-        if curvatureHoldBoost == nil then
-            curvatureHoldBoost = DEFAULT_CONFIG.curvatureHoldBoost
-        end
-
-        if curvatureLeadScale and curvatureLeadScale > 0 then
-            local kappaLimit = PHYSICS_LIMITS.curvature or 0
-            local dkappaLimit = PHYSICS_LIMITS.curvatureRate or 0
-            local arLimit = PHYSICS_LIMITS.radialAcceleration or 0
-            local jrLimit = PHYSICS_LIMITS.radialJerk or 0
-
-            local normalizedKappa = 0
-            if kappaLimit > 0 then
-                normalizedKappa = math.clamp(math.abs(filteredKappa) / kappaLimit, 0, 1)
-            end
-
-            local normalizedDkappa = 0
-            if dkappaLimit > 0 then
-                normalizedDkappa = math.clamp(math.abs(filteredDkappa) / dkappaLimit, 0, 1)
-            end
-
-            local normalizedAr = 0
-            if arLimit > 0 then
-                normalizedAr = math.clamp(math.max(filteredAr, 0) / arLimit, 0, 1)
-            end
-
-            local normalizedJerkOverflow = 0
-            if jrLimit > 0 then
-                local overflow = math.max(jrOverflow or 0, sigmaJrOverflow or 0)
-                if overflow > 0 then
-                    normalizedJerkOverflow = math.clamp(overflow / jrLimit, 0, 1)
-                end
-            end
-
-            curveSeverity = math.max(normalizedKappa, normalizedDkappa, normalizedAr)
-            if normalizedJerkOverflow > 0 then
-                curveJerkSeverity = normalizedJerkOverflow
-                curveSeverity = math.clamp(curveSeverity + normalizedJerkOverflow, 0, 1)
-            end
-
-            if curveSeverity > 0 then
-                curveLeadTime = curvatureLeadScale * curveSeverity
-                if curveLeadTime > 0 then
-                    responseWindow += curveLeadTime
-                    curveLeadDistance = approachSpeed * curveLeadTime
-                    if curvatureHoldBoost and curvatureHoldBoost > 0 then
-                        curveHoldDistance = curveLeadDistance * curvatureHoldBoost
-                    end
-                end
-            end
-        end
+function PressDecision.computeCurveAdjustments(state, config, kinematics)
+    if not state.approaching then
+        return
     end
 
-    local dynamicLeadBase = 0
-    if approaching then
-        dynamicLeadBase = math.max(approachSpeed * responseWindowBase, 0)
+    local curvatureLeadScale = config.curvatureLeadScale
+    if curvatureLeadScale == nil then
+        curvatureLeadScale = Defaults.CONFIG.curvatureLeadScale
     end
-    dynamicLeadBase = math.min(dynamicLeadBase, safeRadius * 0.5)
 
-    local dynamicLead = 0
-    if approaching then
-        dynamicLead = math.max(approachSpeed * responseWindow, 0)
+    local curvatureHoldBoost = config.curvatureHoldBoost
+    if curvatureHoldBoost == nil then
+        curvatureHoldBoost = Defaults.CONFIG.curvatureHoldBoost
     end
-    dynamicLead = math.min(dynamicLead, safeRadius * 0.5)
-    local curveLeadApplied = math.max(dynamicLead - dynamicLeadBase, 0)
 
-    local pressRadius = safeRadius + dynamicLead
+    if not (curvatureLeadScale and curvatureLeadScale > 0) then
+        return
+    end
 
-    local holdLeadBase = 0
+    local kappaLimit = Constants.PHYSICS_LIMITS.curvature or 0
+    local dkappaLimit = Constants.PHYSICS_LIMITS.curvatureRate or 0
+    local arLimit = Constants.PHYSICS_LIMITS.radialAcceleration or 0
+    local jrLimit = Constants.PHYSICS_LIMITS.radialJerk or 0
+
+    local normalizedKappa = 0
+    if kappaLimit > 0 then
+        normalizedKappa = math.clamp(math.abs(kinematics.filteredKappa) / kappaLimit, 0, 1)
+    end
+
+    local normalizedDkappa = 0
+    if dkappaLimit > 0 then
+        normalizedDkappa = math.clamp(math.abs(kinematics.filteredDkappa) / dkappaLimit, 0, 1)
+    end
+
+    local normalizedAr = 0
+    if arLimit > 0 then
+        normalizedAr = math.clamp(math.abs(kinematics.filteredAr) / arLimit, 0, 1)
+    end
+
+    local normalizedJr = 0
+    if jrLimit > 0 then
+        normalizedJr = math.clamp(math.abs(kinematics.filteredJr) / jrLimit, 0, 1)
+    end
+
+    local curveSeverity = math.max(normalizedKappa, normalizedDkappa)
+    local curveJerkSeverity = math.max(normalizedAr, normalizedJr)
+    local severityBoost = math.max(curveSeverity * curvatureLeadScale, curveJerkSeverity * curvatureHoldBoost)
+
+    if severityBoost > 0 then
+        local curveLeadTime = severityBoost * state.responseWindowBase
+        state.curveLeadTime = curveLeadTime
+        state.curveLeadDistance = math.max(severityBoost * kinematics.filteredVr * state.responseWindowBase, 0)
+        state.curveHoldDistance =
+            math.max(curveJerkSeverity * kinematics.filteredVr * PROXIMITY_HOLD_GRACE, 0)
+        state.responseWindow = state.responseWindow + curveLeadTime
+    end
+
+    state.curveSeverity = curveSeverity
+    state.curveJerkSeverity = curveJerkSeverity
+end
+
+function PressDecision.computeRadii(state, kinematics, safeRadius, telemetry, now)
+    local approaching = state.approaching == true
+    local approachSpeed = math.max(state.approachSpeed or 0, 0)
+    local responseWindow = math.max(state.responseWindow or 0, 0)
+    local baseWindow = math.max(state.responseWindowBase or responseWindow, PROXIMITY_PRESS_GRACE)
+    local safe = math.max(safeRadius or 0, Constants.EPSILON)
+    state.safeRadius = safe
+
+    local dynamicLeadBase
     if approaching then
-        holdLeadBase = math.max(approachSpeed * PROXIMITY_HOLD_GRACE, safeRadius * 0.1)
+        dynamicLeadBase = math.max(approachSpeed * PROXIMITY_PRESS_GRACE, safe * 0.12)
     else
-        holdLeadBase = safeRadius * 0.1
+        dynamicLeadBase = safe * 0.12
     end
-    holdLeadBase = math.min(holdLeadBase, safeRadius * 0.5)
+    dynamicLeadBase = math.min(dynamicLeadBase, safe * 0.5)
 
-    local holdLead = math.min(holdLeadBase + curveHoldDistance, safeRadius * 0.5)
-    local curveHoldApplied = math.max(holdLead - holdLeadBase, 0)
-    local holdRadius = pressRadius + holdLead
+    local distance = math.max(kinematics.distance or safe, safe)
+    local excessDistance = math.max(distance - safe, 0)
+    local normalizedDistance = 0
+    if safe > 0 then
+        normalizedDistance = math.clamp(excessDistance / safe, 0, 16)
+    end
 
+    local minSpeed = Defaults.CONFIG.minSpeed or 10
+    local normalizedSpeed = 0
+    if minSpeed > 0 then
+        normalizedSpeed = math.tanh(approachSpeed / minSpeed)
+    end
+
+    local lookaheadRatio = 0
+    if baseWindow > 0 then
+        lookaheadRatio = responseWindow / baseWindow
+    end
+    local lookaheadGain = math.sqrt(1 + lookaheadRatio * lookaheadRatio) - 1
+
+    local predictedImpact = state.predictedImpact
+    local impactRatio = 0
+    if approaching and Helpers.isFiniteNumber(predictedImpact) and predictedImpact > 0 then
+        impactRatio = math.clamp(responseWindow / math.max(predictedImpact, PROXIMITY_PRESS_GRACE), -4, 4)
+    end
+
+    local curvatureEnergy = math.sqrt(
+        (state.curveSeverity or 0) * (state.curveSeverity or 0)
+            + (state.curveJerkSeverity or 0) * (state.curveJerkSeverity or 0)
+    )
+    local curvaturePulse = math.sin(math.min(curvatureEnergy * math.pi * 0.5, math.pi / 2))
+    curvaturePulse *= curvaturePulse
+
+    local radialAccelerationLimit = (Constants.PHYSICS_LIMITS.radialAcceleration or 0) + 1
+    local radialJerkLimit = (Constants.PHYSICS_LIMITS.radialJerk or 0) + 1
+
+    local normalizedAr = 0
+    if radialAccelerationLimit > 0 then
+        normalizedAr = math.abs(kinematics.filteredAr or 0) / radialAccelerationLimit
+    end
+    local normalizedJr = 0
+    if radialJerkLimit > 0 then
+        normalizedJr = math.abs(kinematics.filteredJr or 0) / radialJerkLimit
+    end
+
+    local accelerationGain = math.sqrt(1 + normalizedAr * normalizedAr) - 1
+    local jerkGain = math.sqrt(1 + normalizedJr * normalizedJr) - 1
+
+    local simulation
+    local horizon = responseWindow + PROXIMITY_HOLD_GRACE
+    local maxHorizon = math.max(state.timeToImpact or responseWindow, PROXIMITY_PRESS_GRACE) * 1.5
+
+    local ballisticInputs = PressDecision.ballisticScratch
+    Helpers.clearTable(ballisticInputs)
+
+    ballisticInputs.safe = safe
+    ballisticInputs.distance = kinematics.distance or safe
+    ballisticInputs.vr = kinematics.filteredVr or 0
+    ballisticInputs.ar = kinematics.filteredAr or 0
+    ballisticInputs.jr = kinematics.filteredJr or 0
+    ballisticInputs.curvature = kinematics.filteredKappa or 0
+    ballisticInputs.curvatureRate = kinematics.filteredDkappa or 0
+    ballisticInputs.speed = approachSpeed
+    ballisticInputs.horizon = horizon
+    ballisticInputs.maxHorizon = maxHorizon
+
+    local cache
+    if telemetry then
+        cache = Helpers.ensureBallisticCache(telemetry)
+    end
+
+    local reusedSimulation = false
+    local cacheKey
+    if cache then
+        local refresh, quantizedKey = Helpers.shouldRefreshBallisticCache(cache, ballisticInputs, now)
+        cacheKey = quantizedKey
+        if refresh then
+            simulation = Helpers.simulateBallisticProximity({
+                safe = ballisticInputs.safe,
+                distance = ballisticInputs.distance,
+                vr = ballisticInputs.vr,
+                ar = ballisticInputs.ar,
+                jr = ballisticInputs.jr,
+                curvature = ballisticInputs.curvature,
+                curvatureRate = ballisticInputs.curvatureRate,
+                curvatureJerk = 0,
+                speed = ballisticInputs.speed,
+                horizon = ballisticInputs.horizon,
+                maxHorizon = ballisticInputs.maxHorizon,
+                reuse = cache.result,
+            })
+
+            local cacheInputs = cache.inputs
+            Helpers.clearTable(cacheInputs)
+            for key, value in pairs(ballisticInputs) do
+                cacheInputs[key] = value
+            end
+            cache.timestamp = now
+            cache.result = simulation
+            cache.reuseCount = cache.reuseCount or 0
+            cache.hitStreak = 0
+            cache.quantizedKey = quantizedKey or cache.quantizedKey
+        else
+            simulation = cache.result
+            cache.reuseCount = (cache.reuseCount or 0) + 1
+            reusedSimulation = true
+            if quantizedKey then
+                cache.quantizedKey = quantizedKey
+            end
+        end
+    end
+
+    if not simulation then
+        simulation = Helpers.simulateBallisticProximity({
+            safe = ballisticInputs.safe,
+            distance = ballisticInputs.distance,
+            vr = ballisticInputs.vr,
+            ar = ballisticInputs.ar,
+            jr = ballisticInputs.jr,
+            curvature = ballisticInputs.curvature,
+            curvatureRate = ballisticInputs.curvatureRate,
+            curvatureJerk = 0,
+            speed = ballisticInputs.speed,
+            horizon = ballisticInputs.horizon,
+            maxHorizon = ballisticInputs.maxHorizon,
+        })
+    end
+
+    state.proximitySimulationCached = reusedSimulation
+    if cache then
+        state.proximitySimulationCacheKey = cache.quantizedKey or cacheKey
+        state.proximitySimulationCacheHits = cache.reuseCount or 0
+        state.proximitySimulationCacheStreak = cache.hitStreak or 0
+    else
+        state.proximitySimulationCacheKey = nil
+        state.proximitySimulationCacheHits = 0
+        state.proximitySimulationCacheStreak = 0
+    end
+    state.ballisticInputs = ballisticInputs
+
+    local normalizedIntrusion = math.max(simulation.normalizedPeakIntrusion or 0, 0)
+    local weightedIntrusion = math.max(simulation.normalizedWeightedIntrusion or 0, 0)
+    local areaIntrusion = math.max(simulation.normalizedIntrusionArea or 0, 0)
+    local ballisticGain = math.max(simulation.normalizedBallisticEnergy or 0, 0)
+    local velocitySignature = math.max(simulation.velocitySignature or 0, 0)
+    local simulationUrgency = math.max(simulation.urgency or 0, 0)
+    local simulationQuality = math.max(simulation.quality or 0, 0)
+    local curvatureSignature = math.max(simulation.curvatureSignature or 0, 0)
+    local averageDistance = math.max(simulation.averageDistance or excessDistance, 0)
+
+    local baseManifold = math.sqrt(1 + normalizedSpeed * normalizedSpeed + curvatureEnergy * curvatureEnergy) - 1
+    local simulationEnergy = math.sqrt(1 + (weightedIntrusion + areaIntrusion + ballisticGain) ^ 2) - 1
+    local manifold = baseManifold + simulationEnergy
+
+    local distanceSuppression = math.exp(-normalizedDistance * (0.45 + 0.4 * normalizedSpeed))
+    distanceSuppression *= math.exp(-averageDistance / math.max(safe, Constants.EPSILON))
+    distanceSuppression = math.clamp(distanceSuppression, 0, 1)
+
+    local ballisticProjection = approachSpeed * responseWindow
+    local proximityEnvelope = math.max(
+        ballisticProjection * (0.25 + 0.75 * manifold)
+            + safe
+                * (
+                    0.35 * normalizedIntrusion
+                        + 0.28 * weightedIntrusion
+                        + 0.22 * ballisticGain
+                        + 0.18 * simulationUrgency
+                        + 0.12 * curvaturePulse
+                ),
+        0
+    )
+
+    local logisticDriver = manifold
+        + lookaheadGain * (1 + simulationQuality * 0.4)
+        + accelerationGain * 0.5
+        + jerkGain * 0.35
+        + curvatureSignature * 0.25
+        + simulationUrgency * 0.4
+        + velocitySignature * 0.3
+        - distanceSuppression
+        - math.exp(-math.max(1 - math.abs(impactRatio), 0) * 0.6)
+
+    logisticDriver = math.clamp(logisticDriver, -14, 14)
+    local proximityLogistic = 1 / (1 + math.exp(-5.5 * logisticDriver))
+
+    local adaptiveLead = dynamicLeadBase + proximityLogistic * (proximityEnvelope - dynamicLeadBase)
+    adaptiveLead += safe * (1 - distanceSuppression) * (0.08 + 0.12 * simulationUrgency)
+    adaptiveLead += safe * (accelerationGain * 0.08 + jerkGain * 0.06)
+    adaptiveLead += safe * velocitySignature * 0.05
+    adaptiveLead = math.max(adaptiveLead, dynamicLeadBase)
+    adaptiveLead = math.min(adaptiveLead, safe * 0.8)
+
+    state.curveLeadApplied = math.max(adaptiveLead - dynamicLeadBase, 0)
+    state.pressRadius = safe + adaptiveLead
+
+    local holdLeadBase
+    if approaching then
+        holdLeadBase = math.max(approachSpeed * PROXIMITY_HOLD_GRACE, safe * 0.12)
+    else
+        holdLeadBase = safe * 0.12
+    end
+    holdLeadBase = math.min(holdLeadBase, safe * 0.6)
+
+    local holdLead = holdLeadBase
+        + proximityLogistic
+            * (state.curveHoldDistance + safe * (0.4 * weightedIntrusion + 0.35 * areaIntrusion + 0.25 * normalizedIntrusion))
+    holdLead += safe * simulationUrgency * 0.18
+    holdLead += safe * (velocitySignature * 0.08 + curvatureEnergy * 0.06)
+    holdLead = math.min(holdLead, safe * 0.9)
+
+    state.curveHoldApplied = math.max(holdLead - holdLeadBase, 0)
+    state.holdRadius = state.pressRadius + holdLead
+
+    state.proximityBaseLead = dynamicLeadBase
+    state.proximityAdaptiveLead = adaptiveLead
+    state.proximityEnvelope = proximityEnvelope
+    state.proximitySynthesis = manifold
+    state.proximityManifold = baseManifold
+    state.proximitySimulationEnergy = simulationEnergy
+    state.proximitySimulationUrgency = simulationUrgency
+    state.proximitySimulationQuality = simulationQuality
+    state.proximityVelocityImprint = velocitySignature
+    state.proximityLogistic = proximityLogistic
+    state.proximityDistanceSuppression = distanceSuppression
+    state.proximityBallistic = ballisticProjection
+    state.proximityLookaheadGain = lookaheadGain
+    state.proximityImpactRatio = impactRatio
+    state.proximityHoldLead = holdLead
+    state.proximitySimulation = simulation
+    state.proximityWeightedIntrusion = weightedIntrusion
+    state.proximityBallisticGain = ballisticGain
+end
+
+function PressDecision.computeRadiusTimes(state, kinematics, safeRadius)
     local timeToPressRadiusFallback = math.huge
     local timeToHoldRadiusFallback = math.huge
-    local timeToPressRadiusPolynomial: number?
-    local timeToHoldRadiusPolynomial: number?
+    local timeToPressRadiusPolynomial
+    local timeToHoldRadiusPolynomial
     local timeToPressRadius = math.huge
     local timeToHoldRadius = math.huge
-    if approaching then
-        local speed = math.max(approachSpeed, EPSILON)
-        timeToPressRadiusFallback = math.max(distance - pressRadius, 0) / speed
-        timeToHoldRadiusFallback = math.max(distance - holdRadius, 0) / speed
 
-        local radialToPress = filteredD + safeRadius - pressRadius
-        local radialToHold = filteredD + safeRadius - holdRadius
+    if state.approaching then
+        local speed = math.max(state.approachSpeed, Constants.EPSILON)
+        timeToPressRadiusFallback = math.max(kinematics.distance - state.pressRadius, 0) / speed
+        timeToHoldRadiusFallback = math.max(kinematics.distance - state.holdRadius, 0) / speed
 
-        local pressPolynomial = solveRadialImpactTime(radialToPress, filteredVr, filteredAr, filteredJr)
-        if pressPolynomial and pressPolynomial > EPSILON then
+        local radialToPress = kinematics.filteredD + safeRadius - state.pressRadius
+        local radialToHold = kinematics.filteredD + safeRadius - state.holdRadius
+
+        local pressPolynomial =
+            Helpers.solveRadialImpactTime(radialToPress, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+        if pressPolynomial and pressPolynomial > Constants.EPSILON then
             timeToPressRadiusPolynomial = pressPolynomial
             timeToPressRadius = pressPolynomial
         else
             timeToPressRadius = timeToPressRadiusFallback
         end
 
-        local holdPolynomial = solveRadialImpactTime(radialToHold, filteredVr, filteredAr, filteredJr)
-        if holdPolynomial and holdPolynomial > EPSILON then
+        local holdPolynomial =
+            Helpers.solveRadialImpactTime(radialToHold, kinematics.filteredVr, kinematics.filteredAr, kinematics.filteredJr)
+        if holdPolynomial and holdPolynomial > Constants.EPSILON then
             timeToHoldRadiusPolynomial = holdPolynomial
             timeToHoldRadius = holdPolynomial
         else
@@ -5260,52 +7299,65 @@ local function renderLoop()
         end
     end
 
-    local holdWindow = responseWindow + PROXIMITY_HOLD_GRACE
-    if approaching and timeToHoldRadiusPolynomial then
+    local holdWindow = state.responseWindow + PROXIMITY_HOLD_GRACE
+    if state.approaching and timeToHoldRadiusPolynomial then
         local refinedHoldWindow = math.max(timeToHoldRadiusPolynomial, PROXIMITY_HOLD_GRACE)
         holdWindow = math.min(holdWindow, refinedHoldWindow)
-        if holdWindow < responseWindow then
-            holdWindow = responseWindow
+        if holdWindow < state.responseWindow then
+            holdWindow = state.responseWindow
         end
     end
+
     holdWindow = math.max(holdWindow, PROXIMITY_HOLD_GRACE)
 
     local predictedImpact = math.huge
-    if approaching then
-        predictedImpact = math.min(timeToImpact, timeToPressRadius, timeToImpactFallback)
-        if timeToImpactPolynomial then
-            predictedImpact = math.min(predictedImpact, timeToImpactPolynomial)
+    if state.approaching then
+        predictedImpact = math.min(state.timeToImpact, timeToPressRadius, state.timeToImpactFallback)
+        if state.timeToImpactPolynomial then
+            predictedImpact = math.min(predictedImpact, state.timeToImpactPolynomial)
         end
         if timeToPressRadiusPolynomial then
             predictedImpact = math.min(predictedImpact, timeToPressRadiusPolynomial)
         end
     end
-    if not isFiniteNumber(predictedImpact) or predictedImpact < 0 then
+
+    if not Helpers.isFiniteNumber(predictedImpact) or predictedImpact < 0 then
         predictedImpact = math.huge
     end
 
+    state.timeToPressRadiusFallback = timeToPressRadiusFallback
+    state.timeToHoldRadiusFallback = timeToHoldRadiusFallback
+    state.timeToPressRadiusPolynomial = timeToPressRadiusPolynomial
+    state.timeToHoldRadiusPolynomial = timeToHoldRadiusPolynomial
+    state.timeToPressRadius = timeToPressRadius
+    state.timeToHoldRadius = timeToHoldRadius
+    state.holdWindow = holdWindow
+    state.predictedImpact = predictedImpact
+end
+
+function PressDecision.computeSchedulingParameters(state, config)
     local reactionBias = config.pressReactionBias
     if reactionBias == nil then
-        reactionBias = DEFAULT_CONFIG.pressReactionBias
+        reactionBias = Defaults.CONFIG.pressReactionBias
     end
-    if not isFiniteNumber(reactionBias) or reactionBias < 0 then
+    if not Helpers.isFiniteNumber(reactionBias) or reactionBias < 0 then
         reactionBias = 0
     end
 
     local scheduleSlack = config.pressScheduleSlack
     if scheduleSlack == nil then
-        scheduleSlack = DEFAULT_CONFIG.pressScheduleSlack
+        scheduleSlack = Defaults.CONFIG.pressScheduleSlack
     end
-    if not isFiniteNumber(scheduleSlack) or scheduleSlack < 0 then
+    if not Helpers.isFiniteNumber(scheduleSlack) or scheduleSlack < 0 then
         scheduleSlack = 0
     end
 
     local maxLookahead = config.pressMaxLookahead
     if maxLookahead == nil then
-        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+        maxLookahead = Defaults.CONFIG.pressMaxLookahead
     end
-    if not isFiniteNumber(maxLookahead) or maxLookahead <= 0 then
-        maxLookahead = DEFAULT_CONFIG.pressMaxLookahead
+    if not Helpers.isFiniteNumber(maxLookahead) or maxLookahead <= 0 then
+        maxLookahead = Defaults.CONFIG.pressMaxLookahead
     end
     if maxLookahead < PROXIMITY_PRESS_GRACE then
         maxLookahead = PROXIMITY_PRESS_GRACE
@@ -5313,9 +7365,9 @@ local function renderLoop()
 
     local lookaheadGoal = config.pressLookaheadGoal
     if lookaheadGoal == nil then
-        lookaheadGoal = DEFAULT_CONFIG.pressLookaheadGoal
+        lookaheadGoal = Defaults.CONFIG.pressLookaheadGoal
     end
-    if not isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
+    if not Helpers.isFiniteNumber(lookaheadGoal) or lookaheadGoal <= 0 then
         lookaheadGoal = 0
     elseif maxLookahead < lookaheadGoal then
         maxLookahead = lookaheadGoal
@@ -5323,49 +7375,72 @@ local function renderLoop()
 
     local confidencePadding = config.pressConfidencePadding
     if confidencePadding == nil then
-        confidencePadding = DEFAULT_CONFIG.pressConfidencePadding
+        confidencePadding = Defaults.CONFIG.pressConfidencePadding
     end
-    if not isFiniteNumber(confidencePadding) or confidencePadding < 0 then
+    if not Helpers.isFiniteNumber(confidencePadding) or confidencePadding < 0 then
         confidencePadding = 0
     end
 
+    local minDetectionTime = config.pressMinDetectionTime
+    if minDetectionTime == nil then
+        minDetectionTime = Defaults.CONFIG.pressMinDetectionTime
+    end
+    if not Helpers.isFiniteNumber(minDetectionTime) or minDetectionTime < 0 then
+        minDetectionTime = 0
+    end
+
+    state.reactionBias = reactionBias
+    state.scheduleSlack = scheduleSlack
+    state.maxLookahead = maxLookahead
+    state.lookaheadGoal = lookaheadGoal
+    state.confidencePadding = confidencePadding
+    state.minDetectionTime = minDetectionTime
+end
+
+function PressDecision.applySmartTuning(state, now, ballId)
     local smartTelemetry
-    local smartTuningApplied = applySmartTuning({
+    local smartTuningApplied = Helpers.applySmartTuning({
         ballId = ballId,
         now = now,
-        baseReactionBias = reactionBias,
-        baseScheduleSlack = scheduleSlack,
-        baseConfidencePadding = confidencePadding,
-        sigma = sigma,
-        mu = mu,
-        muPlus = muPlus,
-        muMinus = muMinus,
-        delta = delta,
-        ping = ping,
-        lookaheadGoal = lookaheadGoal,
+        baseReactionBias = state.reactionBias,
+        baseScheduleSlack = state.scheduleSlack,
+        baseConfidencePadding = state.confidencePadding,
+        sigma = state.sigma,
+        mu = state.mu,
+        muPlus = state.muPlus,
+        muMinus = state.muMinus,
+        delta = state.delta,
+        ping = state.ping,
+        lookaheadGoal = state.lookaheadGoal,
     })
 
     if smartTuningApplied then
         local appliedReaction = smartTuningApplied.reactionBias
-        if isFiniteNumber(appliedReaction) and appliedReaction >= 0 then
-            reactionBias = appliedReaction
+        if Helpers.isFiniteNumber(appliedReaction) and appliedReaction >= 0 then
+            state.reactionBias = appliedReaction
         end
 
         local appliedSlack = smartTuningApplied.scheduleSlack
-        if isFiniteNumber(appliedSlack) and appliedSlack >= 0 then
-            scheduleSlack = appliedSlack
+        if Helpers.isFiniteNumber(appliedSlack) and appliedSlack >= 0 then
+            state.scheduleSlack = appliedSlack
         end
 
         local appliedConfidence = smartTuningApplied.confidencePadding
-        if isFiniteNumber(appliedConfidence) and appliedConfidence >= 0 then
-            confidencePadding = appliedConfidence
+        if Helpers.isFiniteNumber(appliedConfidence) and appliedConfidence >= 0 then
+            state.confidencePadding = appliedConfidence
         end
 
-        smartTelemetry = normalizeSmartTuningPayload(smartTuningApplied.telemetry)
+        smartTelemetry = Helpers.normalizeSmartTuningPayload(smartTuningApplied.telemetry)
     end
 
-    local scheduleLead = math.max(delta + reactionBias, PROXIMITY_PRESS_GRACE)
+    state.smartTelemetry = smartTelemetry
+end
 
+function PressDecision.computeSchedule(state)
+    local scheduleLead = math.max(state.delta + state.reactionBias, PROXIMITY_PRESS_GRACE)
+    state.scheduleLead = scheduleLead
+
+    local smartTelemetry = state.smartTelemetry
     if smartTelemetry then
         smartTuningState.scheduleLead = scheduleLead
         smartTelemetry.scheduleLead = scheduleLead
@@ -5381,55 +7456,713 @@ local function renderLoop()
             target.scheduleLead = scheduleLead
         end
     end
+end
 
-    local inequalityPress = targetingMe and muValid and sigmaValid and muPlus <= 0
-    local confidencePress = targetingMe and muValid and sigmaValid and muPlus <= -confidencePadding
+function PressDecision.computeDecisionFlags(state, kinematics, telemetry, now, ballId)
+    local inequalityPress =
+        state.targetingMe and state.approaching and state.muValid and state.sigmaValid and state.muPlus <= 0
+    local confidencePress =
+        state.targetingMe and state.muValid and state.sigmaValid and state.muPlus <= -state.confidencePadding
 
-    local timeUntilPress = predictedImpact - scheduleLead
-    if not isFiniteNumber(timeUntilPress) then
+    local detectionAge
+    local detectionReady = true
+    if state.targetingMe and state.minDetectionTime and state.minDetectionTime > 0 then
+        if telemetry and telemetry.targetDetectedAt then
+            detectionAge = math.max(now - telemetry.targetDetectedAt, 0)
+            detectionReady = detectionAge >= state.minDetectionTime
+        else
+            detectionReady = false
+        end
+    end
+
+    local detectionConfidence = 0
+    local detectionMin = state.minDetectionTime or 0
+    if Helpers.isFiniteNumber(detectionAge) then
+        local denominator = detectionMin
+        if not Helpers.isFiniteNumber(denominator) or denominator <= 0 then
+            denominator = Constants.DETECTION_CONFIDENCE_GRACE or PROXIMITY_PRESS_GRACE
+        end
+
+        if denominator and denominator > 0 then
+            local progress = math.clamp(detectionAge / denominator, 0, 2)
+            local eased = math.tanh(progress)
+            if detectionReady then
+                detectionConfidence = 0.5 + 0.5 * eased
+            else
+                detectionConfidence = 0.25 * eased
+            end
+        end
+    elseif detectionReady then
+        detectionConfidence = 1
+    end
+
+    detectionConfidence = Helpers.clampNumber(detectionConfidence, 0, 1) or 0
+
+    local timeUntilPress = state.predictedImpact - state.scheduleLead
+    if not Helpers.isFiniteNumber(timeUntilPress) then
         timeUntilPress = math.huge
     end
-    local canPredict = approaching and targetingMe and predictedImpact < math.huge
-    local shouldDelay = canPredict and not confidencePress and predictedImpact > scheduleLead
-    local withinLookahead = maxLookahead <= 0 or timeUntilPress <= maxLookahead
+
+    local canPredict = state.approaching and state.targetingMe and state.predictedImpact < math.huge
+    local shouldDelay = canPredict and not confidencePress and state.predictedImpact > state.scheduleLead
+    local withinLookahead = state.maxLookahead <= 0 or timeUntilPress <= state.maxLookahead
     local shouldSchedule = shouldDelay and withinLookahead
 
     local proximityPress =
-        targetingMe
-        and approaching
-        and (distance <= pressRadius or timeToPressRadius <= responseWindow or timeToImpact <= responseWindow)
+        state.targetingMe
+        and state.approaching
+        and (
+            kinematics.distance <= state.pressRadius
+            or state.timeToPressRadius <= state.responseWindow
+            or state.timeToImpact <= state.responseWindow
+        )
 
     local proximityHold =
-        targetingMe
-        and approaching
-        and (distance <= holdRadius or timeToHoldRadius <= holdWindow or timeToImpact <= holdWindow)
+        state.targetingMe
+        and state.approaching
+        and (
+            kinematics.distance <= state.holdRadius
+            or state.timeToHoldRadius <= state.holdWindow
+            or state.timeToImpact <= state.holdWindow
+        )
 
-    local shouldPress = proximityPress or inequalityPress
+    local distancePenalty = 1 - math.clamp(state.proximityDistanceSuppression or 0, 0, 1)
+    local logistic = math.clamp(state.proximityLogistic or 0, 0, 1)
+    local urgency = math.max(state.proximitySimulationUrgency or 0, 0)
+    local ballisticGain = math.max(state.proximityBallisticGain or 0, 0)
+    local weightedIntrusion = math.max(state.proximityWeightedIntrusion or 0, 0)
+    local ballisticProjection = math.max(state.proximityBallistic or 0, 0)
+    local safeRadius = state.safeRadius or kinematics.distance or 0
+
+    local severity = math.clamp(
+        logistic * (1 + 0.6 * urgency)
+            + distancePenalty * 0.35
+            + ballisticGain * 0.4
+            + weightedIntrusion * 0.3,
+        0,
+        4
+    ) / 4
+
+    local ballisticFlux = 0
+    if safeRadius > 0 then
+        ballisticFlux = math.clamp(ballisticProjection / safeRadius, 0, 4) / 4
+    end
+    ballisticFlux += math.clamp(ballisticGain * 0.5, 0, 1)
+    ballisticFlux = math.clamp(ballisticFlux, 0, 1)
+
+    local intensity = math.clamp(0.6 * severity + 0.25 * urgency + 0.15 * ballisticFlux, 0, 1)
+
+    local speedComponent = 0
+    local minSpeed = Defaults.CONFIG.minSpeed or 10
+    if minSpeed > 0 then
+        speedComponent = math.tanh(math.abs(state.approachSpeed or 0) / minSpeed)
+    end
+
+    local tempo = 0
+    if Helpers.isFiniteNumber(state.timeToImpact) and state.timeToImpact < math.huge then
+        local baseWindow = math.max(state.responseWindow or PROXIMITY_PRESS_GRACE, PROXIMITY_PRESS_GRACE)
+        if baseWindow > 0 then
+            tempo = math.clamp(1 - math.exp(-math.max(baseWindow - state.timeToImpact, 0) / baseWindow), 0, 1)
+        end
+    end
+
+    detectionConfidence = math.clamp(state.detectionConfidence or detectionConfidence, 0, 1)
+    local tempoComponent = math.max(tempo, speedComponent)
+
+    local envelopeAnalytics = Helpers.updateThreatEnvelope(state, telemetry, {
+        now = now,
+        dt = kinematics and kinematics.dt,
+        logistic = logistic,
+        intensity = intensity,
+        severity = severity,
+        detectionConfidence = detectionConfidence,
+        tempo = tempo,
+        speedComponent = speedComponent,
+        urgency = urgency,
+        sample = math.max(severity, logistic, intensity),
+    })
+
+    if envelopeAnalytics then
+        detectionConfidence = envelopeAnalytics.detectionConfidence or detectionConfidence
+        tempoComponent = math.max(tempoComponent, envelopeAnalytics.tempo or 0)
+        state.threatSpectralFast = envelopeAnalytics.fast
+        state.threatSpectralMedium = envelopeAnalytics.medium
+        state.threatSpectralSlow = envelopeAnalytics.slow
+        state.threatLoad = envelopeAnalytics.load
+        state.threatAcceleration = envelopeAnalytics.acceleration
+        state.threatJerk = envelopeAnalytics.jerk
+        state.threatBoost = envelopeAnalytics.detectionBoost
+        state.threatInstantReady = envelopeAnalytics.instantReady and true or false
+        if envelopeAnalytics.instantReady and not detectionReady then
+            detectionReady = true
+        end
+    else
+        state.threatSpectralFast = state.threatSpectralFast or math.max(severity, logistic)
+        state.threatSpectralMedium = state.threatSpectralMedium or state.threatSpectralFast
+        state.threatSpectralSlow = state.threatSpectralSlow or state.threatSpectralMedium
+        state.threatLoad = state.threatLoad or math.max(severity, logistic)
+        state.threatAcceleration = state.threatAcceleration or 0
+        state.threatJerk = state.threatJerk or 0
+        state.threatBoost = state.threatBoost or 0
+        state.threatInstantReady = state.threatInstantReady and true or false
+    end
+
+    local previousThreat = telemetry and telemetry.threat
+    local threatMomentum = Helpers.clampNumber(
+        state.threatMomentum or (previousThreat and previousThreat.momentum) or 0,
+        -4,
+        4
+    ) or 0
+    local threatVolatility = math.clamp(state.threatVolatility or (previousThreat and previousThreat.volatility) or 0, 0, 1)
+    local threatStability = math.clamp(state.threatStability or (previousThreat and previousThreat.stability) or 0, 0, 1)
+    local threatLoad = math.clamp(
+        state.threatLoad
+            or (previousThreat and previousThreat.load)
+            or math.max(severity, logistic, intensity),
+        0,
+        1
+    )
+
+    local momentumScale = Constants.THREAT_MOMENTUM_READY_SCALE or 0.9
+    local normalizedMomentum = 0.5 + 0.5 * math.tanh(threatMomentum * momentumScale)
+    local positiveMomentum = math.max(normalizedMomentum - 0.5, 0) * 2
+    local negativeMomentum = math.max(0.5 - normalizedMomentum, 0) * 2
+
+    local momentumConfidenceWeight = Constants.THREAT_MOMENTUM_CONFIDENCE_WEIGHT or 0.6
+    local stabilityConfidenceWeight = Constants.THREAT_STABILITY_CONFIDENCE_WEIGHT or 0.3
+    local loadConfidenceWeight = Constants.THREAT_LOAD_CONFIDENCE_WEIGHT or 0.2
+    local volatilityConfidenceWeight = Constants.THREAT_VOLATILITY_CONFIDENCE_WEIGHT or 0.35
+
+    local stabilityBoost = threatStability * stabilityConfidenceWeight
+    local loadBoost = threatLoad * loadConfidenceWeight
+    local momentumBoost = positiveMomentum * momentumConfidenceWeight
+    local volatilityPenalty = math.max(threatVolatility - threatStability, 0) * volatilityConfidenceWeight
+    local detectionMomentumBoost = math.clamp(momentumBoost + stabilityBoost + loadBoost - volatilityPenalty, -0.5, 0.55)
+
+    detectionConfidence = math.clamp(detectionConfidence + detectionMomentumBoost, 0, 1)
+
+    local readinessMomentum = math.clamp(momentumBoost + stabilityBoost + loadBoost, 0, 1)
+    local readinessVolatilityWeight = Constants.THREAT_VOLATILITY_READY_WEIGHT or 0.2
+    local readinessAdjusted = math.clamp(
+        readinessMomentum - readinessVolatilityWeight * math.max(threatVolatility - threatStability, 0),
+        0,
+        1
+    )
+
+    local momentumReadyThreshold = Constants.THREAT_MOMENTUM_READY_THRESHOLD or 0.38
+    local momentumReady = readinessAdjusted >= momentumReadyThreshold
+    if not detectionReady and momentumReady then
+        detectionReady = true
+    end
+
+    local slackTightenWeight = Constants.THREAT_MOMENTUM_SLACK_TIGHTEN or 0.6
+    local stabilitySlackWeight = Constants.THREAT_STABILITY_SLACK_TIGHTEN or 0.25
+    local volatilitySlackWeight = Constants.THREAT_VOLATILITY_SLACK_EXPAND or 0.35
+    local slackScale = 1 - positiveMomentum * slackTightenWeight - threatStability * stabilitySlackWeight
+    slackScale += math.max(negativeMomentum, math.max(threatVolatility - threatStability, 0)) * volatilitySlackWeight
+    local minSlackScale = Constants.THREAT_SCHEDULE_SLACK_MIN_SCALE or 0.35
+    local maxSlackScale = Constants.THREAT_SCHEDULE_SLACK_MAX_SCALE or 1.35
+    slackScale = math.clamp(slackScale, minSlackScale, maxSlackScale)
+
+    if Helpers.isFiniteNumber(state.scheduleSlack) and state.scheduleSlack > 0 then
+        local baseSlack = state.scheduleSlack
+        local tightenedSlack = math.clamp(
+            baseSlack * slackScale,
+            PROXIMITY_PRESS_GRACE * 0.35,
+            math.max(baseSlack, PROXIMITY_PRESS_GRACE)
+        )
+        state.scheduleSlack = tightenedSlack
+        state.scheduleSlackScale = slackScale
+    else
+        state.scheduleSlackScale = 1
+    end
+
+    state.detectionMomentumBoost = detectionMomentumBoost
+    state.threatReadinessMomentum = readinessAdjusted
+    state.threatMomentumReady = momentumReady
+    state.threatVolatility = threatVolatility
+    state.threatStability = threatStability
+    state.threatLoad = threatLoad
+    state.threatStabilityBoost = stabilityBoost
+    state.threatLoadBoost = loadBoost
+    state.threatMomentum = threatMomentum
+    state.threatMomentumBoost = momentumBoost
+    state.threatVolatilityPenalty = volatilityPenalty
+
+    local function resolveFiniteTime(value)
+        if Helpers.isFiniteNumber(value) and value >= 0 then
+            return value
+        end
+        return math.huge
+    end
+
+    local scheduleLead = math.max(state.scheduleLead or 0, 0)
+    local budgetHorizon = math.min(
+        resolveFiniteTime(state.predictedImpact),
+        resolveFiniteTime(state.timeToImpact),
+        resolveFiniteTime(state.timeToPressRadius),
+        resolveFiniteTime(state.timeToHoldRadius)
+    )
+    if Helpers.isFiniteNumber(state.holdWindow) and state.holdWindow > 0 then
+        budgetHorizon = math.min(budgetHorizon, state.holdWindow)
+    end
+
+    local threatBudget = timeUntilPress
+    if not Helpers.isFiniteNumber(threatBudget) then
+        threatBudget = math.huge
+    end
+
+    local horizonForRatio = budgetHorizon
+    if not Helpers.isFiniteNumber(horizonForRatio) or horizonForRatio <= 0 then
+        horizonForRatio = math.max(scheduleLead, PROXIMITY_PRESS_GRACE)
+    end
+
+    local budgetRatio = 0
+    if Helpers.isFiniteNumber(threatBudget) and Helpers.isFiniteNumber(horizonForRatio) and horizonForRatio > 0 then
+        budgetRatio = math.clamp(threatBudget / horizonForRatio, -1, 1)
+    end
+
+    local pressureDenominator = math.max(
+        scheduleLead,
+        Constants.THREAT_BUDGET_PRESSURE_DENOM or 0.12,
+        PROXIMITY_PRESS_GRACE
+    )
+
+    local budgetPressure = 0
+    if Helpers.isFiniteNumber(threatBudget) and threatBudget < 0 then
+        budgetPressure = math.clamp(-threatBudget / pressureDenominator, 0, 1)
+    end
+
+    local latencyGap = 0
+    if Helpers.isFiniteNumber(detectionMin) and detectionMin > 0 then
+        latencyGap = detectionMin - math.max(detectionAge or 0, 0)
+    end
+
+    local budgetConfidenceGain = math.clamp(
+        budgetPressure * (Constants.THREAT_BUDGET_CONFIDENCE_GAIN or 0.22),
+        0,
+        0.35
+    )
+    detectionConfidence = math.clamp(detectionConfidence + budgetConfidenceGain, 0, 1)
+
+    local readinessScore = math.clamp(
+        (Constants.THREAT_BUDGET_CONFIDENCE_WEIGHT or 0.55) * detectionConfidence
+            + (Constants.THREAT_BUDGET_PRESSURE_WEIGHT or 0.3) * budgetPressure
+            + (Constants.THREAT_BUDGET_BOOST_WEIGHT or 0.2) * math.clamp(state.threatBoost or 0, 0, 1)
+            + (Constants.THREAT_BUDGET_TEMPO_WEIGHT or 0.15) * tempoComponent
+            + (Constants.THREAT_BUDGET_MOMENTUM_WEIGHT or 0.18) * (state.threatReadinessMomentum or 0)
+            - (Constants.THREAT_BUDGET_LATENCY_WEIGHT or 0.08) * math.max(latencyGap, 0),
+        0,
+        1
+    )
+
+    local budgetReady = false
+    if not detectionReady then
+        local budgetReadyScore = Constants.THREAT_BUDGET_READY_SCORE or 0.78
+        local budgetPressureThreshold = Constants.THREAT_BUDGET_READY_PRESSURE or 0.55
+        local budgetConfidenceThreshold = Constants.THREAT_BUDGET_READY_CONFIDENCE or 0.68
+
+        if readinessScore >= budgetReadyScore
+            or (budgetPressure >= budgetPressureThreshold and detectionConfidence >= budgetConfidenceThreshold)
+        then
+            detectionReady = true
+            budgetReady = true
+        end
+    end
+
+    if budgetReady and not state.threatInstantReady then
+        state.threatInstantReady = true
+    end
+
+    if detectionReady and not shouldPress and state.targetingMe and state.approaching then
+        local pressurePressThreshold = Constants.THREAT_BUDGET_PRESS_THRESHOLD or 0.6
+        if budgetPressure >= pressurePressThreshold then
+            if threatBudget <= 0 or readinessScore >= (Constants.THREAT_BUDGET_PRESS_SCORE or 0.82) then
+                shouldPress = true
+            end
+        end
+    end
+
+    if shouldDelay then
+        local delayCutoff = Constants.THREAT_BUDGET_DELAY_CUTOFF or 0.35
+        if budgetPressure >= delayCutoff or threatBudget <= 0 then
+            shouldDelay = false
+        end
+    end
+
+    shouldSchedule = shouldDelay and withinLookahead
+
+    state.threatBudget = threatBudget
+    state.threatBudgetHorizon = budgetHorizon
+    state.threatBudgetRatio = budgetRatio
+    state.threatBudgetPressure = budgetPressure
+    state.threatLatencyGap = latencyGap
+    state.threatBudgetReady = budgetReady
+    state.threatBudgetInstantReady = budgetReady
+    state.threatReadinessScore = readinessScore
+    state.threatBudgetConfidenceGain = budgetConfidenceGain
+    state.detectionConfidence = detectionConfidence
+
+    local threatScore
+    local threatConfidence
+    if envelopeAnalytics and Helpers.isFiniteNumber(envelopeAnalytics.score) then
+        threatScore = envelopeAnalytics.score
+    else
+        local loadSample = math.clamp(state.threatLoad or math.max(severity, logistic), 0, 1)
+        threatScore = math.clamp(
+            0.45 * logistic + 0.22 * intensity + 0.18 * detectionConfidence + 0.1 * tempoComponent + 0.05 * loadSample,
+            0,
+            1
+        )
+    end
+
+    if envelopeAnalytics and Helpers.isFiniteNumber(envelopeAnalytics.confidence) then
+        threatConfidence = envelopeAnalytics.confidence
+    else
+        local loadSample = math.clamp(state.threatLoad or math.max(severity, logistic), 0, 1)
+        threatConfidence = math.clamp(0.5 * logistic + 0.2 * intensity + 0.2 * detectionConfidence + 0.1 * loadSample, 0, 1)
+    end
+
+    state.threatSeverity = severity
+    state.threatIntensity = intensity
+    state.threatTempo = tempoComponent
+    state.threatScore = threatScore
+    state.threatConfidence = threatConfidence
+
+    local threatStatus = Helpers.resolveThreatStatus(threatScore)
+    state.threatStatus = threatStatus
+
+    state.detectionReady = detectionReady
+    state.detectionAge = detectionAge
+
+    if telemetry then
+        local resolved, threatTelemetry = Helpers.updateThreatTelemetry(telemetry, state, kinematics, now, ballId)
+        if resolved then
+            state.threatStatus = resolved
+        end
+        if typeof(threatTelemetry) == "table" then
+            if Helpers.isFiniteNumber(threatTelemetry.momentum) then
+                state.threatMomentum = threatTelemetry.momentum
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.volatility) then
+                state.threatVolatility = threatTelemetry.volatility
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.stability) then
+                state.threatStability = threatTelemetry.stability
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.confidence) then
+                state.threatConfidence = threatTelemetry.confidence
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.load) then
+                state.threatLoad = threatTelemetry.load
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.spectralFast) then
+                state.threatSpectralFast = threatTelemetry.spectralFast
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.spectralMedium) then
+                state.threatSpectralMedium = threatTelemetry.spectralMedium
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.spectralSlow) then
+                state.threatSpectralSlow = threatTelemetry.spectralSlow
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.acceleration) then
+                state.threatAcceleration = threatTelemetry.acceleration
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.jerk) then
+                state.threatJerk = threatTelemetry.jerk
+            end
+            if Helpers.isFiniteNumber(threatTelemetry.detectionBoost) then
+                state.threatBoost = threatTelemetry.detectionBoost
+            end
+            if type(threatTelemetry.instantReady) == "boolean" and threatTelemetry.instantReady and not detectionReady then
+                detectionReady = true
+            end
+            if type(threatTelemetry.instantReady) == "boolean" then
+                state.threatInstantReady = threatTelemetry.instantReady
+            end
+        end
+    end
+
+    local shouldPress = detectionReady and (proximityPress or inequalityPress or confidencePress)
+
+    if not detectionReady then
+        if state.threatInstantReady then
+            shouldPress = proximityPress or inequalityPress or confidencePress
+            detectionReady = shouldPress or detectionReady
+        elseif state.threatBoost and state.threatBoost >= (Constants.THREAT_SPECTRUM_READY_THRESHOLD or 0.32) then
+            shouldPress = proximityPress or inequalityPress or confidencePress
+            detectionReady = shouldPress or detectionReady
+        end
+    end
+
+    if detectionReady and state.threatBoost and state.threatBoost > 0 then
+        shouldPress = proximityPress or inequalityPress or confidencePress or shouldPress
+    end
 
     if telemetry then
         if shouldPress then
             telemetry.decisionAt = telemetry.decisionAt or now
-        elseif not targetingMe then
+        elseif not state.targetingMe then
             telemetry.decisionAt = nil
         end
     end
 
-    local shouldHold = proximityHold
-    if targetingMe and muValid and sigmaValid and muMinus < 0 then
-        shouldHold = true
+    local shouldHold = false
+    if detectionReady then
+        shouldHold = proximityHold or shouldPress
+        if state.targetingMe and state.muValid and state.sigmaValid and state.muMinus < 0 then
+            shouldHold = true
+        end
     end
-    if shouldPress then
-        shouldHold = true
+
+    state.inequalityPress = inequalityPress
+    state.confidencePress = confidencePress
+    state.timeUntilPress = timeUntilPress
+    state.shouldDelay = shouldDelay
+    state.withinLookahead = withinLookahead
+    state.shouldSchedule = shouldSchedule
+    state.proximityPress = proximityPress
+    state.proximityHold = proximityHold
+    state.shouldPress = shouldPress
+    state.shouldHold = shouldHold
+    state.detectionReady = detectionReady
+    state.detectionAge = detectionAge
+end
+
+function PressDecision.evaluate(params)
+    local config = params.config or Defaults.CONFIG
+    local kinematics = params.kinematics
+    local telemetry = params.telemetry
+    local safeRadius = params.safeRadius or 0
+    local now = params.now
+    local ballId = params.ballId
+
+    local decision = params.decision
+    if decision == nil then
+        decision = PressDecision.output
     end
+    PressDecision.clearTable(decision)
+
+    local state = PressDecision.scratch
+    PressDecision.clearTable(state)
+
+    PressDecision.computeConfidence(state, config, kinematics)
+    state.targetingMe = Helpers.isTargetingMe(now)
+
+    PressDecision.updateTelemetryState(state, telemetry, now, state.targetingMe, ballId)
+    PressDecision.computeApproach(state, kinematics, safeRadius)
+    PressDecision.computeCurveAdjustments(state, config, kinematics)
+    PressDecision.computeRadii(state, kinematics, safeRadius, telemetry, now)
+    PressDecision.computeRadiusTimes(state, kinematics, safeRadius)
+    PressDecision.computeSchedulingParameters(state, config)
+    PressDecision.applySmartTuning(state, now, ballId)
+    PressDecision.computeSchedule(state)
+    PressDecision.computeDecisionFlags(state, kinematics, telemetry, now, ballId)
+
+    decision.ping = state.ping
+    decision.delta = state.delta
+    decision.mu = state.mu
+    decision.sigma = state.sigma
+    decision.z = state.z
+    decision.muPlus = state.muPlus
+    decision.muMinus = state.muMinus
+    decision.muValid = state.muValid
+    decision.sigmaValid = state.sigmaValid
+    decision.targetingMe = state.targetingMe
+    decision.approachSpeed = state.approachSpeed
+    decision.approaching = state.approaching
+    decision.timeToImpact = state.timeToImpact
+    decision.timeToImpactFallback = state.timeToImpactFallback
+    decision.timeToImpactPolynomial = state.timeToImpactPolynomial
+    decision.responseWindow = state.responseWindow
+    decision.curveLeadTime = state.curveLeadTime
+    decision.curveLeadDistance = state.curveLeadDistance
+    decision.curveHoldDistance = state.curveHoldDistance
+    decision.curveSeverity = state.curveSeverity
+    decision.curveJerkSeverity = state.curveJerkSeverity
+    decision.curveLeadApplied = state.curveLeadApplied
+    decision.curveHoldApplied = state.curveHoldApplied
+    decision.pressRadius = state.pressRadius
+    decision.holdRadius = state.holdRadius
+    decision.proximityBaseLead = state.proximityBaseLead
+    decision.proximityAdaptiveLead = state.proximityAdaptiveLead
+    decision.proximityEnvelope = state.proximityEnvelope
+    decision.proximitySynthesis = state.proximitySynthesis
+    decision.proximityLogistic = state.proximityLogistic
+    decision.proximityDistanceSuppression = state.proximityDistanceSuppression
+    decision.proximityBallistic = state.proximityBallistic
+    decision.proximityLookaheadGain = state.proximityLookaheadGain
+    decision.proximityImpactRatio = state.proximityImpactRatio
+    decision.proximityHoldLead = state.proximityHoldLead
+    decision.proximityManifold = state.proximityManifold
+    decision.proximitySimulationEnergy = state.proximitySimulationEnergy
+    decision.proximitySimulationUrgency = state.proximitySimulationUrgency
+    decision.proximitySimulationQuality = state.proximitySimulationQuality
+    decision.proximityVelocityImprint = state.proximityVelocityImprint
+    decision.proximitySimulation = Helpers.cloneTelemetryEvent(state.proximitySimulation)
+    decision.proximityWeightedIntrusion = state.proximityWeightedIntrusion
+    decision.proximityBallisticGain = state.proximityBallisticGain
+    decision.proximitySimulationCached = state.proximitySimulationCached
+    decision.proximitySimulationCacheKey = state.proximitySimulationCacheKey
+    decision.proximitySimulationCacheHits = state.proximitySimulationCacheHits
+    decision.proximitySimulationCacheStreak = state.proximitySimulationCacheStreak
+    decision.threatScore = state.threatScore
+    decision.threatSeverity = state.threatSeverity
+    decision.threatIntensity = state.threatIntensity
+    decision.threatTempo = state.threatTempo
+    decision.threatStatus = state.threatStatus
+    decision.threatConfidence = state.threatConfidence
+    decision.threatLoad = state.threatLoad
+    decision.threatSpectralFast = state.threatSpectralFast
+    decision.threatSpectralMedium = state.threatSpectralMedium
+    decision.threatSpectralSlow = state.threatSpectralSlow
+    decision.threatMomentum = state.threatMomentum
+    decision.threatMomentumBoost = state.threatMomentumBoost
+    decision.threatVolatility = state.threatVolatility
+    decision.threatStability = state.threatStability
+    decision.threatStabilityBoost = state.threatStabilityBoost
+    decision.threatAcceleration = state.threatAcceleration
+    decision.threatJerk = state.threatJerk
+    decision.threatBoost = state.threatBoost
+    decision.threatInstantReady = state.threatInstantReady
+    decision.threatMomentumReady = state.threatMomentumReady
+    decision.threatReadinessMomentum = state.threatReadinessMomentum
+    decision.threatVolatilityPenalty = state.threatVolatilityPenalty
+    decision.threatLoadBoost = state.threatLoadBoost
+    decision.threatBudget = state.threatBudget
+    decision.threatBudgetHorizon = state.threatBudgetHorizon
+    decision.threatBudgetRatio = state.threatBudgetRatio
+    decision.threatBudgetPressure = state.threatBudgetPressure
+    decision.threatLatencyGap = state.threatLatencyGap
+    decision.threatBudgetReady = state.threatBudgetReady
+    decision.threatReadiness = state.threatReadinessScore
+    decision.threatBudgetConfidenceGain = state.threatBudgetConfidenceGain
+    decision.detectionConfidence = state.detectionConfidence
+    decision.detectionMomentumBoost = state.detectionMomentumBoost
+    decision.timeToPressRadius = state.timeToPressRadius
+    decision.timeToPressRadiusPolynomial = state.timeToPressRadiusPolynomial
+    decision.timeToPressRadiusFallback = state.timeToPressRadiusFallback
+    decision.timeToHoldRadius = state.timeToHoldRadius
+    decision.timeToHoldRadiusPolynomial = state.timeToHoldRadiusPolynomial
+    decision.timeToHoldRadiusFallback = state.timeToHoldRadiusFallback
+    decision.holdWindow = state.holdWindow
+    decision.predictedImpact = state.predictedImpact
+    decision.reactionBias = state.reactionBias
+    decision.scheduleSlack = state.scheduleSlack
+    decision.scheduleSlackScale = state.scheduleSlackScale
+    decision.maxLookahead = state.maxLookahead
+    decision.lookaheadGoal = state.lookaheadGoal
+    decision.confidencePadding = state.confidencePadding
+    decision.smartTelemetry = state.smartTelemetry
+    decision.scheduleLead = state.scheduleLead
+    decision.inequalityPress = state.inequalityPress
+    decision.confidencePress = state.confidencePress
+    decision.timeUntilPress = state.timeUntilPress
+    decision.shouldDelay = state.shouldDelay
+    decision.withinLookahead = state.withinLookahead
+    decision.shouldSchedule = state.shouldSchedule
+    decision.proximityPress = state.proximityPress
+    decision.proximityHold = state.proximityHold
+    decision.shouldPress = state.shouldPress
+    decision.shouldHold = state.shouldHold
+    decision.detectionReady = state.detectionReady
+    decision.detectionAge = state.detectionAge
+    decision.minDetectionTime = state.minDetectionTime
+
+    return decision
+end
+
+function Helpers.renderLoop()
+    if initialization.destroyed then
+        Helpers.clearScheduledPress(nil, "destroyed")
+        return
+    end
+
+    if not Context.player.LocalPlayer then
+        Helpers.clearScheduledPress(nil, "missing-player")
+        return
+    end
+
+    if not Context.player.Character or not Context.player.RootPart then
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: waiting for character" })
+        Helpers.safeClearBallVisuals()
+        Helpers.clearScheduledPress(nil, "missing-character")
+        Helpers.releaseParry()
+        return
+    end
+
+    Helpers.ensureBallsFolder(false)
+    local folder = Context.player.BallsFolder
+    if not folder then
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for balls folder" })
+        Helpers.safeClearBallVisuals()
+        Helpers.clearScheduledPress(nil, "missing-balls-folder")
+        Helpers.releaseParry()
+        return
+    end
+
+    if not state.enabled then
+        Helpers.clearScheduledPress(nil, "disabled")
+        Helpers.releaseParry()
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
+        Helpers.safeClearBallVisuals()
+        Helpers.updateToggleButton()
+        return
+    end
+
+    local now = os.clock()
+    Helpers.cleanupTelemetry(now)
+    Helpers.prunePendingLatencyPresses(now)
+    Helpers.maybeRunAutoTuning(now)
+
+    local ball = Helpers.findRealBall(folder)
+    if not ball or not ball:IsDescendantOf(Services.Workspace) then
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Ball: none", "Info: waiting for realBall..." })
+        Helpers.safeClearBallVisuals()
+        Helpers.clearScheduledPress(nil, "no-ball")
+        Helpers.releaseParry()
+        return
+    end
+
+    local ballId = Helpers.getBallIdentifier(ball)
+    if not ballId then
+        Context.hooks.updateStatusLabel({ "Auto-Parry F", "Ball: unknown", "Info: missing identifier" })
+        Helpers.safeClearBallVisuals()
+        Helpers.clearScheduledPress(nil, "missing-identifier")
+        Helpers.releaseParry()
+        return
+    end
+
+    if Context.scheduledPressState.ballId and Context.scheduledPressState.ballId ~= ballId then
+        Helpers.clearScheduledPress(nil, "ball-changed")
+    elseif Context.scheduledPressState.ballId == ballId and now - Context.scheduledPressState.lastUpdate > Context.smartPress.staleSeconds then
+        Helpers.clearScheduledPress(ballId, "schedule-stale")
+    end
+
+    local telemetry = Helpers.ensureTelemetry(ballId, now)
+    local safeRadius = config.safeRadius or 0
+    local kinematics = BallKinematics.build(ball, Context.player.RootPart.Position, telemetry, safeRadius, now)
+
+    local decision = PressDecision.evaluate({
+        config = config,
+        kinematics = kinematics,
+        telemetry = telemetry,
+        safeRadius = safeRadius,
+        now = now,
+        ballId = ballId,
+        decision = PressDecision.output,
+    })
+
+    local fired = false
+    local released = false
 
     local oscillationTriggered = false
     local spamFallback = false
     if telemetry then
-        oscillationTriggered = evaluateOscillation(telemetry, now)
-        if oscillationTriggered and parryHeld and parryHeldBallId == ballId then
-            local lastApplied = telemetry.lastOscillationApplied or 0
-            if now - lastApplied > (1 / 120) then
-                spamFallback = pressParry(ball, ballId, true)
+        oscillationTriggered = Helpers.evaluateOscillation(telemetry, now)
+        if oscillationTriggered and Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
+            if Helpers.shouldForceOscillationPress(decision, telemetry, now, config) then
+                spamFallback = Helpers.pressParry(ball, ballId, true, decision)
                 if spamFallback then
                     telemetry.lastOscillationApplied = now
                 end
@@ -5442,59 +8175,97 @@ local function renderLoop()
     end
 
     local existingSchedule = nil
-    if scheduledPressState.ballId == ballId then
-        existingSchedule = scheduledPressState
-        scheduledPressState.lead = scheduleLead
-        scheduledPressState.slack = scheduleSlack
-        if smartTelemetry then
-            scheduledPressState.smartTuning = smartTelemetry
+    if Context.scheduledPressState.ballId == ballId then
+        existingSchedule = Context.scheduledPressState
+        Context.scheduledPressState.lead = decision.scheduleLead
+        Context.scheduledPressState.slack = decision.scheduleSlack
+        if decision.smartTelemetry then
+            Context.scheduledPressState.smartTuning = decision.smartTelemetry
         end
     end
 
     local smartReason = nil
 
-    if shouldPress then
-        if shouldSchedule then
-            smartReason = string.format("impact %.3f > lead %.3f (press in %.3f)", predictedImpact, scheduleLead, math.max(timeUntilPress, 0))
+    if decision.shouldPress then
+        if decision.shouldSchedule then
+            smartReason = string.format(
+                "impact %.3f > lead %.3f (press in %.3f)",
+                decision.predictedImpact,
+                decision.scheduleLead,
+                math.max(decision.timeUntilPress, 0)
+            )
             local scheduleContext = {
-                distance = distance,
-                timeToImpact = timeToImpact,
-                timeUntilPress = timeUntilPress,
-                speed = velocity.Magnitude,
-                pressRadius = pressRadius,
-                holdRadius = holdRadius,
-                confidencePress = confidencePress,
-                targeting = targetingMe,
+                distance = kinematics.distance,
+                timeToImpact = decision.timeToImpact,
+                timeUntilPress = decision.timeUntilPress,
+                speed = kinematics.velocityMagnitude,
+                pressRadius = decision.pressRadius,
+                holdRadius = decision.holdRadius,
+                confidencePress = decision.confidencePress,
+                targeting = decision.targetingMe,
+                detectionReady = decision.detectionReady,
+                detectionAge = decision.detectionAge,
                 adaptiveBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or nil,
-                lookaheadGoal = lookaheadGoal,
+                lookaheadGoal = decision.lookaheadGoal,
+                proximityManifold = decision.proximityManifold,
+                proximityLogistic = decision.proximityLogistic,
+                proximityEnvelope = decision.proximityEnvelope,
+                proximityUrgency = decision.proximitySimulationUrgency,
+                proximityEnergy = decision.proximitySimulationEnergy,
+                proximityDistanceSuppression = decision.proximityDistanceSuppression,
+                proximityVelocity = decision.proximityVelocityImprint,
+                proximitySimulation = Helpers.cloneTelemetryEvent(decision.proximitySimulation),
+                threatScore = decision.threatScore,
+                threatStatus = decision.threatStatus,
+                threatIntensity = decision.threatIntensity,
+                threatTempo = decision.threatTempo,
             }
-            if smartTelemetry then
-                scheduleContext.smartTuning = smartTelemetry
+            if decision.smartTelemetry then
+                scheduleContext.smartTuning = decision.smartTelemetry
             end
-            updateScheduledPress(ballId, predictedImpact, scheduleLead, scheduleSlack, smartReason, now, scheduleContext)
-            existingSchedule = scheduledPressState
-        elseif existingSchedule and not shouldDelay then
-            clearScheduledPress(ballId, "ready-to-press")
+            Helpers.updateScheduledPress(
+                ballId,
+                decision.predictedImpact,
+                decision.scheduleLead,
+                decision.scheduleSlack,
+                smartReason,
+                now,
+                scheduleContext
+            )
+            existingSchedule = Context.scheduledPressState
+        elseif existingSchedule and not decision.shouldDelay then
+            Helpers.clearScheduledPress(ballId, "ready-to-press")
             existingSchedule = nil
-        elseif existingSchedule and shouldDelay and not withinLookahead then
-            clearScheduledPress(ballId, "outside-lookahead")
+        elseif existingSchedule and decision.shouldDelay and not decision.withinLookahead then
+            Helpers.clearScheduledPress(ballId, "outside-lookahead")
             existingSchedule = nil
         end
 
-        local activeSlack = (existingSchedule and existingSchedule.slack) or scheduleSlack
-        local readyToPress = confidencePress or not shouldDelay
-        if not readyToPress and predictedImpact <= scheduleLead + activeSlack then
-            readyToPress = true
+        local activeSlack = (existingSchedule and existingSchedule.slack) or decision.scheduleSlack
+        local allowImmediate = decision.confidencePress
+        if not allowImmediate and not decision.shouldDelay then
+            local predictivePress = Helpers.isFiniteNumber(decision.predictedImpact) and decision.predictedImpact < math.huge
+            if predictivePress or decision.proximityPress then
+                allowImmediate = true
+            end
+        end
+
+        local readyToPress = allowImmediate
+        if not readyToPress and Helpers.isFiniteNumber(decision.predictedImpact) then
+            if decision.predictedImpact <= decision.scheduleLead + activeSlack then
+                readyToPress = true
+            end
         end
 
         if not readyToPress and existingSchedule then
-            if now >= existingSchedule.pressAt - activeSlack then
+            local pressAt = existingSchedule.pressAt or 0
+            if decision.detectionReady and now >= pressAt - activeSlack then
                 readyToPress = true
             end
         end
 
         if readyToPress then
-            local pressed = pressParry(ball, ballId)
+            local pressed = Helpers.pressParry(ball, ballId, nil, decision)
             fired = pressed or fired
             if pressed then
                 existingSchedule = nil
@@ -5502,33 +8273,33 @@ local function renderLoop()
         end
     else
         if existingSchedule then
-            clearScheduledPress(ballId, "conditions-changed")
+            Helpers.clearScheduledPress(ballId, "conditions-changed")
             existingSchedule = nil
         end
     end
 
-    if parryHeld and parryHeldBallId == ballId then
+    if Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
         local triggerTime = telemetry and telemetry.triggerTime
         if triggerTime and telemetry and not telemetry.latencySampled then
             local sample = now - triggerTime
             if sample > 0 and sample <= MAX_LATENCY_SAMPLE_SECONDS then
-                recordLatencySample(sample, "local", ballId, telemetry, now)
+                Helpers.recordLatencySample(sample, "local", ballId, telemetry, now)
             elseif sample > PENDING_LATENCY_MAX_AGE then
                 telemetry.latencySampled = true
             end
         end
     end
 
-    if parryHeld then
-        if (not shouldHold) or (parryHeldBallId and parryHeldBallId ~= ballId) then
-            releaseParry()
+    if Context.runtime.parryHeld then
+        if (not decision.shouldHold) or (Context.runtime.parryHeldBallId and Context.runtime.parryHeldBallId ~= ballId) then
+            Helpers.releaseParry()
             released = true
         end
     end
 
     local latencyEntry = latencySamples.lastSample
     local latencyText = "none"
-    if latencyEntry and isFiniteNumber(latencyEntry.value) then
+    if latencyEntry and Helpers.isFiniteNumber(latencyEntry.value) then
         local ageMs = 0
         if latencyEntry.time then
             ageMs = math.max((now - latencyEntry.time) * 1000, 0)
@@ -5542,37 +8313,89 @@ local function renderLoop()
     end
 
     local timeToImpactPolyText = "n/a"
-    if timeToImpactPolynomial then
-        timeToImpactPolyText = string.format("%.3f", timeToImpactPolynomial)
+    if decision.timeToImpactPolynomial then
+        timeToImpactPolyText = string.format("%.3f", decision.timeToImpactPolynomial)
     end
     local timeToImpactFallbackText = "n/a"
-    if isFiniteNumber(timeToImpactFallback) and timeToImpactFallback < math.huge then
-        timeToImpactFallbackText = string.format("%.3f", timeToImpactFallback)
+    if
+        Helpers.isFiniteNumber(decision.timeToImpactFallback)
+        and decision.timeToImpactFallback < math.huge
+    then
+        timeToImpactFallbackText = string.format("%.3f", decision.timeToImpactFallback)
     end
 
+    local detectionAgeText = "n/a"
+    if Helpers.isFiniteNumber(decision.detectionAge) then
+        detectionAgeText = string.format("%.3f", math.max(decision.detectionAge, 0))
+    end
+    local minDetection = decision.minDetectionTime or 0
     local debugLines = {
         "Auto-Parry F",
         string.format("Ball: %s", ball.Name),
-        string.format("d0: %.3f | vr: %.3f", filteredD, filteredVr),
-        string.format("ar: %.3f | jr: %.3f", filteredAr, filteredJr),
-        string.format("μ: %.3f | σ: %.3f | z: %.2f", mu, sigma, z),
-        string.format("μ+zσ: %.3f | μ−zσ: %.3f", muPlus, muMinus),
-        string.format("Δ: %.3f | ping: %.3f | act: %.3f", delta, ping, activationLatencyEstimate),
+        string.format("d0: %.3f | vr: %.3f", kinematics.filteredD, kinematics.filteredVr),
+        string.format("ar: %.3f | jr: %.3f", kinematics.filteredAr, kinematics.filteredJr),
+        string.format("μ: %.3f | σ: %.3f | z: %.2f", decision.mu, decision.sigma, decision.z),
+        string.format("μ+zσ: %.3f | μ−zσ: %.3f", decision.muPlus, decision.muMinus),
+        string.format("Δ: %.3f | ping: %.3f | act: %.3f", decision.delta, decision.ping, activationLatencyEstimate),
         string.format("Latency sample: %s | remoteActive: %s", latencyText, tostring(state.remoteEstimatorActive)),
         string.format("TTI(poly|fb): %s | %s", timeToImpactPolyText, timeToImpactFallbackText),
-        string.format("TTI: %.3f | TTpress: %.3f | TThold: %.3f", timeToImpact, timeToPressRadius, timeToHoldRadius),
+        string.format(
+            "TTI: %.3f | TTpress: %.3f | TThold: %.3f",
+            decision.timeToImpact,
+            decision.timeToPressRadius,
+            decision.timeToHoldRadius
+        ),
         string.format(
             "Curve lead: sev %.2f | jerk %.2f | Δt %.3f | target %.3f | pressΔ %.3f | holdΔ %.3f",
-            curveSeverity,
-            curveJerkSeverity,
-            curveLeadTime,
-            curveLeadDistance,
-            curveLeadApplied,
-            curveHoldApplied
+            decision.curveSeverity,
+            decision.curveJerkSeverity,
+            decision.curveLeadTime,
+            decision.curveLeadDistance,
+            decision.curveLeadApplied,
+            decision.curveHoldApplied
         ),
-        string.format("Rad: safe %.2f | press %.2f | hold %.2f", safeRadius, pressRadius, holdRadius),
-        string.format("Prox: press %s | hold %s", tostring(proximityPress), tostring(proximityHold)),
-        string.format("Targeting: %s", tostring(targetingMe)),
+        string.format(
+            "Rad: safe %.2f | press %.2f | hold %.2f",
+            safeRadius,
+            decision.pressRadius,
+            decision.holdRadius
+        ),
+        string.format(
+            "Prox lead: base %.3f | dyn %.3f | env %.3f | blend %.2f | damp %.2f",
+            decision.proximityBaseLead or 0,
+            decision.proximityAdaptiveLead or 0,
+            decision.proximityEnvelope or 0,
+            decision.proximityLogistic or 0,
+            decision.proximityDistanceSuppression or 0
+        ),
+        string.format(
+            "Prox mix: bal %.3f | look %.3f | impact %.3f | holdΔ %.3f",
+            decision.proximityBallistic or 0,
+            decision.proximityLookaheadGain or 0,
+            decision.proximityImpactRatio or 0,
+            decision.proximityHoldLead or 0
+        ),
+        string.format(
+            "Prox sim: urg %.2f | energy %.2f | vel %.2f | qual %.2f | weight %.2f | balGain %.2f",
+            decision.proximitySimulationUrgency or 0,
+            decision.proximitySimulationEnergy or 0,
+            decision.proximityVelocityImprint or 0,
+            decision.proximitySimulationQuality or 0,
+            decision.proximityWeightedIntrusion or 0,
+            decision.proximityBallisticGain or 0
+        ),
+        string.format(
+            "Prox: press %s | hold %s",
+            tostring(decision.proximityPress),
+            tostring(decision.proximityHold)
+        ),
+        string.format("Targeting: %s", tostring(decision.targetingMe)),
+        string.format(
+            "Detect: ready %s | age %s | min %.3f",
+            tostring(decision.detectionReady),
+            detectionAgeText,
+            minDetection
+        ),
         string.format(
             "Osc: trig %s | flips %d | freq %.2f | dΔ %.3f | spam %s",
             tostring(telemetry.oscillationActive),
@@ -5581,7 +8404,7 @@ local function renderLoop()
             telemetry.lastOscillationDelta or 0,
             tostring(spamFallback)
         ),
-        string.format("ParryHeld: %s", tostring(parryHeld)),
+        string.format("ParryHeld: %s", tostring(Context.runtime.parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
 
@@ -5589,70 +8412,73 @@ local function renderLoop()
         TelemetryAnalytics.computeLatencyReadouts(telemetry, now)
     table.insert(debugLines, string.format("React: %s | Decide: %s | Commit: %s", reactionLatencyText, decisionLatencyText, commitLatencyText))
 
-    if scheduledPressState.ballId == ballId then
-        local eta = math.max((scheduledPressState.pressAt or now) - now, 0)
+    if Context.scheduledPressState.ballId == ballId then
+        local eta = math.max((Context.scheduledPressState.pressAt or now) - now, 0)
         table.insert(
             debugLines,
             string.format(
                 "Smart press: eta %.3f | lead %.3f | slack %.3f | reason %s",
                 eta,
-                scheduledPressState.lead or 0,
-                scheduledPressState.slack or 0,
-                scheduledPressState.reason or "?"
+                Context.scheduledPressState.lead or 0,
+                Context.scheduledPressState.slack or 0,
+                Context.scheduledPressState.reason or "?"
             )
         )
-    elseif shouldPress and shouldDelay then
+    elseif decision.shouldPress and decision.shouldDelay then
         table.insert(
             debugLines,
             string.format(
                 "Smart press: delaying %.3f | lookahead %.3f",
-                math.max(timeUntilPress, 0),
-                maxLookahead
+                math.max(decision.timeUntilPress, 0),
+                decision.maxLookahead
             )
         )
     else
         table.insert(debugLines, "Smart press: idle")
     end
 
-    if sigmaArOverflow > 0 or sigmaJrOverflow > 0 then
-        table.insert(debugLines, string.format("σ infl.: ar %.2f | jr %.2f", sigmaArOverflow, sigmaJrOverflow))
+    if kinematics.sigmaArOverflow > 0 or kinematics.sigmaJrOverflow > 0 then
+        table.insert(
+            debugLines,
+            string.format("σ infl.: ar %.2f | jr %.2f", kinematics.sigmaArOverflow, kinematics.sigmaJrOverflow)
+        )
     end
 
     if fired then
         table.insert(debugLines, "🔥 Press F: proximity/inequality met")
-    elseif parryHeld and not released then
+    elseif Context.runtime.parryHeld and not released then
         table.insert(debugLines, "Hold: maintaining expanded proximity window")
     else
         table.insert(debugLines, "Hold: conditions not met")
     end
 
-    updateStatusLabel(debugLines)
-    setBallVisuals(
+    Context.hooks.updateStatusLabel(debugLines)
+    Helpers.setBallVisuals(
         ball,
-        computeBallDebug(
-            velocity.Magnitude,
-            distance,
+        BallKinematics.computeBallDebug(
+            kinematics.velocityMagnitude,
+            kinematics.distance,
             safeRadius,
-            mu,
-            sigma,
-            muPlus,
-            delta,
-            timeToImpact,
-            timeToPressRadius,
-            timeToHoldRadius,
-            pressRadius,
-            holdRadius
+            decision.mu,
+            decision.sigma,
+            decision.muPlus,
+            decision.delta,
+            decision.timeToImpact,
+            decision.timeToPressRadius,
+            decision.timeToHoldRadius,
+            decision.pressRadius,
+            decision.holdRadius
         )
     )
 end
 
 
-local function ensureLoop()
-    if loopConnection then
+function Helpers.ensureLoop()
+    if Context.connections.loop then
         return
     end
 
-    loopConnection = RunService.PreRender:Connect(renderLoop)
+    Context.connections.loop = Services.RunService.PreRender:Connect(Helpers.renderLoop)
 end
 
 local validators = {
@@ -5701,6 +8527,9 @@ local validators = {
     pressConfidencePadding = function(value)
         return typeof(value) == "number" and value >= 0
     end,
+    pressMinDetectionTime = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
     targetHighlightName = function(value)
         return value == nil or (typeof(value) == "string" and value ~= "")
     end,
@@ -5742,6 +8571,12 @@ local validators = {
     oscillationDistanceDelta = function(value)
         return typeof(value) == "number" and value >= 0
     end,
+    oscillationSpamCooldown = function(value)
+        return value == nil or (typeof(value) == "number" and value >= 0)
+    end,
+    oscillationMaxLookahead = function(value)
+        return value == nil or (typeof(value) == "number" and value > 0)
+    end,
     smartTuning = function(value)
         local valueType = typeof(value)
         return value == nil or value == false or value == true or valueType == "table"
@@ -5755,16 +8590,16 @@ local validators = {
 AutoParry = {}
 
 function AutoParry.enable()
-    ensureInitialization()
+    Helpers.ensureInitialization()
     if state.enabled then
         return
     end
 
-    resetTelemetryHistory("enabled")
+    Helpers.resetTelemetryHistory("enabled")
     state.enabled = true
-    syncGlobalSettings()
-    updateToggleButton()
-    ensureLoop()
+    Helpers.syncGlobalSettings()
+    Helpers.updateToggleButton()
+    Helpers.ensureLoop()
     stateChanged:fire(true)
 end
 
@@ -5774,15 +8609,15 @@ function AutoParry.disable()
     end
 
     state.enabled = false
-    targetingGraceUntil = 0
-    clearScheduledPress(nil, "disabled")
-    releaseParry()
+    Context.runtime.targetingGraceUntil = 0
+    Helpers.clearScheduledPress(nil, "disabled")
+    Helpers.releaseParry()
     telemetryStates = {}
-    trackedBall = nil
-    syncGlobalSettings()
-    updateToggleButton()
+    Context.runtime.trackedBall = nil
+    Helpers.syncGlobalSettings()
+    Helpers.updateToggleButton()
     stateChanged:fire(false)
-    resetTelemetryHistory("disabled")
+    Helpers.resetTelemetryHistory("disabled")
 end
 
 function AutoParry.setEnabled(enabled)
@@ -5807,11 +8642,11 @@ function AutoParry.setImmortalEnabled(enabled)
     local before = state.immortalEnabled
 
     state.immortalEnabled = desired
-    syncImmortalContext()
+    Context.runtime.syncImmortalContext()
 
     local after = state.immortalEnabled
-    updateImmortalButton()
-    syncGlobalSettings()
+    Helpers.updateImmortalButton()
+    Helpers.syncGlobalSettings()
 
     if before ~= after then
         immortalStateChanged:fire(after)
@@ -5828,7 +8663,7 @@ function AutoParry.isImmortalEnabled()
     return state.immortalEnabled
 end
 
-local function applyConfigOverride(key, value)
+function Helpers.applyConfigOverride(key, value)
     local validator = validators[key]
     if not validator then
         error(("AutoParry.configure: unknown option '%s'"):format(tostring(key)), 0)
@@ -5839,29 +8674,29 @@ local function applyConfigOverride(key, value)
     end
 
     if key == "smartTuning" then
-        config.smartTuning = normalizeSmartTuningConfig(value)
-        resetSmartTuningState()
+        config.smartTuning = Helpers.normalizeSmartTuningConfig(value)
+        Helpers.resetSmartTuningState()
         if config.smartTuning == false then
             return
         end
     elseif key == "autoTuning" then
-        config.autoTuning = normalizeAutoTuningConfig(value)
-        syncAutoTuningState()
+        config.autoTuning = Helpers.normalizeAutoTuningConfig(value)
+        Helpers.syncAutoTuningState()
         return
     else
         config[key] = value
     end
 
     if key == "activationLatency" then
-        activationLatencyEstimate = config.activationLatency or DEFAULT_CONFIG.activationLatency or 0
+        activationLatencyEstimate = config.activationLatency or Defaults.CONFIG.activationLatency or 0
         if activationLatencyEstimate < 0 then
             activationLatencyEstimate = 0
         end
     elseif key == "confidenceZ" then
-        perfectParrySnapshot.z = config.confidenceZ or DEFAULT_CONFIG.confidenceZ or perfectParrySnapshot.z
+        perfectParrySnapshot.z = config.confidenceZ or Defaults.CONFIG.confidenceZ or perfectParrySnapshot.z
     elseif key == "remoteQueueGuards" then
-        rebuildRemoteQueueGuardTargets()
-        setRemoteQueueGuardFolder(RemotesFolder)
+        Helpers.rebuildRemoteQueueGuardTargets()
+        Helpers.setRemoteQueueGuardFolder(Context.player.RemotesFolder)
     elseif key == "smartTuning" then
         -- nothing extra; normalization already handled above
     end
@@ -5871,28 +8706,28 @@ function AutoParry.configure(opts)
     assert(typeof(opts) == "table", "AutoParry.configure expects a table")
 
     for key, value in pairs(opts) do
-        applyConfigOverride(key, value)
+        Helpers.applyConfigOverride(key, value)
     end
 
-    syncGlobalSettings()
+    Helpers.syncGlobalSettings()
     return AutoParry.getConfig()
 end
 
 function AutoParry.getConfig()
-    return cloneTable(config)
+    return Helpers.cloneTable(config)
 end
 
 function AutoParry.resetConfig()
-    config = Util.deepCopy(DEFAULT_CONFIG)
-    config.smartTuning = normalizeSmartTuningConfig(config.smartTuning)
-    config.autoTuning = normalizeAutoTuningConfig(config.autoTuning)
-    resetActivationLatency()
-    resetSmartTuningState()
-    syncAutoTuningState()
-    resetTelemetryHistory("config-reset")
-    rebuildRemoteQueueGuardTargets()
-    setRemoteQueueGuardFolder(RemotesFolder)
-    syncGlobalSettings()
+    config = Util.deepCopy(Defaults.CONFIG)
+    config.smartTuning = Helpers.normalizeSmartTuningConfig(config.smartTuning)
+    config.autoTuning = Helpers.normalizeAutoTuningConfig(config.autoTuning)
+    Helpers.resetActivationLatency()
+    Helpers.resetSmartTuningState()
+    Helpers.syncAutoTuningState()
+    Helpers.resetTelemetryHistory("config-reset")
+    Helpers.rebuildRemoteQueueGuardTargets()
+    Helpers.setRemoteQueueGuardFolder(Context.player.RemotesFolder)
+    Helpers.syncGlobalSettings()
     return AutoParry.getConfig()
 end
 
@@ -5909,30 +8744,30 @@ function AutoParry.getLastParryBroadcastTime()
 end
 
 function AutoParry.getSmartPressState()
-    ensureInitialization()
+    Helpers.ensureInitialization()
 
     local now = os.clock()
     local snapshot = {
-        ballId = scheduledPressState.ballId,
-        pressAt = scheduledPressState.pressAt,
-        predictedImpact = scheduledPressState.predictedImpact,
-        lead = scheduledPressState.lead,
-        slack = scheduledPressState.slack,
-        reason = scheduledPressState.reason,
-        lastUpdate = scheduledPressState.lastUpdate,
+        ballId = Context.scheduledPressState.ballId,
+        pressAt = Context.scheduledPressState.pressAt,
+        predictedImpact = Context.scheduledPressState.predictedImpact,
+        lead = Context.scheduledPressState.lead,
+        slack = Context.scheduledPressState.slack,
+        reason = Context.scheduledPressState.reason,
+        lastUpdate = Context.scheduledPressState.lastUpdate,
         sampleTime = now,
         latency = activationLatencyEstimate,
         remoteLatencyActive = state.remoteEstimatorActive,
-        latencySamples = cloneTable(latencySamples),
-        pendingLatencyPresses = cloneTable(pendingLatencyPresses),
-        smartTuning = snapshotSmartTuningState(),
+        latencySamples = Helpers.cloneTable(latencySamples),
+        pendingLatencyPresses = Helpers.cloneTable(pendingLatencyPresses),
+        smartTuning = Helpers.snapshotSmartTuningState(),
     }
 
-    if scheduledPressState.lastUpdate and scheduledPressState.lastUpdate > 0 then
-        snapshot.timeSinceUpdate = now - scheduledPressState.lastUpdate
+    if Context.scheduledPressState.lastUpdate and Context.scheduledPressState.lastUpdate > 0 then
+        snapshot.timeSinceUpdate = now - Context.scheduledPressState.lastUpdate
     end
 
-    local ballId = scheduledPressState.ballId
+    local ballId = Context.scheduledPressState.ballId
     if ballId then
         local telemetry = telemetryStates[ballId]
         if telemetry then
@@ -5949,8 +8784,8 @@ function AutoParry.getSmartPressState()
         end
     end
 
-    if scheduledPressState.smartTuning then
-        snapshot.scheduledSmartTuning = cloneTable(scheduledPressState.smartTuning)
+    if Context.scheduledPressState.smartTuning then
+        snapshot.scheduledSmartTuning = Helpers.cloneTable(Context.scheduledPressState.smartTuning)
     end
 
     if snapshot.pressAt and snapshot.pressAt > 0 then
@@ -5960,30 +8795,30 @@ function AutoParry.getSmartPressState()
     end
 
     if snapshot.ballId then
-        scheduledPressState.lastSnapshot = cloneTable(snapshot)
-    elseif scheduledPressState.lastSnapshot then
-        snapshot.lastScheduled = cloneTable(scheduledPressState.lastSnapshot)
+        Context.scheduledPressState.lastSnapshot = Helpers.cloneTable(snapshot)
+    elseif Context.scheduledPressState.lastSnapshot then
+        snapshot.lastScheduled = Helpers.cloneTable(Context.scheduledPressState.lastSnapshot)
     end
 
     return snapshot
 end
 
 function AutoParry.getSmartTuningSnapshot()
-    ensureInitialization()
-    return snapshotSmartTuningState()
+    Helpers.ensureInitialization()
+    return Helpers.snapshotSmartTuningState()
 end
 
 function AutoParry.onInitStatus(callback)
     assert(typeof(callback) == "function", "AutoParry.onInitStatus expects a function")
-    ensureInitialization()
+    Helpers.ensureInitialization()
     local connection = initStatus:connect(callback)
-    callback(cloneTable(initProgress))
+    callback(Helpers.cloneTable(initProgress))
     return connection
 end
 
 function AutoParry.getInitProgress()
-    ensureInitialization()
-    return cloneTable(initProgress)
+    Helpers.ensureInitialization()
+    return Helpers.cloneTable(initProgress)
 end
 
 function AutoParry.onStateChanged(callback)
@@ -6014,43 +8849,43 @@ end
 function AutoParry.onTelemetry(callback)
     assert(typeof(callback) == "function", "AutoParry.onTelemetry expects a function")
     return telemetrySignal:connect(function(event)
-        callback(cloneTelemetryEvent(event))
+        callback(Helpers.cloneTelemetryEvent(event))
     end)
 end
 
-local function cloneTelemetryHistory()
+function Helpers.cloneTelemetryHistory()
     local history = {}
-    for index = 1, #telemetryHistory do
-        history[index] = cloneTelemetryEvent(telemetryHistory[index])
+    for index = 1, #Context.telemetry.history do
+        history[index] = Helpers.cloneTelemetryEvent(Context.telemetry.history[index])
     end
     return history
 end
 
 function AutoParry.getTelemetryHistory()
-    return cloneTelemetryHistory()
+    return Helpers.cloneTelemetryHistory()
 end
 
 function AutoParry.getTelemetrySnapshot()
     local _, telemetryStore = publishTelemetryHistory()
     local stats = TelemetryAnalytics.clone()
     return {
-        sequence = telemetrySequence,
-        history = cloneTelemetryHistory(),
+        sequence = Context.telemetry.sequence,
+        history = Helpers.cloneTelemetryHistory(),
         activationLatency = activationLatencyEstimate,
         remoteLatencyActive = state.remoteEstimatorActive,
-        lastEvent = telemetryStore.lastEvent and cloneTelemetryEvent(telemetryStore.lastEvent) or nil,
-        smartTuning = snapshotSmartTuningState(),
+        lastEvent = telemetryStore.lastEvent and Helpers.cloneTelemetryEvent(telemetryStore.lastEvent) or nil,
+        smartTuning = Helpers.snapshotSmartTuningState(),
         stats = stats,
         adaptiveState = stats and stats.adaptiveState or telemetryStore.adaptiveState,
     }
 end
 
 function AutoParry.getTelemetryStats()
-    ensureInitialization()
+    Helpers.ensureInitialization()
     return TelemetryAnalytics.clone()
 end
 
-local function applyTelemetryUpdates(adjustments, options)
+function Helpers.applyTelemetryUpdates(adjustments, options)
     options = options or {}
     local updates = adjustments.updates or {}
     if typeof(adjustments.reasons) ~= "table" then
@@ -6059,9 +8894,9 @@ local function applyTelemetryUpdates(adjustments, options)
     if next(updates) and not options.dryRun then
         AutoParry.configure(updates)
         local appliedAt = os.clock()
-        pushTelemetryEvent("config-adjustment", {
-            updates = cloneTable(updates),
-            reasons = cloneTable(adjustments.reasons),
+        emitTelemetryEvent("config-adjustment", {
+            updates = Helpers.cloneTable(updates),
+            reasons = Helpers.cloneTable(adjustments.reasons),
             status = adjustments.status,
             source = options.source or "telemetry-adjustments",
             appliedAt = appliedAt,
@@ -6076,7 +8911,7 @@ local function applyTelemetryUpdates(adjustments, options)
 end
 
 function AutoParry.buildTelemetryAdjustments(options)
-    ensureInitialization()
+    Helpers.ensureInitialization()
 
     options = options or {}
     local stats = options.stats
@@ -6089,9 +8924,9 @@ function AutoParry.buildTelemetryAdjustments(options)
         summary = TelemetryAnalytics.computeSummary(stats)
     end
 
-    local configSnapshot = cloneTable(config)
+    local configSnapshot = Helpers.cloneTable(config)
 
-    local defaultCommitTarget, defaultLookaheadGoal = resolvePerformanceTargets()
+    local defaultCommitTarget, defaultLookaheadGoal = Helpers.resolvePerformanceTargets()
 
     local computeOptions = {
         minSamples = options.minSamples,
@@ -6125,17 +8960,17 @@ function AutoParry.buildTelemetryAdjustments(options)
 end
 
 function AutoParry.applyTelemetryAdjustments(options)
-    ensureInitialization()
+    Helpers.ensureInitialization()
 
     options = options or {}
     local adjustments = AutoParry.buildTelemetryAdjustments(options)
-    return applyTelemetryUpdates(adjustments, {
+    return Helpers.applyTelemetryUpdates(adjustments, {
         dryRun = options.dryRun,
         source = "telemetry-adjustments",
     })
 end
 
-local function performAutoTuning(options)
+function Helpers.performAutoTuning(options)
     options = options or {}
     local now = options.now or os.clock()
     local force = options.force == true
@@ -6148,9 +8983,9 @@ local function performAutoTuning(options)
         return nil
     end
 
-    local interval = autoTuningState.intervalSeconds or DEFAULT_AUTO_TUNING.intervalSeconds
-    if not isFiniteNumber(interval) or interval < 0 then
-        interval = DEFAULT_AUTO_TUNING.intervalSeconds
+    local interval = autoTuningState.intervalSeconds or Defaults.AUTO_TUNING.intervalSeconds
+    if not Helpers.isFiniteNumber(interval) or interval < 0 then
+        interval = Defaults.AUTO_TUNING.intervalSeconds
     end
 
     local lastRun = autoTuningState.lastRun or 0
@@ -6201,12 +9036,12 @@ local function performAutoTuning(options)
     })
 
     local minDelta = options.minDelta
-    if not isFiniteNumber(minDelta) or minDelta < 0 then
+    if not Helpers.isFiniteNumber(minDelta) or minDelta < 0 then
         minDelta = autoTuningState.minDelta or 0
     end
 
     local maxAdjustments = options.maxAdjustmentsPerRun
-    if not isFiniteNumber(maxAdjustments) or maxAdjustments < 0 then
+    if not Helpers.isFiniteNumber(maxAdjustments) or maxAdjustments < 0 then
         maxAdjustments = autoTuningState.maxAdjustmentsPerRun
     end
 
@@ -6223,7 +9058,7 @@ local function performAutoTuning(options)
         end
     end
 
-    if isFiniteNumber(maxAdjustments) and maxAdjustments and maxAdjustments > 0 and #ranked > maxAdjustments then
+    if Helpers.isFiniteNumber(maxAdjustments) and maxAdjustments and maxAdjustments > 0 and #ranked > maxAdjustments then
         table.sort(ranked, function(a, b)
             if a.magnitude == b.magnitude then
                 return a.key < b.key
@@ -6248,11 +9083,11 @@ local function performAutoTuning(options)
 
     autoTuningState.lastRun = now
     autoTuningState.lastStatus = adjustments.status
-    autoTuningState.lastSummary = cloneTable(summary)
+    autoTuningState.lastSummary = Helpers.cloneTable(summary)
     autoTuningState.lastAdjustments = {
-        updates = cloneTable(adjustments.updates),
-        deltas = cloneTable(adjustments.deltas),
-        reasons = cloneTable(adjustments.reasons),
+        updates = Helpers.cloneTable(adjustments.updates),
+        deltas = Helpers.cloneTable(adjustments.deltas),
+        reasons = Helpers.cloneTable(adjustments.reasons),
         status = adjustments.status,
     }
     autoTuningState.lastError = nil
@@ -6262,32 +9097,32 @@ local function performAutoTuning(options)
         dryRun = autoTuningState.dryRun
     end
 
-    local applied = applyTelemetryUpdates(adjustments, {
+    local applied = Helpers.applyTelemetryUpdates(adjustments, {
         dryRun = dryRun,
         source = options.source or "auto-tuning",
     })
 
     autoTuningState.lastResult = {
         status = applied.status,
-        updates = cloneTable(applied.updates),
-        deltas = cloneTable(applied.deltas),
+        updates = Helpers.cloneTable(applied.updates),
+        deltas = Helpers.cloneTable(applied.deltas),
         appliedAt = applied.appliedAt,
         dryRun = dryRun,
-        newConfig = cloneTable(applied.newConfig),
+        newConfig = Helpers.cloneTable(applied.newConfig),
     }
 
-    applied.autoTuning = cloneAutoTuningSnapshot()
-    syncGlobalSettings()
+    applied.autoTuning = Helpers.cloneAutoTuningSnapshot()
+    Helpers.syncGlobalSettings()
     return applied
 end
 
-function maybeRunAutoTuning(now)
+function Helpers.maybeRunAutoTuning(now)
     if not autoTuningState.enabled then
         return
     end
 
     now = now or os.clock()
-    local ok, result = pcall(performAutoTuning, { now = now })
+    local ok, result = pcall(Helpers.performAutoTuning, { now = now })
     if not ok then
         autoTuningState.lastError = tostring(result)
         warn(("AutoParry: auto-tuning failed (%s)"):format(tostring(result)))
@@ -6297,7 +9132,7 @@ function maybeRunAutoTuning(now)
 end
 
 function AutoParry.getDiagnosticsReport()
-    ensureInitialization()
+    Helpers.ensureInitialization()
     local stats = TelemetryAnalytics.clone()
     local summary = TelemetryAnalytics.computeSummary(stats)
     local adjustments = AutoParry.buildTelemetryAdjustments({
@@ -6305,9 +9140,24 @@ function AutoParry.getDiagnosticsReport()
         summary = summary,
         allowWhenSmartTuning = false,
     })
-    local configSnapshot = adjustments.previousConfig or cloneTable(config)
+    local configSnapshot = adjustments.previousConfig or Helpers.cloneTable(config)
     local recommendations = TelemetryAnalytics.buildRecommendations(stats, summary)
-    local commitTarget, lookaheadGoal = resolvePerformanceTargets()
+    local commitTarget, lookaheadGoal = Helpers.resolvePerformanceTargets()
+    local lastPressEvent = GlobalEnv.LastPressEvent
+    if not lastPressEvent then
+        local pawsSettings = Helpers.ensurePawsSettings()
+        lastPressEvent = pawsSettings.LastPressEvent
+    end
+    if typeof(lastPressEvent) == "table" then
+        GlobalEnv.LastPressEvent = Helpers.cloneTelemetryEvent(lastPressEvent)
+    else
+        GlobalEnv.LastPressEvent = {
+            reactionTime = summary.averageReactionTime or 0,
+            decisionTime = summary.averageDecisionTime or 0,
+            decisionToPressTime = summary.averageDecisionToPressTime or 0,
+        }
+    end
+    ensurePressEventProxy()
     return {
         generatedAt = os.clock(),
         counters = stats.counters,
@@ -6327,12 +9177,12 @@ function AutoParry.getDiagnosticsReport()
 end
 
 function AutoParry.getAutoTuningState()
-    ensureInitialization()
-    return cloneAutoTuningSnapshot()
+    Helpers.ensureInitialization()
+    return Helpers.cloneAutoTuningSnapshot()
 end
 
 function AutoParry.runAutoTuning(options)
-    ensureInitialization()
+    Helpers.ensureInitialization()
     local callOptions = options or {}
     if callOptions.force == nil then
         callOptions.force = true
@@ -6341,7 +9191,7 @@ function AutoParry.runAutoTuning(options)
         callOptions.now = os.clock()
     end
 
-    local ok, result = pcall(performAutoTuning, callOptions)
+    local ok, result = pcall(Helpers.performAutoTuning, callOptions)
     if not ok then
         autoTuningState.lastError = tostring(result)
         warn(("AutoParry: auto-tuning failed (%s)"):format(tostring(result)))
@@ -6352,7 +9202,7 @@ function AutoParry.runAutoTuning(options)
 end
 
 function AutoParry.getTelemetryInsights(options)
-    ensureInitialization()
+    Helpers.ensureInitialization()
     options = options or {}
 
     local stats = options.stats
@@ -6365,7 +9215,7 @@ function AutoParry.getTelemetryInsights(options)
         summary = TelemetryAnalytics.computeSummary(stats)
     end
 
-    local defaultCommitTarget, defaultLookaheadGoal = resolvePerformanceTargets()
+    local defaultCommitTarget, defaultLookaheadGoal = Helpers.resolvePerformanceTargets()
 
     local adjustments = AutoParry.buildTelemetryAdjustments({
         stats = stats,
@@ -6402,14 +9252,14 @@ function AutoParry.getTelemetryInsights(options)
 
     insights.adjustments = {
         status = adjustments.status,
-        updates = cloneTable(adjustments.updates),
-        deltas = cloneTable(adjustments.deltas),
-        reasons = cloneTable(adjustments.reasons),
+        updates = Helpers.cloneTable(adjustments.updates),
+        deltas = Helpers.cloneTable(adjustments.deltas),
+        reasons = Helpers.cloneTable(adjustments.reasons),
         minSamples = adjustments.minSamples,
     }
-    insights.config = cloneTable(config)
+    insights.config = Helpers.cloneTable(config)
     insights.smartTuningEnabled = smartTuningState.enabled
-    insights.autoTuning = cloneAutoTuningSnapshot()
+    insights.autoTuning = Helpers.cloneAutoTuningSnapshot()
     return insights
 end
 
@@ -6424,34 +9274,34 @@ end
 function AutoParry.destroy()
     AutoParry.disable()
     AutoParry.setImmortalEnabled(false)
-    callImmortalController("destroy")
+    Helpers.callImmortalController("destroy")
 
-    if loopConnection then
-        loopConnection:Disconnect()
-        loopConnection = nil
+    if Context.connections.loop then
+        Context.connections.loop:Disconnect()
+        Context.connections.loop = nil
     end
 
-    if humanoidDiedConnection then
-        humanoidDiedConnection:Disconnect()
-        humanoidDiedConnection = nil
+    if Context.connections.humanoidDied then
+        Context.connections.humanoidDied:Disconnect()
+        Context.connections.humanoidDied = nil
     end
 
-    if characterAddedConnection then
-        characterAddedConnection:Disconnect()
-        characterAddedConnection = nil
+    if Context.connections.characterAdded then
+        Context.connections.characterAdded:Disconnect()
+        Context.connections.characterAdded = nil
     end
 
-    if characterRemovingConnection then
-        characterRemovingConnection:Disconnect()
-        characterRemovingConnection = nil
+    if Context.connections.characterRemoving then
+        Context.connections.characterRemoving:Disconnect()
+        Context.connections.characterRemoving = nil
     end
 
-    clearRemoteState()
-    restartPending = false
+    Helpers.clearRemoteState()
+    Context.runtime.restartPending = false
     initialization.token += 1
 
-    destroyUi()
-    safeClearBallVisuals()
+    Helpers.destroyUi()
+    Helpers.safeClearBallVisuals()
 
     initialization.started = false
     initialization.completed = false
@@ -6461,47 +9311,47 @@ function AutoParry.destroy()
     state.lastParry = 0
     state.lastSuccess = 0
     state.lastBroadcast = 0
-    clearScheduledPress(nil, "destroyed")
-    releaseParry()
+    Helpers.clearScheduledPress(nil, "destroyed")
+    Helpers.releaseParry()
     telemetryStates = {}
-    trackedBall = nil
-    BallsFolder = nil
-    watchedBallsFolder = nil
+    Context.runtime.trackedBall = nil
+    Context.player.BallsFolder = nil
+    Context.player.WatchedBallsFolder = nil
     pendingBallsFolderSearch = false
-    ballsFolderStatusSnapshot = nil
-    if ballsFolderConnections then
-        disconnectConnections(ballsFolderConnections)
-        ballsFolderConnections = nil
+    Context.watchers.ballsSnapshot = nil
+    if Context.watchers.ballsConnections then
+        Helpers.disconnectConnections(Context.watchers.ballsConnections)
+        Context.watchers.ballsConnections = nil
     end
-    LocalPlayer = nil
-    Character = nil
-    RootPart = nil
-    Humanoid = nil
-    resetActivationLatency()
-    resetSmartTuningState()
+    Context.player.LocalPlayer = nil
+    Context.player.Character = nil
+    Context.player.RootPart = nil
+    Context.player.Humanoid = nil
+    Helpers.resetActivationLatency()
+    Helpers.resetSmartTuningState()
 
-    resetTelemetryHistory("destroyed")
+    Helpers.resetTelemetryHistory("destroyed")
 
     initProgress = { stage = "waiting-player" }
-    applyInitStatus(cloneTable(initProgress))
+    Helpers.applyInitStatus(Helpers.cloneTable(initProgress))
 
     GlobalEnv.Paws = nil
 
     initialization.destroyed = false
-    targetingGraceUntil = 0
+    Context.runtime.targetingGraceUntil = 0
 end
 
-ensureInitialization()
-ensureLoop()
-syncAutoTuningState()
-syncGlobalSettings()
-syncImmortalContext()
+Helpers.ensureInitialization()
+Helpers.ensureLoop()
+Helpers.syncAutoTuningState()
+Helpers.syncGlobalSettings()
+Context.runtime.syncImmortalContext()
 
 return AutoParry
 
 ]===],
     ['src/core/immortal.lua'] = [===[
--- src/core/immortal.lua (sha1: 9cfb7a235cb6ae7ea82364f5ade062d5965b768d)
+-- src/core/immortal.lua (sha1: 33d8113542e8d65a94596a1983dce26485a046bb)
 -- mikkel32/AutoParry : src/core/immortal.lua
 -- Teleport-focused evasion controller that implements the "Immortal" mode
 -- described in the provided GodTeleportCore specification. The controller is
