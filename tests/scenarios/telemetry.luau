@@ -22,6 +22,13 @@ return {
             pressScheduleSlack = 0.01,
         },
     },
+    intelligence = {
+        notes = "Enable tuned intelligence policies for oscillation-heavy telemetry runs.",
+        policies = {
+            enable = { "cooldown-guard", "oscillation-panic-handler" },
+            disable = { "threat-budget-enforcement" },
+        },
+    },
     timeline = {
         {
             time = 0,

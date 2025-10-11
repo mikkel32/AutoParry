@@ -5,6 +5,7 @@ local Schema = require(script.Parent.schema)
 export type Diagnostic = Schema.Diagnostic
 export type ValidationResult = Schema.ValidationResult
 export type TimelineEntry = Schema.TimelineEntry
+export type IntelligenceConfig = Schema.IntelligenceConfig
 
 export type PlannerOptions = {
     vectorFactory: ((number, number, number) -> any)?,
@@ -21,6 +22,7 @@ export type PlannedScenario = {
     version: number,
     metadata: ValidationResult["metadata"],
     config: { [string]: any }?,
+    intelligence: IntelligenceConfig?,
     events: { PlannedEvent },
 }
 
@@ -291,6 +293,7 @@ function Planner.plan(manifest: any, options: PlannerOptions?): (boolean, Planne
         version = normalised.version,
         metadata = normalised.metadata,
         config = normalised.config,
+        intelligence = normalised.intelligence,
         events = events,
     }
 

@@ -56,6 +56,17 @@ export type TimelineEntry =
     | { kind: "rule", time: number, path: string, rule: RuleEvent, notes: string? }
     | { kind: "macro", time: number, path: string, macro: string, options: { [string]: any }?, notes: string? }
 
+export type IntelligencePolicies = {
+    default: string?,
+    enable: { string }?,
+    disable: { string }?,
+}
+
+export type IntelligenceConfig = {
+    policies: IntelligencePolicies?,
+    notes: string?,
+}
+
 export type Manifest = {
     version: number?,
     metadata: {
@@ -66,6 +77,7 @@ export type Manifest = {
         history: { string }?,
     },
     config: { [string]: any }?,
+    intelligence: IntelligenceConfig?,
     timeline: { any },
 }
 
@@ -73,6 +85,7 @@ export type ValidationResult = {
     version: number,
     metadata: Manifest["metadata"],
     config: { [string]: any }?,
+    intelligence: IntelligenceConfig?,
     timeline: { TimelineEntry },
 }
 
@@ -116,6 +129,103 @@ local function normaliseMacroName(name: string): string
     lowered = lowered:gsub("[_%s]+", "-")
     lowered = lowered:gsub("[^%w%-]", "")
     return lowered
+end
+
+local function normalisePolicyIdentifier(name: string): string
+    local lowered = name:lower()
+    lowered = lowered:gsub("[_%s]+", "-")
+    lowered = lowered:gsub("[^%w%-]", "")
+    return lowered
+end
+
+local function normalisePolicyArray(path: string, value: any, diagnostics: { Diagnostic }): { string }?
+    local entries = normaliseStringArray(path, value, diagnostics)
+    if not entries then
+        return nil
+    end
+
+    local result = {}
+    local seen: { [string]: boolean } = {}
+    for _, entry in ipairs(entries) do
+        local identifier = normalisePolicyIdentifier(entry)
+        if identifier ~= "" and not seen[identifier] then
+            seen[identifier] = true
+            result[#result + 1] = identifier
+        end
+    end
+
+    table.sort(result)
+    if #result == 0 then
+        return nil
+    end
+
+    return result
+end
+
+local function normaliseIntelligence(path: string, value: any, diagnostics: { Diagnostic }): IntelligenceConfig?
+    if value == nil then
+        return nil
+    end
+
+    if type(value) ~= "table" then
+        pushDiagnostic(diagnostics, path, "intelligence configuration must be a table")
+        return nil
+    end
+
+    local result: IntelligenceConfig = {}
+
+    local policiesValue = value.policies
+    if policiesValue ~= nil then
+        if type(policiesValue) ~= "table" then
+            pushDiagnostic(diagnostics, path .. ".policies", "policies must be a table when provided")
+        else
+            local policies: IntelligencePolicies = {}
+            if policiesValue.default ~= nil then
+                if type(policiesValue.default) == "string" and policiesValue.default ~= "" then
+                    local lowered = policiesValue.default:lower()
+                    if lowered == "all" or lowered == "none" or lowered == "baseline" or lowered == "tuned" then
+                        policies.default = lowered
+                    else
+                        pushDiagnostic(
+                            diagnostics,
+                            path .. ".policies.default",
+                            "policies.default must be 'all', 'none', 'baseline', or 'tuned'"
+                        )
+                    end
+                else
+                    pushDiagnostic(diagnostics, path .. ".policies.default", "policies.default must be a string when provided")
+                end
+            end
+
+            local enable = normalisePolicyArray(path .. ".policies.enable", policiesValue.enable, diagnostics)
+            if enable then
+                policies.enable = enable
+            end
+
+            local disable = normalisePolicyArray(path .. ".policies.disable", policiesValue.disable, diagnostics)
+            if disable then
+                policies.disable = disable
+            end
+
+            if next(policies) ~= nil then
+                result.policies = policies
+            end
+        end
+    end
+
+    if value.notes ~= nil then
+        if type(value.notes) == "string" and value.notes ~= "" then
+            result.notes = value.notes
+        else
+            pushDiagnostic(diagnostics, path .. ".notes", "notes must be a non-empty string when provided")
+        end
+    end
+
+    if next(result) == nil then
+        return nil
+    end
+
+    return result
 end
 
 local function normaliseVector(path: string, value: any, diagnostics: { Diagnostic }): Vector3Like?
@@ -581,6 +691,8 @@ function ScenarioSchema.validate(manifest: any): (boolean, ValidationResult?, { 
         end
     end
 
+    local intelligence = normaliseIntelligence("manifest.intelligence", manifest.intelligence, diagnostics)
+
     local timelineRaw = manifest.timeline
     if type(timelineRaw) ~= "table" then
         pushDiagnostic(diagnostics, "manifest.timeline", "timeline must be provided as an array of entries")
@@ -618,6 +730,7 @@ function ScenarioSchema.validate(manifest: any): (boolean, ValidationResult?, { 
         version = version,
         metadata = metadata,
         config = config,
+        intelligence = intelligence,
         timeline = timeline,
     }
 
