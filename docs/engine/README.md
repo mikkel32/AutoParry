@@ -24,6 +24,7 @@ The harness automatically rebuilds the scenario modules and regenerates the test
 | `engine-sim` | Runs every compiled scenario bundle through the runtime, capturing parry/remote logs and telemetry snapshots. | `engine_simulation.json` |
 | `engine-replay` | Emits replay-ready payloads for downstream tools and quick manual inspection. | `engine_replay.json` |
 | `engine-metrics` | Aggregates metrics (parries, remote traffic, warnings) across all scenarios. | `engine_metrics.json` |
+| `engine-perf` | Executes the high-load perf scenarios (5k threats, hitch gauntlet, flicker storms) and captures scheduler/GC telemetry for regressions. | `engine_perf_metrics.json` |
 
 All suites rely on the compiled scenario modules and the generated Rojo place. Use `--skip-build` if you are iterating on the Lua launchers only and already have fresh artifacts.
 
@@ -59,3 +60,15 @@ Artifacts are written to `tests/artifacts/scenarios/` and mirrored into the plac
 3. Inspect artifacts under `tests/artifacts/engine/` to confirm behaviour.
 
 Remember to check the generated `.roblox.lua` modules into version control only via the harness; they are treated as build products.
+
+## Performance regression gating
+
+Run `python tests/run_harness.py --suite engine-perf` locally or in CI to guard against throughput regressions. The suite filters
+for scenarios tagged `engine-perf`, emits `tests/artifacts/engine-perf/engine_perf_metrics.json`, and fails when the workload
+contracts (e.g. fewer than 5 000 threats) or when hitch injections disappear. Wire this command into your merge gate so new
+commits cannot land if scheduler utilisation, GC drift, or workload coverage falls outside the target envelopes captured in
+`goal.md`.
+
+The runtime scheduler now maintains a priority queue and records aggregate lateness metrics so you can spot when callbacks
+slip behind simulated time. Inspect `profiler.scheduler.lateness` inside the perf artifact to verify the average and maximum
+delays stay well under the 10 ms P99 budget.

@@ -264,6 +264,159 @@ local function computeScenarioSummary(results: {any})
     }
 end
 
+local function combineSchedulerProfiles(results: {any})
+    local aggregate = {
+        scenarios = 0,
+        totalSimulated = 0,
+        stepCount = 0,
+        scheduledEvents = 0,
+        eventsTriggered = 0,
+        queueSamples = 0,
+        totalQueueDepth = 0,
+        maxQueueDepth = 0,
+        hostWaitRuntime = 0,
+        hostEventRuntime = 0,
+        utilisationSum = 0,
+        utilisationCount = 0,
+        latenessSamples = 0,
+        latenessOnTime = 0,
+        latenessTotal = 0,
+        latenessMin = nil,
+        latenessMax = nil,
+        gc = {
+            samples = 0,
+            minKb = nil,
+            maxKb = nil,
+            deltaTotal = 0,
+        },
+    }
+
+    for _, entry in ipairs(results) do
+        local metrics = entry.metrics or {}
+        local performance = metrics.performance
+        local scheduler = performance and performance.scheduler
+        if scheduler then
+            aggregate.scenarios += 1
+            aggregate.totalSimulated += scheduler.totalSimulated or 0
+            aggregate.stepCount += scheduler.stepCount or 0
+            aggregate.scheduledEvents += scheduler.scheduledEvents or 0
+
+            local events = scheduler.events or {}
+            aggregate.eventsTriggered += events.triggered or 0
+
+            local queue = scheduler.queue or {}
+            aggregate.queueSamples += queue.samples or 0
+            aggregate.totalQueueDepth += queue.totalDepth or 0
+            if queue.maxDepth and queue.maxDepth > aggregate.maxQueueDepth then
+                aggregate.maxQueueDepth = queue.maxDepth
+            end
+
+            local host = scheduler.host or {}
+            aggregate.hostWaitRuntime += host.waitRuntime or 0
+            aggregate.hostEventRuntime += host.eventRuntime or 0
+
+            if scheduler.utilisation then
+                aggregate.utilisationSum += scheduler.utilisation
+                aggregate.utilisationCount += 1
+            end
+
+            local lateness = scheduler.lateness or {}
+            aggregate.latenessSamples += lateness.samples or 0
+            aggregate.latenessOnTime += lateness.onTime or 0
+            aggregate.latenessTotal += lateness.total or 0
+            if type(lateness.min) == "number" then
+                if not aggregate.latenessMin or lateness.min < aggregate.latenessMin then
+                    aggregate.latenessMin = lateness.min
+                end
+            end
+            if type(lateness.max) == "number" then
+                if not aggregate.latenessMax or lateness.max > aggregate.latenessMax then
+                    aggregate.latenessMax = lateness.max
+                end
+            end
+
+            local gc = scheduler.gc or {}
+            if gc.samples then
+                aggregate.gc.samples += gc.samples
+            end
+            if type(gc.minKb) == "number" then
+                if not aggregate.gc.minKb or gc.minKb < aggregate.gc.minKb then
+                    aggregate.gc.minKb = gc.minKb
+                end
+            end
+            if type(gc.maxKb) == "number" then
+                if not aggregate.gc.maxKb or gc.maxKb > aggregate.gc.maxKb then
+                    aggregate.gc.maxKb = gc.maxKb
+                end
+            end
+            if type(gc.deltaKb) == "number" then
+                aggregate.gc.deltaTotal += gc.deltaKb
+            end
+        end
+    end
+
+    if aggregate.scenarios == 0 then
+        return nil
+    end
+
+    local averageStep = 0
+    if aggregate.stepCount > 0 then
+        averageStep = aggregate.totalSimulated / aggregate.stepCount
+    end
+
+    local averageQueueDepth = 0
+    if aggregate.queueSamples > 0 then
+        averageQueueDepth = aggregate.totalQueueDepth / aggregate.queueSamples
+    end
+
+    local utilisation
+    if aggregate.utilisationCount > 0 then
+        utilisation = aggregate.utilisationSum / aggregate.utilisationCount
+    end
+
+    local latenessAverage = 0
+    if aggregate.latenessSamples > 0 then
+        latenessAverage = aggregate.latenessTotal / aggregate.latenessSamples
+    end
+
+    local averageGcDelta
+    if aggregate.scenarios > 0 then
+        averageGcDelta = aggregate.gc.deltaTotal / aggregate.scenarios
+    end
+
+    return {
+        scenarios = aggregate.scenarios,
+        totalSimulated = aggregate.totalSimulated,
+        stepCount = aggregate.stepCount,
+        averageStep = averageStep,
+        scheduledEvents = aggregate.scheduledEvents,
+        eventsTriggered = aggregate.eventsTriggered,
+        queue = {
+            samples = aggregate.queueSamples,
+            averageDepth = averageQueueDepth,
+            maxDepth = aggregate.maxQueueDepth,
+        },
+        host = {
+            waitRuntime = aggregate.hostWaitRuntime,
+            eventRuntime = aggregate.hostEventRuntime,
+        },
+        utilisation = utilisation,
+        lateness = {
+            samples = aggregate.latenessSamples,
+            onTime = aggregate.latenessOnTime,
+            average = latenessAverage,
+            min = aggregate.latenessMin,
+            max = aggregate.latenessMax,
+        },
+        gc = {
+            samples = aggregate.gc.samples,
+            minKb = aggregate.gc.minKb,
+            maxKb = aggregate.gc.maxKb,
+            averageDeltaKb = averageGcDelta,
+        },
+    }
+end
+
 local function sortModules(modules: {ModuleScript})
     table.sort(modules, function(a, b)
         return string.lower(a.Name) < string.lower(b.Name)
@@ -354,6 +507,7 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
     elseif eventType == "player-action" then
         local action = tostring(event.action or "")
         local parameters = event.parameters or {}
+        local hitchMagnitude
         if action == "configure" then
             if autoparry and typeof(autoparry.getConfig) == "function" and typeof(autoparry.configure) == "function" then
                 local defaults = autoparry.getConfig()
@@ -385,6 +539,19 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
             else
                 table.insert(warnings, "AutoParry.resetConfig unavailable")
             end
+        elseif action == "inject-hitch" then
+            local magnitude = tonumber(event.duration or parameters.duration or 0) or 0
+            if magnitude > 0 then
+                if typeof(context.step) == "function" then
+                    context:step(magnitude)
+                else
+                    context:advance(magnitude, { step = magnitude })
+                end
+                metrics.hitches = (metrics.hitches or 0) + 1
+                hitchMagnitude = magnitude
+            else
+                table.insert(warnings, "inject-hitch requires a positive duration")
+            end
         elseif action == "observe-telemetry" then
             local duration = tonumber(event.duration or parameters.duration or 0) or 0
             if duration > 0 then
@@ -393,11 +560,17 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
         else
             table.insert(warnings, string.format("Unhandled player action '%s'", action))
         end
+        local details = sanitiseValue(parameters)
+        if action == "inject-hitch" and hitchMagnitude then
+            details = details or {}
+            details.hitchDuration = hitchMagnitude
+        end
+
         table.insert(log, {
             time = event.time,
             type = "player-action",
             action = action,
-            details = sanitiseValue(parameters),
+            details = details,
             notes = event.notes,
         })
     elseif eventType == "network" then
@@ -460,6 +633,10 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
         table.insert(warnings, "Scenario intelligence configuration is not currently applied in runner")
     end
 
+    if typeof(context.resetPerformanceMetrics) == "function" then
+        context:resetPerformanceMetrics()
+    end
+
     local eventsLog: {any} = {}
     local metrics: {[string]: number} = {
         parries = 0,
@@ -500,6 +677,14 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
 
     local duration = scheduler:clock()
 
+    local performance
+    if typeof(context.getPerformanceSummary) == "function" then
+        performance = context:getPerformanceSummary()
+        if performance then
+            metrics.performance = performance
+        end
+    end
+
     local result = {
         id = metadata.id or planEntry.module.Name,
         label = metadata.label or planEntry.module.Name,
@@ -517,6 +702,7 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
         warnings = warnings,
         snapshots = snapshots,
         module = planEntry.module.Name,
+        performance = performance,
     }
 
     local ok, err = pcall(context.destroy, context)
@@ -527,10 +713,16 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
     return result
 end
 
-function Runner.runAll(): {any}
+function Runner.runAll(options: { [string]: any }?): {any}
+    options = options or {}
+    local moduleFilter = options.moduleFilter
+    local planFilter = options.planFilter
     local modules = Runner.listScenarioModules()
     local plans = {}
     for _, module in ipairs(modules) do
+        if moduleFilter and not moduleFilter(module) then
+            continue
+        end
         local ok, plan = pcall(require, module)
         if not ok then
             error(string.format("Failed to load scenario module %s: %s", module.Name, tostring(plan)), 0)
@@ -538,10 +730,12 @@ function Runner.runAll(): {any}
         if typeof(plan) ~= "table" then
             error(string.format("Scenario module %s did not return a table", module.Name), 0)
         end
-        plans[#plans + 1] = {
-            module = module,
-            plan = plan,
-        }
+        if not planFilter or planFilter(plan, module) then
+            plans[#plans + 1] = {
+                module = module,
+                plan = plan,
+            }
+        end
     end
 
     local results = {}
@@ -590,10 +784,17 @@ function Runner.buildMetricsPayload(results: {any}): {[string]: any}
             warnings = entry.warnings,
         }
     end
-    return {
+    local payload = {
         run = summary,
         scenarios = scenarios,
     }
+    local schedulerProfile = combineSchedulerProfiles(results)
+    if schedulerProfile then
+        payload.profiler = {
+            scheduler = schedulerProfile,
+        }
+    end
+    return payload
 end
 
 function Runner.emitArtifact(name: string, payload: {[string]: any})
