@@ -88,6 +88,9 @@
           },
           "AutoTuningSpec": {
             "$path": "../autoparry/auto_tuning.spec.lua"
+          },
+          "IntelSpec": {
+            "$path": "../engine/intel.spec.lua"
           }
         }
       }

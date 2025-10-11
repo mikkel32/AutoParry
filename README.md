@@ -237,6 +237,26 @@ autoparry.configure({
 The `tests/autoparry/auto_tuning.spec.lua` suite covers both real and dry-run
 paths to ensure the filter, telemetry plumbing, and state snapshots stay stable.
 
+### Intelligence policies
+
+The optional intelligence layer under `engine/intel/` lets you experiment with
+adaptive policy modules that listen to `AutoParry.onTelemetry` and feed their
+recommendations into a shared optimiser. Three policies ship out of the box:
+
+- **Cooldown guard** keeps the reaction bias in sync with recent press cadence
+  so schedule gaps do not drift away from the baseline cadence.
+- **Threat budget enforcement** nudges schedule slack back toward the nominal
+  threat budget when telemetry shows slack creeping too tight or too loose.
+- **Oscillation panic handler** watches oscillation telemetry and extends the
+  lookahead horizon when panic indicators flare up.
+
+Scenario manifests can opt into, disable, or leave these policies untouched via
+an `intelligence` block. Each manifest carries its chosen policy set through the
+scenario planner so comparative baselines versus tuned runs remain easy to
+configure. During execution the optimiser persists trace logs and recommended
+configurations to `tests/artifacts/engine/intel/`, allowing specs and CI runs to
+assert against the emitted intelligence artifacts.
+
 ### Telemetry insights
 
 `AutoParry.getTelemetryInsights()` distils the telemetry stats, adjustments, and
