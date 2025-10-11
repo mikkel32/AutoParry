@@ -363,6 +363,10 @@ SUITES: Dict[str, SuiteConfig] = {
         TESTS_DIR / "engine" / "engine_metrics.server.lua",
         "Aggregates engine scenario metrics to surface press and remote counts at a glance.",
     ),
+    "engine-perf": _roblox_suite(
+        TESTS_DIR / "engine" / "engine_perf.server.lua",
+        "High-load engine perf suite capturing scheduler, GC, and utilisation telemetry for regressions.",
+    ),
 }
 
 
@@ -377,8 +381,9 @@ SUITE_ALIASES: Dict[str, List[str]] = {
         "engine-sim",
         "engine-replay",
         "engine-metrics",
+        "engine-perf",
     ],
-    "engine": ["engine-sim", "engine-replay", "engine-metrics"],
+    "engine": ["engine-sim", "engine-replay", "engine-metrics", "engine-perf"],
     "quick": ["telemetry"],
 }
 

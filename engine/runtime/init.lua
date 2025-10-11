@@ -6,43 +6,411 @@ local Runtime = {}
 local Scheduler = {}
 Scheduler.__index = Scheduler
 
+local systemClock = os.clock
+local okTick, tickFn = pcall(function()
+    -- selene: allow(undefined_variable)
+    return tick
+end)
+if not okTick or type(tickFn) ~= "function" then
+    tickFn = nil
+end
+
+local function monotonicTime()
+    if type(systemClock) == "function" then
+        local ok, value = pcall(systemClock)
+        if ok and type(value) == "number" then
+            return value
+        end
+    end
+
+    if tickFn then
+        local ok, value = pcall(tickFn)
+        if ok and type(value) == "number" then
+            return value
+        end
+    end
+
+    return nil
+end
+
+local function sampleGc(profile)
+    if not profile then
+        return
+    end
+
+    local ok, value = pcall(collectgarbage, "count")
+    if not ok or type(value) ~= "number" then
+        return
+    end
+
+    local gc = profile.gc
+    if not gc then
+        gc = { samples = 0 }
+        profile.gc = gc
+    end
+
+    gc.samples = (gc.samples or 0) + 1
+    gc.last = value
+
+    if gc.samples == 1 then
+        gc.start = value
+        gc.min = value
+        gc.max = value
+    else
+        if not gc.min or value < gc.min then
+            gc.min = value
+        end
+        if not gc.max or value > gc.max then
+            gc.max = value
+        end
+    end
+end
+
+local function createProfile()
+    local profile = {
+        totalAdvance = 0,
+        waitCount = 0,
+        minStep = nil,
+        maxStep = 0,
+        queueSamples = 0,
+        totalQueueDepth = 0,
+        maxQueueDepth = 0,
+        eventsTriggered = 0,
+        maxEventsPerStep = 0,
+        eventfulSteps = 0,
+        scheduledEvents = 0,
+        hostWaitRuntime = 0,
+        hostEventRuntime = 0,
+        hostStart = monotonicTime(),
+        latenessSamples = 0,
+        onTimeSamples = 0,
+        totalLateness = 0,
+        maxLateness = nil,
+        minLateness = nil,
+    }
+
+    sampleGc(profile)
+
+    return profile
+end
+
+local function sanitiseNumber(value)
+    if type(value) ~= "number" then
+        return nil
+    end
+    if value ~= value then
+        return nil
+    end
+    if value == math.huge or value == -math.huge then
+        return nil
+    end
+    return value
+end
+
+local function compareEvents(a, b)
+    if a.time == b.time then
+        return (a.sequence or 0) < (b.sequence or 0)
+    end
+    return a.time < b.time
+end
+
+local function heapSwap(heap, a, b)
+    heap[a], heap[b] = heap[b], heap[a]
+end
+
+local function heapBubbleUp(heap, index)
+    while index > 1 do
+        local parent = math.floor(index / 2)
+        local node = heap[index]
+        local parentNode = heap[parent]
+        if not parentNode or compareEvents(parentNode, node) then
+            break
+        end
+        heapSwap(heap, parent, index)
+        index = parent
+    end
+end
+
+local function heapBubbleDown(heap, index)
+    local size = #heap
+    while true do
+        local left = index * 2
+        local right = left + 1
+        local smallest = index
+
+        if left <= size and not compareEvents(heap[smallest], heap[left]) then
+            smallest = left
+        end
+
+        if right <= size and not compareEvents(heap[smallest], heap[right]) then
+            smallest = right
+        end
+
+        if smallest == index then
+            break
+        end
+
+        heapSwap(heap, index, smallest)
+        index = smallest
+    end
+end
+
 function Scheduler.new(step)
-    return setmetatable({
+    local self = setmetatable({
         now = 0,
         step = step or 1,
         queue = {},
+        _sequence = 0,
     }, Scheduler)
+
+    self._profile = createProfile()
+
+    return self
 end
 
 function Scheduler:clock()
     return self.now
 end
 
-function Scheduler:_runDueEvents()
-    local index = 1
-    while index <= #self.queue do
-        local item = self.queue[index]
-        if item.time <= self.now then
-            table.remove(self.queue, index)
-            item.callback()
-        else
-            index += 1
+function Scheduler:_runDueEvents(profile)
+    local executed = 0
+    local hostStart = monotonicTime()
+    while true do
+        local nextEvent = self.queue[1]
+        if not nextEvent or nextEvent.time > self.now then
+            break
+        end
+
+        local event = self:_popEvent()
+        if profile then
+            local lateness = self.now - event.time
+            if lateness < 0 then
+                lateness = 0
+            elseif lateness < 1e-6 then
+                lateness = 0
+            end
+
+            profile.totalLateness += lateness
+            profile.latenessSamples += 1
+
+            if not profile.minLateness or lateness < profile.minLateness then
+                profile.minLateness = lateness
+            end
+
+            if not profile.maxLateness or lateness > profile.maxLateness then
+                profile.maxLateness = lateness
+            end
+
+            if lateness == 0 then
+                profile.onTimeSamples += 1
+            end
+        end
+
+        event.callback()
+        executed += 1
+    end
+    if profile and hostStart then
+        local hostEnd = monotonicTime()
+        if hostEnd then
+            profile.hostEventRuntime += math.max(hostEnd - hostStart, 0)
         end
     end
+    return executed
 end
 
 function Scheduler:wait(duration)
     duration = duration or self.step
+    local profile = self._profile
+    local hostStart = monotonicTime()
+
     self.now += duration
-    self:_runDueEvents()
+
+    if profile then
+        profile.totalAdvance += duration
+        profile.waitCount += 1
+
+        if not profile.minStep or duration < profile.minStep then
+            profile.minStep = duration
+        end
+
+        if duration > profile.maxStep then
+            profile.maxStep = duration
+        end
+
+        local depth = #self.queue
+        profile.queueSamples += 1
+        profile.totalQueueDepth += depth
+        if depth > profile.maxQueueDepth then
+            profile.maxQueueDepth = depth
+        end
+    end
+
+    local executed = self:_runDueEvents(profile)
+
+    if profile then
+        profile.eventsTriggered += executed
+        if executed > 0 then
+            profile.eventfulSteps = (profile.eventfulSteps or 0) + 1
+            if executed > profile.maxEventsPerStep then
+                profile.maxEventsPerStep = executed
+            end
+        end
+
+        local hostEnd = monotonicTime()
+        if hostStart and hostEnd then
+            profile.hostWaitRuntime += math.max(hostEnd - hostStart, 0)
+        end
+
+        sampleGc(profile)
+    end
+
     return duration
 end
 
 function Scheduler:schedule(delay, callback)
-    table.insert(self.queue, {
+    self._sequence += 1
+    local event = {
         time = self.now + delay,
         callback = callback,
-    })
+        sequence = self._sequence,
+    }
+    self:_pushEvent(event)
+    local profile = self._profile
+    if profile then
+        profile.scheduledEvents += 1
+        local depth = #self.queue
+        if depth > profile.maxQueueDepth then
+            profile.maxQueueDepth = depth
+        end
+    end
+end
+
+function Scheduler:resetProfiling()
+    self._profile = createProfile()
+    return self._profile
+end
+
+function Scheduler:_pushEvent(event)
+    local queue = self.queue
+    queue[#queue + 1] = event
+    heapBubbleUp(queue, #queue)
+end
+
+function Scheduler:_popEvent()
+    local queue = self.queue
+    local size = #queue
+    if size == 0 then
+        return nil
+    end
+
+    local root = queue[1]
+    local last = queue[size]
+    queue[size] = nil
+    if size > 1 then
+        queue[1] = last
+        heapBubbleDown(queue, 1)
+    end
+
+    return root
+end
+
+local function summariseGc(gc)
+    if not gc then
+        return nil
+    end
+
+    local delta
+    if gc.start ~= nil and gc.last ~= nil then
+        delta = gc.last - gc.start
+    end
+
+    return {
+        samples = gc.samples or 0,
+        startKb = gc.start,
+        minKb = gc.min,
+        maxKb = gc.max,
+        endKb = gc.last,
+        deltaKb = delta,
+    }
+end
+
+function Scheduler:getProfilingData()
+    local profile = self._profile or createProfile()
+    local nowHost = monotonicTime()
+    local elapsed
+    if profile.hostStart and nowHost then
+        elapsed = math.max(nowHost - profile.hostStart, 0)
+    end
+
+    local averageStep = 0
+    if profile.waitCount > 0 then
+        averageStep = profile.totalAdvance / profile.waitCount
+    end
+
+    local averageQueueDepth = 0
+    if profile.queueSamples > 0 then
+        averageQueueDepth = profile.totalQueueDepth / profile.queueSamples
+    end
+
+    local eventsPerStep = 0
+    if profile.waitCount > 0 then
+        eventsPerStep = profile.eventsTriggered / profile.waitCount
+    end
+
+    local utilisation
+    if elapsed and elapsed > 0 then
+        utilisation = profile.totalAdvance / elapsed
+    end
+
+    local minStep = sanitiseNumber(profile.minStep) or 0
+    local maxStep = sanitiseNumber(profile.maxStep) or 0
+
+    local averageLateness = 0
+    if profile.latenessSamples > 0 then
+        averageLateness = profile.totalLateness / profile.latenessSamples
+    end
+    averageLateness = sanitiseNumber(averageLateness) or 0
+
+    local minLateness = sanitiseNumber(profile.minLateness)
+    local maxLateness = sanitiseNumber(profile.maxLateness)
+
+    return {
+        stepCount = profile.waitCount,
+        totalSimulated = profile.totalAdvance,
+        minStep = minStep,
+        maxStep = maxStep,
+        averageStep = averageStep,
+        scheduledEvents = profile.scheduledEvents,
+        queue = {
+            samples = profile.queueSamples,
+            totalDepth = profile.totalQueueDepth,
+            averageDepth = averageQueueDepth,
+            maxDepth = profile.maxQueueDepth,
+        },
+        events = {
+            triggered = profile.eventsTriggered,
+            perStep = eventsPerStep,
+            maxPerStep = profile.maxEventsPerStep,
+            eventfulSteps = profile.eventfulSteps or 0,
+        },
+        gc = summariseGc(profile.gc),
+        host = {
+            startedAt = profile.hostStart,
+            elapsed = elapsed,
+            waitRuntime = profile.hostWaitRuntime,
+            eventRuntime = profile.hostEventRuntime,
+        },
+        lateness = {
+            samples = profile.latenessSamples,
+            onTime = profile.onTimeSamples,
+            total = profile.totalLateness,
+            average = averageLateness,
+            min = minLateness,
+            max = maxLateness,
+        },
+        utilisation = utilisation,
+        generatedAt = monotonicTime(),
+    }
 end
 
 Runtime.Scheduler = Scheduler

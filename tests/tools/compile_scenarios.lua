@@ -55,6 +55,7 @@ end
 local scriptDir = normalisePath(scriptDirectory())
 local rootDir = normalisePath(joinPath(scriptDir, "../.."))
 local scenarioDir = normalisePath(joinPath(rootDir, "tests/scenarios"))
+local engineScenarioDir = normalisePath(joinPath(rootDir, "tests/engine"))
 
 local outDir: string? = nil
 local verbose = false
@@ -93,28 +94,63 @@ local function ensureDirectory(path: string)
     end
 end
 
-local function listScenarioFiles(): { string }
+local function listDirectoryEntries(directory: string, predicate: ((string) -> boolean)?): { string }
     local command
     if isWindows then
-        command = string.format('dir /b "%s"', scenarioDir)
+        command = string.format('dir /b "%s"', directory)
     else
-        command = string.format('ls -1 "%s"', scenarioDir)
+        command = string.format('ls -1 "%s"', directory)
     end
 
     local handle = io.popen(command)
     if not handle then
-        error(string.format("Failed to list scenarios in %s", scenarioDir))
+        return {}
     end
 
-    local files = {}
+    local entries = {}
     for line in handle:lines() do
         if line ~= "" then
-            table.insert(files, line)
+            if not predicate or predicate(line) then
+                table.insert(entries, line)
+            end
         end
     end
     handle:close()
-    table.sort(files)
-    return files
+    table.sort(entries)
+    return entries
+end
+
+local function listScenarioFiles(): { { root: string, name: string } }
+    local entries = {}
+
+    local function append(root: string, files: { string })
+        for _, name in ipairs(files) do
+            entries[#entries + 1] = { root = root, name = name }
+        end
+    end
+
+    append(
+        scenarioDir,
+        listDirectoryEntries(scenarioDir, function(name)
+            return name:match("%.lua[uU]?$") ~= nil
+        end)
+    )
+
+    append(
+        engineScenarioDir,
+        listDirectoryEntries(engineScenarioDir, function(name)
+            return name:match("%.manifest%.lua$") ~= nil
+        end)
+    )
+
+    table.sort(entries, function(a, b)
+        if a.name == b.name then
+            return a.root < b.root
+        end
+        return a.name < b.name
+    end)
+
+    return entries
 end
 
 local function extendPackagePath()
@@ -148,6 +184,8 @@ local function loadManifest(path: string): any
 
     return manifest
 end
+
+local Planner = require("engine.scenario.planner")
 
 local function isArray(value: table): boolean
     local count = 0
@@ -246,29 +284,49 @@ local function emitDiagnostics(label: string, diagnostics)
     end
 end
 
-local function compileScenario(manifestPath: string, manifest: any)
-    local Planner = require("engine.scenario.planner")
+local function compileScenario(manifestPath: string, manifest: any, label: string?)
+    label = label or manifestPath
+
+    if type(manifest) ~= "table" then
+        error(string.format("Scenario manifest %s must return a table", label))
+    end
+
+    if type(manifest.scenarios) == "table" then
+        for index, entry in ipairs(manifest.scenarios) do
+            local nestedLabel = string.format("%s[%d]", label, index)
+            compileScenario(manifestPath, entry, nestedLabel)
+        end
+        return
+    end
+
     local ok, plan, diagnostics = Planner.plan(manifest)
 
     if not ok or not plan then
-        emitDiagnostics(manifestPath, diagnostics)
-        error(string.format("Scenario %s failed validation", manifestPath))
+        emitDiagnostics(label, diagnostics)
+        error(string.format("Scenario %s failed validation", label))
     elseif diagnostics and #diagnostics > 0 then
-        emitDiagnostics(manifestPath, diagnostics)
+        emitDiagnostics(label, diagnostics)
     end
 
     local encoded = encodeLuau(plan, 0)
     local moduleSource = "return " .. encoded .. "\n"
 
-    local chunk, err = load("return " .. encoded, "scenario:" .. (plan.metadata.id or manifestPath))
+    local chunk, err = load("return " .. encoded, "scenario:" .. (plan.metadata.id or label))
     if not chunk then
-        error(string.format("Failed to compile bytecode for %s: %s", manifestPath, tostring(err)))
+        error(string.format("Failed to compile bytecode for %s: %s", label, tostring(err)))
     end
     local bytecode = string.dump(chunk)
 
     ensureDirectory(outDir)
 
-    local baseName = plan.metadata.id or manifestPath:match("([^/]+)%.%w+$") or manifestPath
+    local baseName = plan.metadata.id
+    if not baseName then
+        local tail = label:match("([^/]+)$") or label
+        tail = tail:gsub("%.manifest", "")
+        tail = tail:gsub("%.lua[uU]?", "")
+        tail = tail:gsub("[%[%]]", "-")
+        baseName = tail
+    end
     local robloxPath = normalisePath(joinPath(outDir, baseName .. ".roblox.lua"))
     local lunePath = normalisePath(joinPath(outDir, baseName .. ".lune.luac"))
 
@@ -276,7 +334,7 @@ local function compileScenario(manifestPath: string, manifest: any)
     writeBinaryFile(lunePath, bytecode)
 
     if verbose then
-        io.stdout:write(string.format("Compiled %s -> %s, %s\n", manifestPath, robloxPath, lunePath))
+        io.stdout:write(string.format("Compiled %s -> %s, %s\n", label, robloxPath, lunePath))
     end
 end
 
@@ -290,15 +348,21 @@ local function main()
 
     local files = filesOrErr
     if #files == 0 then
-        io.stderr:write(string.format("No scenario manifests found in %s\n", scenarioDir))
+        io.stderr:write(
+            string.format(
+                "No scenario manifests found in %s or %s\n",
+                scenarioDir,
+                engineScenarioDir
+            )
+        )
         return
     end
 
-    for _, fileName in ipairs(files) do
-        if fileName:match("%.lua[uU]?$") then
-            local manifestPath = normalisePath(joinPath(scenarioDir, fileName))
+    for _, entry in ipairs(files) do
+        if entry.name:match("%.lua[uU]?$") then
+            local manifestPath = normalisePath(joinPath(entry.root, entry.name))
             local manifest = loadManifest(manifestPath)
-            local okCompile, err = pcall(compileScenario, manifestPath, manifest)
+            local okCompile, err = pcall(compileScenario, manifestPath, manifest, manifestPath)
             if not okCompile then
                 io.stderr:write(string.format("Compilation failed for %s: %s\n", manifestPath, tostring(err)))
                 os.exit(1)

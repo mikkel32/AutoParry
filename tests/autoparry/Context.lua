@@ -606,6 +606,27 @@ local function createContext(options)
         end
     end
 
+    function context:resetPerformanceMetrics()
+        if typeof(self.scheduler.resetProfiling) == "function" then
+            self.scheduler:resetProfiling()
+        end
+        if self.world and typeof(self.world.resetProfiling) == "function" then
+            self.world:resetProfiling()
+        end
+    end
+
+    function context:getPerformanceSummary()
+        local summary = {}
+        if typeof(self.scheduler.getProfilingData) == "function" then
+            summary.scheduler = self.scheduler:getProfilingData()
+        end
+        local ok, kb = pcall(collectgarbage, "count")
+        if ok and type(kb) == "number" then
+            summary.luaMemoryKb = kb
+        end
+        return summary
+    end
+
     function context:getSmartPressState()
         local getter = self.autoparry and self.autoparry.getSmartPressState
         if type(getter) ~= "function" then

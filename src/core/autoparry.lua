@@ -4975,48 +4975,24 @@ function Helpers.computeSpamBurstTuning(
     end
     local commitTarget, lookaheadGoalTarget, reactionGoalTarget = Helpers.resolvePerformanceTargets()
 
-    local statsAggression = 0
-    local statsSamples = 0
-    local statsWaitDelta
-    local statsLeadDelta
-    local statsCommitPressure
-    local statsAverageLatency
-    local statsCancellationRate
-    local statsImmediateRate
-    local statsSpeedPressure
-    local statsLookaheadPressure
-    local statsTempoPressure
-    local statsVolatilityPressure
-    local statsAverageReactionTime
-    local statsReactionStdDev
-    local statsReactionPressure
-    local statsAverageDecisionToPress
-    local statsDecisionStdDev
-    local statsDecisionToPressStdDev
-    local statsDecisionPressure
-    local statsSuccessRate
-    local statsMissPressure
-    local statsPressMissCount
-    local summaryPressCount = 0
-    local statsReactionFocus
-    local statsCognitiveLoad
-    local statsNeuroTempo
-    local statsTargetingPressure
-    local statsTargetingRate
-    local statsTargetingInterval
-    local statsTargetingSincePress
-    local statsTargetingAggression
-    local statsTargetingMomentum
-    local statsTargetingSpeedUrgency
-
-    local targetingPressure = 0
-    local targetingRate
-    local targetingInterval
-    local targetingSincePress = math.huge
-    local targetingFreshness = math.huge
-    local targetingPressGap = math.huge
-    local targetingPressRate = 0
-    local targetingSinceDrop = math.huge
+    local stats = {
+        aggression = 0,
+        samples = 0,
+        summaryPressCount = 0,
+    }
+    local targeting = {
+        pressure = 0,
+        rate = nil,
+        interval = nil,
+        sincePress = math.huge,
+        freshness = math.huge,
+        pressGap = math.huge,
+        pressRate = 0,
+        sinceDrop = math.huge,
+        aggression = nil,
+        momentum = nil,
+        speedUrgency = nil,
+    }
 
     local function accumulateAggression(value, scale, clampLimit)
         if not Helpers.isFiniteNumber(value) then
@@ -5033,52 +5009,55 @@ function Helpers.computeSpamBurstTuning(
             normalized = math.clamp(normalized, -3, 3)
         end
 
-        statsAggression += normalized
-        statsSamples += 1
+        stats.aggression += normalized
+        stats.samples += 1
     end
 
     if telemetry then
         local metrics = Helpers.resolveTargetingPressureMetrics(telemetry, now)
         if metrics then
-            targetingPressure = metrics.pressure or 0
-            targetingRate = metrics.rate or 0
-            targetingInterval = metrics.minInterval
-            if targetingInterval == nil then
-                targetingInterval = metrics.lastInterval
+            targeting.pressure = metrics.pressure or 0
+            targeting.rate = metrics.rate or 0
+            targeting.interval = metrics.minInterval
+            if targeting.interval == nil then
+                targeting.interval = metrics.lastInterval
             end
-            targetingFreshness = metrics.freshness or math.huge
-            targetingSincePress = metrics.sincePress or math.huge
-            targetingPressGap = metrics.pressGap or math.huge
-            targetingPressRate = metrics.pressRate or 0
-            targetingSinceDrop = metrics.sinceDrop or math.huge
-            statsTargetingAggression = metrics.memory or metrics.aggression or statsTargetingAggression
-            statsTargetingMomentum = metrics.momentum or statsTargetingMomentum
-            statsTargetingSpeedUrgency = metrics.speedUrgency or statsTargetingSpeedUrgency
+            targeting.freshness = metrics.freshness or math.huge
+            targeting.sincePress = metrics.sincePress or math.huge
+            targeting.pressGap = metrics.pressGap or math.huge
+            targeting.pressRate = metrics.pressRate or 0
+            targeting.sinceDrop = metrics.sinceDrop or math.huge
+            targeting.aggression = metrics.memory or metrics.aggression or targeting.aggression
+            targeting.momentum = metrics.momentum or targeting.momentum
+            targeting.speedUrgency = metrics.speedUrgency or targeting.speedUrgency
         end
     end
 
-    if targetingPressure > 0 then
-        statsTargetingPressure = targetingPressure
-        statsTargetingRate = targetingRate
-        statsTargetingInterval = targetingInterval
-        statsTargetingSincePress = targetingSincePress
-        accumulateAggression(targetingPressure, 0.6, 2.4)
-        if statsTargetingAggression and Helpers.isFiniteNumber(statsTargetingAggression) then
-            accumulateAggression(statsTargetingAggression, 1.2, 2)
+    if targeting.pressure > 0 then
+        stats.targetingPressure = targeting.pressure
+        stats.targetingRate = targeting.rate
+        stats.targetingInterval = targeting.interval
+        stats.targetingSincePress = targeting.sincePress
+        stats.targetingAggression = targeting.aggression
+        stats.targetingMomentum = targeting.momentum
+        stats.targetingSpeedUrgency = targeting.speedUrgency
+        accumulateAggression(targeting.pressure, 0.6, 2.4)
+        if targeting.aggression and Helpers.isFiniteNumber(targeting.aggression) then
+            accumulateAggression(targeting.aggression, 1.2, 2)
         end
-        if statsTargetingMomentum and Helpers.isFiniteNumber(statsTargetingMomentum) then
-            accumulateAggression(statsTargetingMomentum, 1.2, 2)
+        if targeting.momentum and Helpers.isFiniteNumber(targeting.momentum) then
+            accumulateAggression(targeting.momentum, 1.2, 2)
         end
-        if statsTargetingSpeedUrgency and Helpers.isFiniteNumber(statsTargetingSpeedUrgency) then
-            accumulateAggression(statsTargetingSpeedUrgency, 1.2, 2)
+        if targeting.speedUrgency and Helpers.isFiniteNumber(targeting.speedUrgency) then
+            accumulateAggression(targeting.speedUrgency, 1.2, 2)
         end
     end
 
     local lookaheadBoostExtra = 0
     if typeof(options) == "table" and Helpers.isFiniteNumber(options.lookaheadBoost) then
         lookaheadBoostExtra = math.max(options.lookaheadBoost, 0)
-    elseif targetingPressure > 0 then
-        lookaheadBoostExtra = TARGETING_PRESSURE_LOOKAHEAD_BOOST * math.clamp(targetingPressure, 0, 1.8)
+    elseif targeting.pressure > 0 then
+        lookaheadBoostExtra = TARGETING_PRESSURE_LOOKAHEAD_BOOST * math.clamp(targeting.pressure, 0, 1.8)
     end
     if demandScore > 0 then
         lookaheadBoostExtra = math.max(lookaheadBoostExtra, math.min(demandScore * 0.04, 0.18))
@@ -5086,90 +5065,90 @@ function Helpers.computeSpamBurstTuning(
 
     if telemetrySummary then
         local pressCount = telemetrySummary.pressCount or 0
-        summaryPressCount = pressCount
+        stats.summaryPressCount = pressCount
         local scheduleCount = telemetrySummary.scheduleCount or pressCount
 
         if pressCount >= 6 then
-            statsWaitDelta = telemetrySummary.averageWaitDelta
-            accumulateAggression(statsWaitDelta or 0, 0.0075, 2.4)
+            stats.waitDelta = telemetrySummary.averageWaitDelta
+            accumulateAggression(stats.waitDelta or 0, 0.0075, 2.4)
         end
 
         if scheduleCount >= 4 then
-            statsLeadDelta = telemetrySummary.leadDeltaMean
-            if Helpers.isFiniteNumber(statsLeadDelta) then
-                accumulateAggression(-statsLeadDelta, 0.0075, 2)
+            stats.leadDelta = telemetrySummary.leadDeltaMean
+            if Helpers.isFiniteNumber(stats.leadDelta) then
+                accumulateAggression(-stats.leadDelta, 0.0075, 2)
             end
         end
 
         local commitSamples = telemetrySummary.commitLatencySampleCount or 0
         if commitSamples >= 4 and Helpers.isFiniteNumber(telemetrySummary.commitLatencyP99) then
             if Helpers.isFiniteNumber(commitTarget) and commitTarget > 0 then
-                statsCommitPressure = (telemetrySummary.commitLatencyP99 - commitTarget) / commitTarget
-                accumulateAggression(statsCommitPressure, 0.35, 2.5)
+                stats.commitPressure = (telemetrySummary.commitLatencyP99 - commitTarget) / commitTarget
+                accumulateAggression(stats.commitPressure, 0.35, 2.5)
             end
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageLatency) then
-            statsAverageLatency = telemetrySummary.averageLatency
-            accumulateAggression((statsAverageLatency or 0) - activationLatencyEstimate, 0.02, 1.8)
+            stats.averageLatency = telemetrySummary.averageLatency
+            accumulateAggression((stats.averageLatency or 0) - activationLatencyEstimate, 0.02, 1.8)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageReactionTime) then
-            statsAverageReactionTime = telemetrySummary.averageReactionTime
+            stats.averageReactionTime = telemetrySummary.averageReactionTime
             local reactionReference = reactionGoalTarget
             if not Helpers.isFiniteNumber(reactionReference) or reactionReference <= 0 then
                 reactionReference = activationLatencyEstimate * 0.55
             end
             reactionReference = math.max(reactionReference, SPAM_MIN_GAP * 3, baseGap * 0.7)
-            local reactionDelta = (statsAverageReactionTime or 0) - reactionReference
+            local reactionDelta = (stats.averageReactionTime or 0) - reactionReference
             if Helpers.isFiniteNumber(reactionDelta) then
-                statsReactionPressure = reactionDelta / math.max(reactionReference, 0.01)
+                stats.reactionPressure = reactionDelta / math.max(reactionReference, 0.01)
                 accumulateAggression(reactionDelta, math.max(reactionReference * 0.75, 0.01), 2.2)
             end
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.reactionStdDev) then
-            statsReactionStdDev = telemetrySummary.reactionStdDev
+            stats.reactionStdDev = telemetrySummary.reactionStdDev
             local spreadTarget = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
-            accumulateAggression(spreadTarget - statsReactionStdDev, math.max(spreadTarget, 0.01), 2.2)
+            accumulateAggression(spreadTarget - stats.reactionStdDev, math.max(spreadTarget, 0.01), 2.2)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.averageDecisionToPressTime) then
-            statsAverageDecisionToPress = telemetrySummary.averageDecisionToPressTime
+            stats.averageDecisionToPress = telemetrySummary.averageDecisionToPressTime
             local decisionReference = commitTarget
             if not Helpers.isFiniteNumber(decisionReference) or decisionReference <= 0 then
                 decisionReference = activationLatencyEstimate * 0.6
             end
             decisionReference = math.max(decisionReference, SPAM_MIN_GAP * 2.5)
-            local decisionDelta = (statsAverageDecisionToPress or 0) - decisionReference
+            local decisionDelta = (stats.averageDecisionToPress or 0) - decisionReference
             if Helpers.isFiniteNumber(decisionDelta) then
-                statsDecisionPressure = decisionDelta / math.max(decisionReference, 0.01)
+                stats.decisionPressure = decisionDelta / math.max(decisionReference, 0.01)
                 accumulateAggression(decisionDelta, math.max(decisionReference * 0.8, 0.01), 2.2)
             end
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.decisionStdDev) then
-            statsDecisionStdDev = telemetrySummary.decisionStdDev
+            stats.decisionStdDev = telemetrySummary.decisionStdDev
             local spreadTarget = math.max(baseGap * 0.55, SPAM_MIN_GAP * 1.8)
-            accumulateAggression(spreadTarget - statsDecisionStdDev, math.max(spreadTarget, 0.01), 2.2)
+            accumulateAggression(spreadTarget - stats.decisionStdDev, math.max(spreadTarget, 0.01), 2.2)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.decisionToPressStdDev) then
-            statsDecisionToPressStdDev = telemetrySummary.decisionToPressStdDev
+            stats.decisionToPressStdDev = telemetrySummary.decisionToPressStdDev
             local spreadTarget = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
-            accumulateAggression(spreadTarget - statsDecisionToPressStdDev, math.max(spreadTarget, 0.01), 2.2)
+            accumulateAggression(spreadTarget - stats.decisionToPressStdDev, math.max(spreadTarget, 0.01), 2.2)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.cancellationCount) then
-            statsCancellationRate = telemetrySummary.cancellationCount / math.max(pressCount, 1)
-            if statsCancellationRate > 0 then
-                accumulateAggression(-statsCancellationRate, 0.18, 2)
+            stats.cancellationRate = telemetrySummary.cancellationCount / math.max(pressCount, 1)
+            if stats.cancellationRate > 0 then
+                accumulateAggression(-stats.cancellationRate, 0.18, 2)
             end
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.immediateRate) then
-            statsImmediateRate = telemetrySummary.immediateRate
-            accumulateAggression((statsImmediateRate or 0) - 0.18, 0.12, 1.6)
+            stats.immediateRate = telemetrySummary.immediateRate
+            accumulateAggression((stats.immediateRate or 0) - 0.18, 0.12, 1.6)
         end
 
         if pressCount >= 6 then
@@ -5181,15 +5160,15 @@ function Helpers.computeSpamBurstTuning(
                 end
             end
             if Helpers.isFiniteNumber(successRate) then
-                statsSuccessRate = math.clamp(successRate, 0, 1)
-                local successDeficit = 0.92 - statsSuccessRate
+                stats.successRate = math.clamp(successRate, 0, 1)
+                local successDeficit = 0.92 - stats.successRate
                 if successDeficit ~= 0 then
                     accumulateAggression(successDeficit, 0.18, 2.4)
                 end
-                statsMissPressure = successDeficit
+                stats.missPressure = successDeficit
             end
             if Helpers.isFiniteNumber(telemetrySummary.pressMissCount) then
-                statsPressMissCount = telemetrySummary.pressMissCount
+                stats.pressMissCount = telemetrySummary.pressMissCount
             end
         end
 
@@ -5204,7 +5183,7 @@ function Helpers.computeSpamBurstTuning(
                 local lookaheadP10 = telemetrySummary.scheduleLookaheadP10
                 local deficit = lookaheadReference - lookaheadP10
                 if Helpers.isFiniteNumber(deficit) then
-                    statsLookaheadPressure = deficit
+                    stats.lookaheadPressure = deficit
                     accumulateAggression(deficit, math.max(lookaheadReference, 0.04), 2.2)
                 end
             end
@@ -5217,10 +5196,10 @@ function Helpers.computeSpamBurstTuning(
                 )
                 local minDeficit = minTarget - lookaheadMin
                 if Helpers.isFiniteNumber(minDeficit) and minDeficit > 0 then
-                    if statsLookaheadPressure then
-                        statsLookaheadPressure += minDeficit * 0.5
+                    if stats.lookaheadPressure then
+                        stats.lookaheadPressure += minDeficit * 0.5
                     else
-                        statsLookaheadPressure = minDeficit * 0.5
+                        stats.lookaheadPressure = minDeficit * 0.5
                     end
                     accumulateAggression(minDeficit, math.max(minTarget, 0.02), 2.5)
                 end
@@ -5231,16 +5210,16 @@ function Helpers.computeSpamBurstTuning(
         if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatSpeed) then
             local minSpeed = config.minSpeed or Defaults.CONFIG.minSpeed
             if Helpers.isFiniteNumber(minSpeed) and minSpeed > 0 then
-                statsSpeedPressure = (telemetrySummary.averageThreatSpeed - minSpeed) / math.max(minSpeed, 1)
-                accumulateAggression(statsSpeedPressure * 0.5, 0.55, 1.8)
+                stats.speedPressure = (telemetrySummary.averageThreatSpeed - minSpeed) / math.max(minSpeed, 1)
+                accumulateAggression(stats.speedPressure * 0.5, 0.55, 1.8)
             end
         end
 
         if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatTempo) then
             local tempo = telemetrySummary.averageThreatTempo
             local tempoNormalized = tempo * math.max(baseGap, SPAM_MIN_GAP)
-            statsTempoPressure = tempoNormalized - 1
-            accumulateAggression(statsTempoPressure, 0.4, 2.2)
+            stats.tempoPressure = tempoNormalized - 1
+            accumulateAggression(stats.tempoPressure, 0.4, 2.2)
         end
 
         if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatVolatility) then
@@ -5250,8 +5229,8 @@ function Helpers.computeSpamBurstTuning(
             if Helpers.isFiniteNumber(stability) and stability > 0 then
                 volatilityRatio = volatility / stability
             end
-            statsVolatilityPressure = volatilityRatio - 1
-            accumulateAggression(statsVolatilityPressure, 0.75, 2)
+            stats.volatilityPressure = volatilityRatio - 1
+            accumulateAggression(stats.volatilityPressure, 0.75, 2)
         end
 
         if threatCount >= 3 and Helpers.isFiniteNumber(telemetrySummary.averageThreatHorizon) then
@@ -5264,30 +5243,30 @@ function Helpers.computeSpamBurstTuning(
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.reactionFocusScore) then
-            statsReactionFocus = math.clamp(telemetrySummary.reactionFocusScore, -2.5, 2.5)
-            accumulateAggression(statsReactionFocus, 1.6, 2.5)
+            stats.reactionFocus = math.clamp(telemetrySummary.reactionFocusScore, -2.5, 2.5)
+            accumulateAggression(stats.reactionFocus, 1.6, 2.5)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.cognitiveLoadScore) then
-            statsCognitiveLoad = math.clamp(telemetrySummary.cognitiveLoadScore, -2, 3)
-            accumulateAggression(-statsCognitiveLoad, 1.4, 2.5)
+            stats.cognitiveLoad = math.clamp(telemetrySummary.cognitiveLoadScore, -2, 3)
+            accumulateAggression(-stats.cognitiveLoad, 1.4, 2.5)
         end
 
         if pressCount >= 6 and Helpers.isFiniteNumber(telemetrySummary.neuroTempoScore) then
-            statsNeuroTempo = math.clamp(telemetrySummary.neuroTempoScore, -2.2, 2.2)
-            accumulateAggression(statsNeuroTempo, 1.5, 2.2)
+            stats.neuroTempo = math.clamp(telemetrySummary.neuroTempoScore, -2.2, 2.2)
+            accumulateAggression(stats.neuroTempo, 1.5, 2.2)
         end
     end
 
     local statsAggressionScore = 0
-    if statsSamples > 0 then
-        statsAggressionScore = math.clamp(statsAggression / statsSamples, -1.8, 1.8)
+    if stats.samples > 0 then
+        statsAggressionScore = math.clamp(stats.aggression / stats.samples, -1.8, 1.8)
     end
     local statsTighten = math.max(statsAggressionScore, 0)
     local statsRelax = math.max(-statsAggressionScore, 0)
 
-    if targetingPressure > 0 then
-        statsTighten = math.min(statsTighten + targetingPressure * 0.55, 3)
+    if targeting.pressure > 0 then
+        statsTighten = math.min(statsTighten + targeting.pressure * 0.55, 3)
     end
 
     local statsTrend = 0
@@ -5304,90 +5283,90 @@ function Helpers.computeSpamBurstTuning(
         end
     end
 
-    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
-        if statsReactionFocus > 0 then
-            statsTighten = math.min(statsTighten + statsReactionFocus * 0.45, 3)
-        elseif statsReactionFocus < 0 then
-            statsRelax = math.min(statsRelax + (-statsReactionFocus) * 0.4, 3)
+    if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) then
+        if stats.reactionFocus > 0 then
+            statsTighten = math.min(statsTighten + stats.reactionFocus * 0.45, 3)
+        elseif stats.reactionFocus < 0 then
+            statsRelax = math.min(statsRelax + (-stats.reactionFocus) * 0.4, 3)
         end
     end
 
-    if statsNeuroTempo and Helpers.isFiniteNumber(statsNeuroTempo) then
-        if statsNeuroTempo > 0 then
-            statsTighten = math.min(statsTighten + statsNeuroTempo * 0.35, 3)
-        elseif statsNeuroTempo < 0 then
-            statsRelax = math.min(statsRelax + (-statsNeuroTempo) * 0.25, 3)
+    if stats.neuroTempo and Helpers.isFiniteNumber(stats.neuroTempo) then
+        if stats.neuroTempo > 0 then
+            statsTighten = math.min(statsTighten + stats.neuroTempo * 0.35, 3)
+        elseif stats.neuroTempo < 0 then
+            statsRelax = math.min(statsRelax + (-stats.neuroTempo) * 0.25, 3)
         end
     end
 
-    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
-        if statsCognitiveLoad > 0 then
-            statsRelax = math.min(statsRelax + statsCognitiveLoad * 0.45, 3)
-        elseif statsCognitiveLoad < 0 then
-            statsTighten = math.min(statsTighten + (-statsCognitiveLoad) * 0.4, 3)
+    if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) then
+        if stats.cognitiveLoad > 0 then
+            statsRelax = math.min(statsRelax + stats.cognitiveLoad * 0.45, 3)
+        elseif stats.cognitiveLoad < 0 then
+            statsTighten = math.min(statsTighten + (-stats.cognitiveLoad) * 0.4, 3)
         end
     end
 
     local basePresses = presses
     local statsPressureBoost = 0
 
-    if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
-        if statsReactionPressure > 0 then
-            statsPressureBoost += math.min(statsReactionPressure, 1.8) * 0.65
+    if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) then
+        if stats.reactionPressure > 0 then
+            statsPressureBoost += math.min(stats.reactionPressure, 1.8) * 0.65
         else
-            statsRelax = math.min(statsRelax + (-statsReactionPressure) * 0.35, 3)
+            statsRelax = math.min(statsRelax + (-stats.reactionPressure) * 0.35, 3)
         end
     end
 
-    if targetingPressure > 0 then
-        statsPressureBoost += math.min(targetingPressure, 2.2) * 0.65
+    if targeting.pressure > 0 then
+        statsPressureBoost += math.min(targeting.pressure, 2.2) * 0.65
     end
 
-    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) and statsReactionFocus > 1.1 then
-        statsPressureBoost += math.min(statsReactionFocus - 1.1, 1.6) * 0.55
+    if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) and stats.reactionFocus > 1.1 then
+        statsPressureBoost += math.min(stats.reactionFocus - 1.1, 1.6) * 0.55
     end
 
-    if statsNeuroTempo and Helpers.isFiniteNumber(statsNeuroTempo) and statsNeuroTempo > 0.9 then
-        statsPressureBoost += math.min(statsNeuroTempo - 0.9, 1.4) * 0.45
+    if stats.neuroTempo and Helpers.isFiniteNumber(stats.neuroTempo) and stats.neuroTempo > 0.9 then
+        statsPressureBoost += math.min(stats.neuroTempo - 0.9, 1.4) * 0.45
     end
 
-    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) and statsCognitiveLoad < -0.6 then
-        statsPressureBoost += math.min(-statsCognitiveLoad - 0.6, 1.6) * 0.5
+    if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) and stats.cognitiveLoad < -0.6 then
+        statsPressureBoost += math.min(-stats.cognitiveLoad - 0.6, 1.6) * 0.5
     end
 
-    if statsDecisionPressure and Helpers.isFiniteNumber(statsDecisionPressure) then
-        if statsDecisionPressure > 0 then
-            statsPressureBoost += math.min(statsDecisionPressure, 1.6) * 0.45
+    if stats.decisionPressure and Helpers.isFiniteNumber(stats.decisionPressure) then
+        if stats.decisionPressure > 0 then
+            statsPressureBoost += math.min(stats.decisionPressure, 1.6) * 0.45
         else
-            statsRelax = math.min(statsRelax + (-statsDecisionPressure) * 0.3, 3)
+            statsRelax = math.min(statsRelax + (-stats.decisionPressure) * 0.3, 3)
         end
     end
 
-    if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
-        if statsMissPressure > 0 then
-            statsPressureBoost += math.min(statsMissPressure, 1.5) * 0.9
+    if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) then
+        if stats.missPressure > 0 then
+            statsPressureBoost += math.min(stats.missPressure, 1.5) * 0.9
         else
-            statsRelax = math.min(statsRelax + (-statsMissPressure) * 0.4, 3)
+            statsRelax = math.min(statsRelax + (-stats.missPressure) * 0.4, 3)
         end
     end
 
-    if statsPressMissCount and Helpers.isFiniteNumber(statsPressMissCount) and statsPressMissCount > 0 then
-        local missRatio = statsPressMissCount / math.max(summaryPressCount, 1)
+    if stats.pressMissCount and Helpers.isFiniteNumber(stats.pressMissCount) and stats.pressMissCount > 0 then
+        local missRatio = stats.pressMissCount / math.max(stats.summaryPressCount, 1)
         statsPressureBoost += math.clamp(missRatio * 1.5, 0, 1.2)
     end
 
-    if statsSuccessRate and Helpers.isFiniteNumber(statsSuccessRate) and statsSuccessRate > 0.97 then
-        statsRelax = math.min(statsRelax + (statsSuccessRate - 0.97) * 1.4, 3)
+    if stats.successRate and Helpers.isFiniteNumber(stats.successRate) and stats.successRate > 0.97 then
+        statsRelax = math.min(statsRelax + (stats.successRate - 0.97) * 1.4, 3)
     end
 
     if
-        statsAverageReactionTime
-        and Helpers.isFiniteNumber(statsAverageReactionTime)
+        stats.averageReactionTime
+        and Helpers.isFiniteNumber(stats.averageReactionTime)
         and Helpers.isFiniteNumber(reactionGoalTarget)
         and reactionGoalTarget > 0
-        and statsAverageReactionTime < reactionGoalTarget * 0.85
+        and stats.averageReactionTime < reactionGoalTarget * 0.85
     then
-        local surplus = math.max(reactionGoalTarget * 0.85 - statsAverageReactionTime, 0)
+        local surplus = math.max(reactionGoalTarget * 0.85 - stats.averageReactionTime, 0)
         statsRelax = math.min(statsRelax + surplus / math.max(reactionGoalTarget, 0.01) * 0.6, 3)
     end
 
@@ -5398,8 +5377,8 @@ function Helpers.computeSpamBurstTuning(
         presses = math.max(basePresses, presses)
     end
 
-    if targetingPressure > 0 then
-        local extra = math.min(math.ceil(targetingPressure * 1.3), 3)
+    if targeting.pressure > 0 then
+        local extra = math.min(math.ceil(targeting.pressure * 1.3), 3)
         presses = math.max(presses, basePresses + extra)
     end
 
@@ -5427,26 +5406,26 @@ function Helpers.computeSpamBurstTuning(
         dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + relaxTrend * 0.18)
     end
 
-    if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
-        if statsReactionFocus > 0 then
-            dynamicPanicTightness = math.max(dynamicPanicTightness - statsReactionFocus * 0.08, 0.18)
-            dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - statsReactionFocus * 0.14), minGap * 0.7)
-            dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - statsReactionFocus * 0.12), 0)
-        elseif statsReactionFocus < 0 then
-            local relaxFocus = -statsReactionFocus
+    if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) then
+        if stats.reactionFocus > 0 then
+            dynamicPanicTightness = math.max(dynamicPanicTightness - stats.reactionFocus * 0.08, 0.18)
+            dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - stats.reactionFocus * 0.14), minGap * 0.7)
+            dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - stats.reactionFocus * 0.12), 0)
+        elseif stats.reactionFocus < 0 then
+            local relaxFocus = -stats.reactionFocus
             dynamicPanicTightness = math.min(dynamicPanicTightness + relaxFocus * 0.07, 0.99)
             dynamicPanicSlack = dynamicPanicSlack * (1 + relaxFocus * 0.16)
             dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + relaxFocus * 0.12)
         end
     end
 
-    if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
-        if statsCognitiveLoad > 0 then
-            dynamicPanicTightness = math.min(dynamicPanicTightness + statsCognitiveLoad * 0.09, 0.99)
-            dynamicPanicSlack = dynamicPanicSlack * (1 + statsCognitiveLoad * 0.2)
-            dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + statsCognitiveLoad * 0.12)
-        elseif statsCognitiveLoad < 0 then
-            local lighten = -statsCognitiveLoad
+    if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) then
+        if stats.cognitiveLoad > 0 then
+            dynamicPanicTightness = math.min(dynamicPanicTightness + stats.cognitiveLoad * 0.09, 0.99)
+            dynamicPanicSlack = dynamicPanicSlack * (1 + stats.cognitiveLoad * 0.2)
+            dynamicPanicSpeedDelta = dynamicPanicSpeedDelta * (1 + stats.cognitiveLoad * 0.12)
+        elseif stats.cognitiveLoad < 0 then
+            local lighten = -stats.cognitiveLoad
             dynamicPanicTightness = math.max(dynamicPanicTightness - lighten * 0.1, 0.18)
             dynamicPanicSlack = math.max(dynamicPanicSlack * (1 - lighten * 0.16), minGap * 0.7)
             dynamicPanicSpeedDelta = math.max(dynamicPanicSpeedDelta * (1 - lighten * 0.1), 0)
@@ -5530,23 +5509,23 @@ function Helpers.computeSpamBurstTuning(
             tighten = math.max(tighten - statsRelax * 0.25, 0)
         end
 
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
-            if statsReactionPressure > 0 then
-                tighten = math.min(tighten + math.min(statsReactionPressure, 1.6) * 0.3, 1.4)
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) then
+            if stats.reactionPressure > 0 then
+                tighten = math.min(tighten + math.min(stats.reactionPressure, 1.6) * 0.3, 1.4)
             else
-                tighten = math.max(tighten + statsReactionPressure * 0.22, 0)
+                tighten = math.max(tighten + stats.reactionPressure * 0.22, 0)
             end
         end
 
-        if statsDecisionPressure and Helpers.isFiniteNumber(statsDecisionPressure) and statsDecisionPressure > 0 then
-            tighten = math.min(tighten + math.min(statsDecisionPressure, 1.5) * 0.25, 1.45)
+        if stats.decisionPressure and Helpers.isFiniteNumber(stats.decisionPressure) and stats.decisionPressure > 0 then
+            tighten = math.min(tighten + math.min(stats.decisionPressure, 1.5) * 0.25, 1.45)
         end
 
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
-            if statsMissPressure > 0 then
-                tighten = math.min(tighten + math.min(statsMissPressure, 1.4) * 0.45, 1.5)
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) then
+            if stats.missPressure > 0 then
+                tighten = math.min(tighten + math.min(stats.missPressure, 1.4) * 0.45, 1.5)
             else
-                tighten = math.max(tighten + statsMissPressure * 0.25, 0)
+                tighten = math.max(tighten + stats.missPressure * 0.25, 0)
             end
         end
 
@@ -5557,8 +5536,8 @@ function Helpers.computeSpamBurstTuning(
             tighten = math.min(tighten + 0.18, 1.6)
         end
 
-        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
-            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+        if stats.tempoPressure and Helpers.isFiniteNumber(stats.tempoPressure) then
+            local tempoNormalized = math.clamp(stats.tempoPressure, -1.5, 1.5)
             if tempoNormalized > 0 then
                 tighten = math.min(tighten + tempoNormalized * 0.22, 1.3)
             else
@@ -5566,8 +5545,8 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
-            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+        if stats.volatilityPressure and Helpers.isFiniteNumber(stats.volatilityPressure) then
+            local volatilityNormalized = math.clamp(stats.volatilityPressure, -1.5, 1.5)
             if volatilityNormalized > 0 then
                 tighten = math.min(tighten + volatilityNormalized * 0.28, 1.35)
             else
@@ -5576,8 +5555,8 @@ function Helpers.computeSpamBurstTuning(
         end
 
         local lookaheadNormalized
-        if statsLookaheadPressure and Helpers.isFiniteNumber(statsLookaheadPressure) then
-            lookaheadNormalized = statsLookaheadPressure / math.max(baseGap + activationLatencyEstimate, 0.04)
+        if stats.lookaheadPressure and Helpers.isFiniteNumber(stats.lookaheadPressure) then
+            lookaheadNormalized = stats.lookaheadPressure / math.max(baseGap + activationLatencyEstimate, 0.04)
             lookaheadNormalized = math.clamp(lookaheadNormalized, -2, 2)
             if lookaheadNormalized > 0 then
                 tighten = math.min(tighten + lookaheadNormalized * 0.35, 1.35)
@@ -5596,13 +5575,13 @@ function Helpers.computeSpamBurstTuning(
             gap = math.min(gap * (1 + 0.15 * statsRelax), baseGap * (1 + 0.35 * statsRelax))
         end
 
-        if targetingPressure > 0 then
-            local tightenFactor = math.clamp(targetingPressure * 0.28, 0, 0.85)
+        if targeting.pressure > 0 then
+            local tightenFactor = math.clamp(targeting.pressure * 0.28, 0, 0.85)
             gap = math.max(gap * (1 - tightenFactor), minGap)
         end
 
-        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
-            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+        if stats.tempoPressure and Helpers.isFiniteNumber(stats.tempoPressure) then
+            local tempoNormalized = math.clamp(stats.tempoPressure, -1.5, 1.5)
             if tempoNormalized > 0 then
                 gap = math.max(gap * (1 - 0.12 * tempoNormalized), minGap)
             elseif tempoNormalized < 0 then
@@ -5611,25 +5590,25 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
-            if statsReactionPressure > 0 then
-                gap = math.max(gap * (1 - 0.22 * math.min(statsReactionPressure, 1.6)), minGap)
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) then
+            if stats.reactionPressure > 0 then
+                gap = math.max(gap * (1 - 0.22 * math.min(stats.reactionPressure, 1.6)), minGap)
             else
-                gap = math.min(gap * (1 - statsReactionPressure * 0.15), baseGap * 1.3)
+                gap = math.min(gap * (1 - stats.reactionPressure * 0.15), baseGap * 1.3)
             end
         end
 
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
-            if statsMissPressure > 0 then
-                gap = math.max(gap * (1 - 0.28 * math.min(statsMissPressure, 1.3)), minGap)
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) then
+            if stats.missPressure > 0 then
+                gap = math.max(gap * (1 - 0.28 * math.min(stats.missPressure, 1.3)), minGap)
             else
-                local relaxMiss = -statsMissPressure
+                local relaxMiss = -stats.missPressure
                 gap = math.min(gap * (1 + 0.18 * relaxMiss), baseGap * 1.3)
             end
         end
 
-        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
-            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+        if stats.volatilityPressure and Helpers.isFiniteNumber(stats.volatilityPressure) then
+            local volatilityNormalized = math.clamp(stats.volatilityPressure, -1.5, 1.5)
             if volatilityNormalized > 0 then
                 gap = math.max(gap * (1 - 0.1 * volatilityNormalized), minGap)
             elseif volatilityNormalized < 0 then
@@ -5647,9 +5626,9 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+        if stats.reactionStdDev and Helpers.isFiniteNumber(stats.reactionStdDev) then
             local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
-            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.6, 1.6)
+            local normalized = math.clamp((targetSpread - stats.reactionStdDev) / math.max(targetSpread, 0.01), -1.6, 1.6)
             if normalized > 0 then
                 gap = math.max(gap * (1 - 0.08 * normalized), minGap * 0.95)
             elseif normalized < 0 then
@@ -5658,9 +5637,9 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsDecisionToPressStdDev and Helpers.isFiniteNumber(statsDecisionToPressStdDev) then
+        if stats.decisionToPressStdDev and Helpers.isFiniteNumber(stats.decisionToPressStdDev) then
             local targetSpread = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
-            local normalized = math.clamp((targetSpread - statsDecisionToPressStdDev) / math.max(targetSpread, 0.01), -1.5, 1.5)
+            local normalized = math.clamp((targetSpread - stats.decisionToPressStdDev) / math.max(targetSpread, 0.01), -1.5, 1.5)
             if normalized < 0 then
                 local relax = -normalized
                 gap = math.min(gap * (1 + 0.05 * relax), baseGap * (1 + 0.22 * relax))
@@ -5669,20 +5648,20 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
-            if statsReactionFocus > 0 then
-                gap = math.max(gap * (1 - 0.14 * math.min(statsReactionFocus, 1.8)), minGap * 0.9)
-            elseif statsReactionFocus < 0 then
-                local relaxFocus = -statsReactionFocus
+        if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) then
+            if stats.reactionFocus > 0 then
+                gap = math.max(gap * (1 - 0.14 * math.min(stats.reactionFocus, 1.8)), minGap * 0.9)
+            elseif stats.reactionFocus < 0 then
+                local relaxFocus = -stats.reactionFocus
                 gap = math.min(gap * (1 + 0.1 * relaxFocus), baseGap * (1 + 0.35 * relaxFocus))
             end
         end
 
-        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
-            if statsCognitiveLoad > 0 then
-                gap = math.min(gap * (1 + 0.08 * math.min(statsCognitiveLoad, 1.8)), baseGap * (1 + 0.35 * math.min(statsCognitiveLoad, 1.8)))
-            elseif statsCognitiveLoad < 0 then
-                local lighten = -statsCognitiveLoad
+        if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) then
+            if stats.cognitiveLoad > 0 then
+                gap = math.min(gap * (1 + 0.08 * math.min(stats.cognitiveLoad, 1.8)), baseGap * (1 + 0.35 * math.min(stats.cognitiveLoad, 1.8)))
+            elseif stats.cognitiveLoad < 0 then
+                local lighten = -stats.cognitiveLoad
                 gap = math.max(gap * (1 - 0.1 * math.min(lighten, 1.6)), minGap)
             end
         end
@@ -5708,44 +5687,44 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+        if stats.reactionStdDev and Helpers.isFiniteNumber(stats.reactionStdDev) then
             local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
-            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
+            local normalized = math.clamp((targetSpread - stats.reactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
             extension -= baseWindow * 0.08 * normalized
         end
 
-        if statsDecisionStdDev and Helpers.isFiniteNumber(statsDecisionStdDev) then
+        if stats.decisionStdDev and Helpers.isFiniteNumber(stats.decisionStdDev) then
             local targetSpread = math.max(baseGap * 0.55, SPAM_MIN_GAP * 1.8)
-            local normalized = math.clamp((targetSpread - statsDecisionStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
+            local normalized = math.clamp((targetSpread - stats.decisionStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
             extension -= baseWindow * 0.06 * normalized
         end
 
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) then
-            if statsReactionPressure > 0 then
-                extension += baseWindow * 0.18 * math.min(statsReactionPressure, 1.2)
-            elseif statsReactionPressure < 0 then
-                extension -= baseWindow * 0.12 * math.min(-statsReactionPressure, 1.2)
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) then
+            if stats.reactionPressure > 0 then
+                extension += baseWindow * 0.18 * math.min(stats.reactionPressure, 1.2)
+            elseif stats.reactionPressure < 0 then
+                extension -= baseWindow * 0.12 * math.min(-stats.reactionPressure, 1.2)
             end
         end
 
-        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
-            extension -= baseWindow * 0.12 * statsReactionFocus
+        if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) then
+            extension -= baseWindow * 0.12 * stats.reactionFocus
         end
 
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
-            if statsMissPressure > 0 then
-                extension += baseWindow * 0.22 * math.min(statsMissPressure, 1.1)
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) then
+            if stats.missPressure > 0 then
+                extension += baseWindow * 0.22 * math.min(stats.missPressure, 1.1)
             else
-                extension -= baseWindow * 0.15 * math.min(-statsMissPressure, 1.1)
+                extension -= baseWindow * 0.15 * math.min(-stats.missPressure, 1.1)
             end
         end
 
-        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
-            extension += baseWindow * 0.1 * statsCognitiveLoad
+        if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) then
+            extension += baseWindow * 0.1 * stats.cognitiveLoad
         end
 
-        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
-            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+        if stats.tempoPressure and Helpers.isFiniteNumber(stats.tempoPressure) then
+            local tempoNormalized = math.clamp(stats.tempoPressure, -1.5, 1.5)
             if tempoNormalized > 0 then
                 extension += baseWindow * 0.12 * tempoNormalized
             elseif tempoNormalized < 0 then
@@ -5753,12 +5732,12 @@ function Helpers.computeSpamBurstTuning(
             end
         end
 
-        if targetingPressure > 0 then
-            extension += baseWindow * 0.3 * math.clamp(targetingPressure, 0, 1.2)
+        if targeting.pressure > 0 then
+            extension += baseWindow * 0.3 * math.clamp(targeting.pressure, 0, 1.2)
         end
 
-        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) then
-            local volatilityNormalized = math.clamp(statsVolatilityPressure, -1.5, 1.5)
+        if stats.volatilityPressure and Helpers.isFiniteNumber(stats.volatilityPressure) then
+            local volatilityNormalized = math.clamp(stats.volatilityPressure, -1.5, 1.5)
             if volatilityNormalized > 0 then
                 extension += baseWindow * 0.15 * volatilityNormalized
             end
@@ -5774,40 +5753,40 @@ function Helpers.computeSpamBurstTuning(
         if statsTighten > 0 then
             lookaheadBoost += 0.08 * statsTighten
         end
-        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) then
-            local tempoNormalized = math.clamp(statsTempoPressure, -1.5, 1.5)
+        if stats.tempoPressure and Helpers.isFiniteNumber(stats.tempoPressure) then
+            local tempoNormalized = math.clamp(stats.tempoPressure, -1.5, 1.5)
             if tempoNormalized > 0 then
                 lookaheadBoost += 0.05 * tempoNormalized
             end
         end
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
-            lookaheadBoost += 0.06 * math.min(statsReactionPressure, 1.2)
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) and stats.reactionPressure > 0 then
+            lookaheadBoost += 0.06 * math.min(stats.reactionPressure, 1.2)
         end
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
-            lookaheadBoost += 0.09 * math.min(statsMissPressure, 1.1)
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) and stats.missPressure > 0 then
+            lookaheadBoost += 0.09 * math.min(stats.missPressure, 1.1)
         end
-        if statsReactionFocus and Helpers.isFiniteNumber(statsReactionFocus) then
-            if statsReactionFocus > 0 then
-                lookaheadBoost += 0.07 * math.min(statsReactionFocus, 1.8)
+        if stats.reactionFocus and Helpers.isFiniteNumber(stats.reactionFocus) then
+            if stats.reactionFocus > 0 then
+                lookaheadBoost += 0.07 * math.min(stats.reactionFocus, 1.8)
             else
-                lookaheadBoost -= 0.05 * math.min(-statsReactionFocus, 1.6)
+                lookaheadBoost -= 0.05 * math.min(-stats.reactionFocus, 1.6)
             end
         end
-        if statsCognitiveLoad and Helpers.isFiniteNumber(statsCognitiveLoad) then
-            if statsCognitiveLoad < 0 then
-                lookaheadBoost += 0.05 * math.min(-statsCognitiveLoad, 1.6)
+        if stats.cognitiveLoad and Helpers.isFiniteNumber(stats.cognitiveLoad) then
+            if stats.cognitiveLoad < 0 then
+                lookaheadBoost += 0.05 * math.min(-stats.cognitiveLoad, 1.6)
             else
-                lookaheadBoost -= 0.04 * math.min(statsCognitiveLoad, 1.5)
+                lookaheadBoost -= 0.04 * math.min(stats.cognitiveLoad, 1.5)
             end
         end
-        if statsReactionStdDev and Helpers.isFiniteNumber(statsReactionStdDev) then
+        if stats.reactionStdDev and Helpers.isFiniteNumber(stats.reactionStdDev) then
             local targetSpread = math.max(baseGap * 0.45, SPAM_MIN_GAP * 1.4)
-            local normalized = math.clamp((targetSpread - statsReactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
+            local normalized = math.clamp((targetSpread - stats.reactionStdDev) / math.max(targetSpread, 0.01), -1.4, 1.4)
             lookaheadBoost += 0.03 * normalized
         end
-        if statsDecisionToPressStdDev and Helpers.isFiniteNumber(statsDecisionToPressStdDev) then
+        if stats.decisionToPressStdDev and Helpers.isFiniteNumber(stats.decisionToPressStdDev) then
             local targetSpread = math.max(baseGap * 0.5, SPAM_MIN_GAP * 1.6)
-            local normalized = math.clamp((targetSpread - statsDecisionToPressStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
+            local normalized = math.clamp((targetSpread - stats.decisionToPressStdDev) / math.max(targetSpread, 0.01), -1.3, 1.3)
             lookaheadBoost += 0.025 * normalized
         end
         if lookaheadNormalized and lookaheadNormalized > 0 then
@@ -5829,24 +5808,24 @@ function Helpers.computeSpamBurstTuning(
             panicGap = math.max(panicGap, gap * (1 + 0.05 * statsRelax))
         end
 
-        if statsTempoPressure and Helpers.isFiniteNumber(statsTempoPressure) and statsTempoPressure > 0 then
-            panicGap = math.max(panicGap * (1 - 0.08 * math.min(statsTempoPressure, 1.2)), minGap)
+        if stats.tempoPressure and Helpers.isFiniteNumber(stats.tempoPressure) and stats.tempoPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.08 * math.min(stats.tempoPressure, 1.2)), minGap)
         end
 
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
-            panicGap = math.max(panicGap * (1 - 0.16 * math.min(statsReactionPressure, 1.2)), minGap)
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) and stats.reactionPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.16 * math.min(stats.reactionPressure, 1.2)), minGap)
         end
 
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
-            panicGap = math.max(panicGap * (1 - 0.2 * math.min(statsMissPressure, 1.1)), minGap)
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) and stats.missPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.2 * math.min(stats.missPressure, 1.1)), minGap)
         end
 
-        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) and statsVolatilityPressure > 0 then
-            panicGap = math.max(panicGap * (1 - 0.1 * math.min(statsVolatilityPressure, 1.2)), minGap)
+        if stats.volatilityPressure and Helpers.isFiniteNumber(stats.volatilityPressure) and stats.volatilityPressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.1 * math.min(stats.volatilityPressure, 1.2)), minGap)
         end
 
-        if targetingPressure > 0 then
-            panicGap = math.max(panicGap * (1 - 0.18 * math.min(targetingPressure, 1.2)), minGap)
+        if targeting.pressure > 0 then
+            panicGap = math.max(panicGap * (1 - 0.18 * math.min(targeting.pressure, 1.2)), minGap)
         end
 
         if kinematics and Helpers.isFiniteNumber(kinematics.velocityMagnitude) then
@@ -5866,37 +5845,37 @@ function Helpers.computeSpamBurstTuning(
         if statsTighten > 0 then
             panicWindow = panicWindow * (1 + 0.35 * statsTighten)
         end
-        if statsVolatilityPressure and Helpers.isFiniteNumber(statsVolatilityPressure) and statsVolatilityPressure > 0 then
-            panicWindow = panicWindow * (1 + 0.25 * math.min(statsVolatilityPressure, 1.2))
+        if stats.volatilityPressure and Helpers.isFiniteNumber(stats.volatilityPressure) and stats.volatilityPressure > 0 then
+            panicWindow = panicWindow * (1 + 0.25 * math.min(stats.volatilityPressure, 1.2))
         end
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
-            panicWindow = panicWindow * (1 + 0.18 * math.min(statsReactionPressure, 1.2))
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) and stats.reactionPressure > 0 then
+            panicWindow = panicWindow * (1 + 0.18 * math.min(stats.reactionPressure, 1.2))
         end
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) then
-            if statsMissPressure > 0 then
-                panicWindow = panicWindow * (1 + 0.3 * math.min(statsMissPressure, 1.1))
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) then
+            if stats.missPressure > 0 then
+                panicWindow = panicWindow * (1 + 0.3 * math.min(stats.missPressure, 1.1))
             else
-                panicWindow = panicWindow * (1 + statsMissPressure * 0.15)
+                panicWindow = panicWindow * (1 + stats.missPressure * 0.15)
             end
         end
         if lookaheadNormalized and lookaheadNormalized > 0 then
             panicWindow = panicWindow * (1 + 0.3 * lookaheadNormalized)
         end
-        if targetingPressure > 0 then
-            panicWindow = panicWindow * (1 + 0.22 * math.min(targetingPressure, 1.2))
+        if targeting.pressure > 0 then
+            panicWindow = panicWindow * (1 + 0.22 * math.min(targeting.pressure, 1.2))
         end
         panicWindow = math.min(panicWindow, baseWindow + 0.6 + statsTighten * 0.15 + math.max(lookaheadNormalized or 0, 0) * 0.2)
         panicLookahead = math.max(panicLookahead, predictedImpact + activationLatencyEstimate + panicGap + lookaheadBoostExtra)
-        if statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0 then
+        if stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) and stats.missPressure > 0 then
             panicLookahead = math.max(
                 panicLookahead,
-                predictedImpact + activationLatencyEstimate + panicGap + statsMissPressure * 0.05
+                predictedImpact + activationLatencyEstimate + panicGap + stats.missPressure * 0.05
             )
         end
-        if statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0 then
+        if stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) and stats.reactionPressure > 0 then
             panicLookahead = math.max(
                 panicLookahead,
-                predictedImpact + activationLatencyEstimate + panicGap + statsReactionPressure * 0.04
+                predictedImpact + activationLatencyEstimate + panicGap + stats.reactionPressure * 0.04
             )
         end
         panicLookahead = math.min(
@@ -5910,7 +5889,7 @@ function Helpers.computeSpamBurstTuning(
             panicReason = "tightness"
         end
 
-        if not panic and targetingPressure > 1.1 then
+        if not panic and targeting.pressure > 1.1 then
             panic = true
             panicReason = panicReason or "retarget"
         end
@@ -5941,23 +5920,23 @@ function Helpers.computeSpamBurstTuning(
             panicReason = panicReason or "lookahead"
         end
 
-        if not panic and statsMissPressure and Helpers.isFiniteNumber(statsMissPressure) and statsMissPressure > 0.35 then
+        if not panic and stats.missPressure and Helpers.isFiniteNumber(stats.missPressure) and stats.missPressure > 0.35 then
             panic = true
             panicReason = panicReason or "reliability"
         end
 
-        if not panic and statsReactionPressure and Helpers.isFiniteNumber(statsReactionPressure) and statsReactionPressure > 0.5 then
+        if not panic and stats.reactionPressure and Helpers.isFiniteNumber(stats.reactionPressure) and stats.reactionPressure > 0.5 then
             panic = true
             panicReason = panicReason or "reaction"
         end
 
         if
             not panic
-            and statsPressMissCount
-            and Helpers.isFiniteNumber(statsPressMissCount)
-            and summaryPressCount >= 6
+            and stats.pressMissCount
+            and Helpers.isFiniteNumber(stats.pressMissCount)
+            and stats.summaryPressCount >= 6
         then
-            local missRatio = statsPressMissCount / math.max(summaryPressCount, 1)
+            local missRatio = stats.pressMissCount / math.max(stats.summaryPressCount, 1)
             if missRatio >= 0.25 then
                 panic = true
                 panicReason = panicReason or "misses"
@@ -6012,6 +5991,8 @@ function Helpers.computeSpamBurstTuning(
     panicWindow = math.max(panicWindow, window)
     panicLookahead = math.max(panicLookahead, lookahead)
 
+    stats.trend = statsTrend
+
     return {
         presses = presses,
         gap = gap,
@@ -6026,38 +6007,38 @@ function Helpers.computeSpamBurstTuning(
         panicLookahead = panicLookahead,
         recoverySeconds = recoverySeconds,
         statsAggression = statsAggressionScore,
-        statsSamples = statsSamples,
-        statsWaitDelta = statsWaitDelta,
-        statsLeadDelta = statsLeadDelta,
-        statsCommitPressure = statsCommitPressure,
-        statsAverageLatency = statsAverageLatency,
-        statsCancellationRate = statsCancellationRate,
-        statsImmediateRate = statsImmediateRate,
-        statsSpeedPressure = statsSpeedPressure,
-        statsLookaheadPressure = statsLookaheadPressure,
-        statsTempoPressure = statsTempoPressure,
-        statsVolatilityPressure = statsVolatilityPressure,
-        statsAverageReactionTime = statsAverageReactionTime,
-        statsReactionStdDev = statsReactionStdDev,
-        statsReactionPressure = statsReactionPressure,
-        statsAverageDecisionToPress = statsAverageDecisionToPress,
-        statsDecisionStdDev = statsDecisionStdDev,
-        statsDecisionToPressStdDev = statsDecisionToPressStdDev,
-        statsDecisionPressure = statsDecisionPressure,
-        statsSuccessRate = statsSuccessRate,
-        statsMissPressure = statsMissPressure,
-        statsPressMissCount = statsPressMissCount,
-        statsTrend = statsTrend,
-        statsReactionFocus = statsReactionFocus,
-        statsCognitiveLoad = statsCognitiveLoad,
-        statsNeuroTempo = statsNeuroTempo,
-        statsTargetingPressure = statsTargetingPressure,
-        statsTargetingRate = statsTargetingRate,
-        statsTargetingInterval = statsTargetingInterval,
-        statsTargetingSincePress = statsTargetingSincePress,
-        statsTargetingAggression = statsTargetingAggression,
-        statsTargetingMomentum = statsTargetingMomentum,
-        statsTargetingSpeedUrgency = statsTargetingSpeedUrgency,
+        statsSamples = stats.samples,
+        statsWaitDelta = stats.waitDelta,
+        statsLeadDelta = stats.leadDelta,
+        statsCommitPressure = stats.commitPressure,
+        statsAverageLatency = stats.averageLatency,
+        statsCancellationRate = stats.cancellationRate,
+        statsImmediateRate = stats.immediateRate,
+        statsSpeedPressure = stats.speedPressure,
+        statsLookaheadPressure = stats.lookaheadPressure,
+        statsTempoPressure = stats.tempoPressure,
+        statsVolatilityPressure = stats.volatilityPressure,
+        statsAverageReactionTime = stats.averageReactionTime,
+        statsReactionStdDev = stats.reactionStdDev,
+        statsReactionPressure = stats.reactionPressure,
+        statsAverageDecisionToPress = stats.averageDecisionToPress,
+        statsDecisionStdDev = stats.decisionStdDev,
+        statsDecisionToPressStdDev = stats.decisionToPressStdDev,
+        statsDecisionPressure = stats.decisionPressure,
+        statsSuccessRate = stats.successRate,
+        statsMissPressure = stats.missPressure,
+        statsPressMissCount = stats.pressMissCount,
+        statsTrend = stats.trend,
+        statsReactionFocus = stats.reactionFocus,
+        statsCognitiveLoad = stats.cognitiveLoad,
+        statsNeuroTempo = stats.neuroTempo,
+        statsTargetingPressure = stats.targetingPressure,
+        statsTargetingRate = stats.targetingRate,
+        statsTargetingInterval = stats.targetingInterval,
+        statsTargetingSincePress = stats.targetingSincePress,
+        statsTargetingAggression = stats.targetingAggression,
+        statsTargetingMomentum = stats.targetingMomentum,
+        statsTargetingSpeedUrgency = stats.targetingSpeedUrgency,
         targetingDemand = demandScore,
         targetingRateOverdrive = rateOverdrive,
         targetingInterval = optionInterval,
