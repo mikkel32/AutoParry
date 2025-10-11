@@ -596,6 +596,7 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
         local action = tostring(event.action or "")
         local parameters = event.parameters or {}
         local hitchMagnitude
+        local extraDetails
         if action == "configure" then
             if autoparry and typeof(autoparry.getConfig) == "function" and typeof(autoparry.configure) == "function" then
                 local defaults = autoparry.getConfig()
@@ -645,6 +646,31 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
             if duration > 0 then
                 context:advance(duration, { step = 1 / 240 })
             end
+        elseif action == "snapshot-targeting-safe" then
+            if autoparry and typeof(autoparry.getTargetingSafeState) == "function" then
+                local ok, snapshot = pcall(autoparry.getTargetingSafeState)
+                if ok then
+                    extraDetails = extraDetails or {}
+                    extraDetails.targetingSafeState = sanitiseValue(snapshot)
+                else
+                    table.insert(warnings, string.format("getTargetingSafeState failed: %s", tostring(snapshot)))
+                end
+            else
+                table.insert(warnings, "AutoParry.getTargetingSafeState unavailable")
+            end
+        elseif action == "clear-targeting-safe" then
+            if autoparry and typeof(autoparry.clearTargetingSafeState) == "function" then
+                local reason = parameters.reason or event.reason
+                local ok, snapshot = pcall(autoparry.clearTargetingSafeState, reason)
+                if ok then
+                    extraDetails = extraDetails or {}
+                    extraDetails.targetingSafeCleared = sanitiseValue(snapshot)
+                else
+                    table.insert(warnings, string.format("clearTargetingSafeState failed: %s", tostring(snapshot)))
+                end
+            else
+                table.insert(warnings, "AutoParry.clearTargetingSafeState unavailable")
+            end
         else
             table.insert(warnings, string.format("Unhandled player action '%s'", action))
         end
@@ -652,6 +678,14 @@ local function runTimelineEvent(context: any, event: {[string]: any}, log: {any}
         if action == "inject-hitch" and hitchMagnitude then
             details = details or {}
             details.hitchDuration = hitchMagnitude
+        end
+        if extraDetails then
+            if typeof(details) ~= "table" then
+                details = { parameters = details }
+            end
+            for key, value in pairs(extraDetails) do
+                details[key] = value
+            end
         end
 
         table.insert(log, {

@@ -28,6 +28,20 @@ The harness automatically rebuilds the scenario modules and regenerates the test
 
 All suites rely on the compiled scenario modules and the generated Rojo place. Use `--skip-build` if you are iterating on the Lua launchers only and already have fresh artifacts.
 
+### Player timeline helpers
+
+Scenario timelines can invoke rich player actions in addition to rule toggles. The runner now surfaces targeting-safe instrumentation alongside the existing configuration helpers:
+
+| Action | Description |
+| --- | --- |
+| `configure` | Apply relative configuration overrides resolved against the current AutoParry config. |
+| `configure-invalid` | Attempt to apply invalid overrides and expect the call to fail without mutating the config. |
+| `reset-config` | Restore defaults via `AutoParry.resetConfig()`. |
+| `inject-hitch` | Advance the simulation clock by the provided duration to mimic frame hitches. |
+| `observe-telemetry` | Run the simulation forward for a fixed duration (at `1/240` step granularity) without injecting new events. |
+| `snapshot-targeting-safe` | Capture a sanitised snapshot of the targeting safe-state guard and attach it to the event log. |
+| `clear-targeting-safe` | Clear the targeting safe-state guard (optionally with a reason string) and record the resulting snapshot. |
+
 ## Autoparry telemetry snapshots
 
 Every scenario run now exposes an `autoparry` payload alongside the existing
