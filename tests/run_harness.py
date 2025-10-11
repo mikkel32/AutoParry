@@ -47,6 +47,9 @@ SOURCE_MAP_PATH = TESTS_DIR / "fixtures" / "AutoParrySourceMap.lua"
 SOURCE_MAP_SCRIPT = TESTS_DIR / "tools" / "generate_source_map.py"
 SPEC_RUNNER_SCRIPT = TESTS_DIR / "tools" / "run_specs.luau"
 PERF_BASELINE_PATH = TESTS_DIR / "perf" / "baseline.json"
+SCENARIO_DIR = TESTS_DIR / "scenarios"
+SCENARIO_ARTIFACT_DIR = ARTIFACTS_DIR / "scenarios"
+SCENARIO_COMPILE_SCRIPT = TESTS_DIR / "tools" / "compile_scenarios.lua"
 TOOLS_BIN_DIR = TESTS_DIR / "tools" / "bin"
 PYTHON_EXECUTABLE = sys.executable or "python3"
 
@@ -348,13 +351,34 @@ SUITES: Dict[str, SuiteConfig] = {
         TESTS_DIR / "perf" / "parry_accuracy.server.lua",
         "Deterministic parry accuracy workload with violation reporting.",
     ),
+    "engine-sim": _roblox_suite(
+        TESTS_DIR / "engine" / "engine_sim.server.lua",
+        "Runs compiled scenario bundles through the engine runtime and captures simulation artifacts.",
+    ),
+    "engine-replay": _roblox_suite(
+        TESTS_DIR / "engine" / "engine_replay.server.lua",
+        "Replays scenario batches and records remote/parry logs for debugging.",
+    ),
+    "engine-metrics": _roblox_suite(
+        TESTS_DIR / "engine" / "engine_metrics.server.lua",
+        "Aggregates engine scenario metrics to surface press and remote counts at a glance.",
+    ),
 }
 
 
 SUITE_ALIASES: Dict[str, List[str]] = {
     "all": list(SUITES.keys()),
     "static": ["format", "lint", "typecheck", "register-pressure"],
-    "roblox": ["smoke", "spec", "perf", "accuracy"],
+    "roblox": [
+        "smoke",
+        "spec",
+        "perf",
+        "accuracy",
+        "engine-sim",
+        "engine-replay",
+        "engine-metrics",
+    ],
+    "engine": ["engine-sim", "engine-replay", "engine-metrics"],
     "quick": ["telemetry"],
 }
 
@@ -420,6 +444,18 @@ def find_latest_source_mtime() -> float:
     for path in src_root.rglob("*.lua"):
         tracked_paths.append(path)
 
+    engine_root = ROOT / "engine"
+    for path in engine_root.rglob("*.lua"):
+        tracked_paths.append(path)
+
+    if SCENARIO_DIR.exists():
+        for path in SCENARIO_DIR.glob("*.lua*"):
+            tracked_paths.append(path)
+
+    if SCENARIO_ARTIFACT_DIR.exists():
+        for path in SCENARIO_ARTIFACT_DIR.glob("*.roblox.lua"):
+            tracked_paths.append(path)
+
     latest = 0.0
     for path in tracked_paths:
         if not path.exists():
@@ -459,6 +495,66 @@ def ensure_source_map(force: bool = False, dry_run: bool = False) -> bool:
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(
             f"Failed to generate source map (exit code {exc.returncode})"
+        ) from exc
+
+    return True
+
+
+def ensure_scenarios(
+    *, force: bool = False, dry_run: bool = False, preferred_lune: str = "lune"
+) -> bool:
+    """Compile scenario manifests into runtime modules when inputs change."""
+
+    if not SCENARIO_DIR.exists():
+        return False
+
+    latest_input = 0.0
+
+    for path in SCENARIO_DIR.glob("*.lua*"):
+        try:
+            latest_input = max(latest_input, path.stat().st_mtime)
+        except OSError:
+            continue
+
+    engine_root = ROOT / "engine"
+    for path in engine_root.rglob("*.lua"):
+        try:
+            latest_input = max(latest_input, path.stat().st_mtime)
+        except OSError:
+            continue
+
+    artifact_mtimes: List[float] = []
+    if SCENARIO_ARTIFACT_DIR.exists():
+        for path in SCENARIO_ARTIFACT_DIR.glob("*.roblox.lua"):
+            try:
+                artifact_mtimes.append(path.stat().st_mtime)
+            except OSError:
+                continue
+
+    needs_compile = force or not artifact_mtimes
+    if not needs_compile:
+        artifact_latest = max(artifact_mtimes) if artifact_mtimes else 0.0
+        needs_compile = artifact_latest < latest_input
+
+    if not needs_compile:
+        return False
+
+    if dry_run:
+        print("[run-harness] Would compile engine scenarios (dry-run enabled)")
+        return False
+
+    try:
+        lune_executable = ensure_lune_cli(preferred_lune)
+    except RuntimeError as err:
+        raise RuntimeError(f"Failed to prepare Lune for scenario compilation: {err}") from err
+
+    command = [lune_executable, "run", str(SCENARIO_COMPILE_SCRIPT), "--root", str(ROOT)]
+    print("[run-harness] Compiling engine scenarios via tests/tools/compile_scenarios.lua …")
+    try:
+        subprocess.run(command, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(
+            f"Failed to compile scenarios (exit code {exc.returncode})"
         ) from exc
 
     return True
@@ -895,6 +991,112 @@ def summarise_perf_result(result: SuiteResult) -> None:
             result.summary_lines.append(line)
 
 
+def load_artifact_json(result: SuiteResult, artifact_name: str) -> Optional[Any]:
+    path = result.artifacts.get(artifact_name)
+    if not path:
+        return None
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            return json.load(handle)
+    except (OSError, json.JSONDecodeError) as err:
+        result.summary_lines.append(f"{artifact_name} artifact parse failed: {err}")
+        return None
+
+
+def summarise_engine_sim_result(result: SuiteResult) -> None:
+    if result.skipped:
+        return
+    payload = load_artifact_json(result, "engine_simulation")
+    if not isinstance(payload, dict):
+        if payload is not None:
+            result.summary_lines.append("engine_simulation artifact payload not a JSON object")
+        return
+
+    run_info = payload.get("run")
+    bits: List[str] = []
+    if isinstance(run_info, dict):
+        scenarios = run_info.get("scenarios")
+        total_parries = run_info.get("totalParries")
+        total_remote = run_info.get("totalRemoteEvents")
+        total_warnings = run_info.get("totalWarnings")
+        if isinstance(scenarios, int):
+            bits.append(f"{scenarios} scenario(s)")
+        if isinstance(total_parries, int):
+            bits.append(f"{total_parries} parries")
+        if isinstance(total_remote, int):
+            bits.append(f"{total_remote} remote event(s)")
+        if isinstance(total_warnings, int) and total_warnings > 0:
+            bits.append(f"{total_warnings} warning(s)")
+    if bits:
+        result.summary_lines.append(", ".join(bits))
+
+    scenarios = payload.get("scenarios")
+    if isinstance(scenarios, list):
+        for scenario in scenarios:
+            if not isinstance(scenario, dict):
+                continue
+            warnings = scenario.get("warnings")
+            if isinstance(warnings, list) and warnings:
+                result.summary_lines.append(
+                    f"{scenario.get('id', 'scenario')} warning: {warnings[0]}"
+                )
+                break
+
+
+def summarise_engine_replay_result(result: SuiteResult) -> None:
+    if result.skipped:
+        return
+    payload = load_artifact_json(result, "engine_replay")
+    if not isinstance(payload, dict):
+        if payload is not None:
+            result.summary_lines.append("engine_replay artifact payload not a JSON object")
+        return
+
+    replays = payload.get("replays")
+    total_remote = 0
+    total_parries = 0
+    if isinstance(replays, list):
+        for replay in replays:
+            if not isinstance(replay, dict):
+                continue
+            remote_log = replay.get("remoteLog")
+            parry_log = replay.get("parryLog")
+            if isinstance(remote_log, list):
+                total_remote += len(remote_log)
+            if isinstance(parry_log, list):
+                total_parries += len(parry_log)
+    bits: List[str] = []
+    if total_remote:
+        bits.append(f"{total_remote} remote event(s)")
+    if total_parries:
+        bits.append(f"{total_parries} parry log entry(ies)")
+    if bits:
+        result.summary_lines.append(", ".join(bits))
+
+
+def summarise_engine_metrics_result(result: SuiteResult) -> None:
+    if result.skipped:
+        return
+    payload = load_artifact_json(result, "engine_metrics")
+    if not isinstance(payload, dict):
+        if payload is not None:
+            result.summary_lines.append("engine_metrics artifact payload not a JSON object")
+        return
+
+    run_info = payload.get("run")
+    if isinstance(run_info, dict):
+        bits: List[str] = []
+        total_parries = run_info.get("totalParries")
+        total_remote = run_info.get("totalRemoteEvents")
+        total_warnings = run_info.get("totalWarnings")
+        if isinstance(total_parries, int):
+            bits.append(f"{total_parries} parries")
+        if isinstance(total_remote, int):
+            bits.append(f"{total_remote} remote event(s)")
+        if isinstance(total_warnings, int) and total_warnings > 0:
+            bits.append(f"{total_warnings} warning(s)")
+        if bits:
+            result.summary_lines.append(", ".join(bits))
 def summarise_accuracy_result(result: SuiteResult) -> None:
     if result.skipped:
         return
@@ -1047,6 +1249,9 @@ SUMMARY_HOOKS: Dict[str, Tuple[Callable[[SuiteResult], None], ...]] = {
     "perf": (summarise_perf_result,),
     "accuracy": (summarise_accuracy_result,),
     "telemetry": (summarise_telemetry_result,),
+    "engine-sim": (summarise_engine_sim_result,),
+    "engine-replay": (summarise_engine_replay_result,),
+    "engine-metrics": (summarise_engine_metrics_result,),
 }
 
 
@@ -1199,6 +1404,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             return 1
 
     if needs_place and not args.skip_build:
+        try:
+            ensure_scenarios(
+                force=args.force_build,
+                dry_run=args.dry_run,
+                preferred_lune=lune_executable,
+            )
+        except RuntimeError as err:
+            print(f"[run-harness] {err}", file=sys.stderr)
+            return 1
         try:
             ensure_place(force=args.force_build, dry_run=args.dry_run)
         except RuntimeError as err:

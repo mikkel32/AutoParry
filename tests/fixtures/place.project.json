@@ -95,6 +95,13 @@
           "TelemetryExporterSpec": {
             "$path": "../engine/telemetry_exporter.spec.lua"
           }
+        },
+        "engine": {
+          "$path": "../engine"
+        },
+        "Scenarios": {
+          "$className": "Folder",
+          "$path": "../artifacts/scenarios"
         }
       }
     },
