@@ -5,6 +5,7 @@ local RuntimeFolder = TestHarness:WaitForChild("engine")
 local Runtime = require(RuntimeFolder:WaitForChild("runtime"))
 
 local Scheduler = Runtime.Scheduler
+local TelemetryTestUtils = require(script.Parent:WaitForChild("telemetry_test_utils"))
 
 local function loadAutoparry()
     local scheduler = Scheduler.new(0.25)
@@ -505,6 +506,94 @@ return function(t)
         expect(pressured.gap):toBeGreaterThanOrEqual(defaults.oscillationSpamMinGap)
         expect(pressured.presses <= defaults.oscillationSpamBurstPresses + 1):toEqual(true)
         expect(pressured.panic):toEqual(false)
+
+        autoparry.destroy()
+    end)
+
+    t.test("oscillation spam tightens gap when adaptive slack debt spikes", function(expect)
+        local autoparry = loadAutoparry()
+        local defaults = autoparry.getConfig()
+
+        local baseline = autoparry._testEvaluateOscillationBurstTuning({
+            decision = {
+                predictedImpact = 0.13,
+                timeUntilPress = 0.13,
+                scheduleSlack = defaults.pressScheduleSlack,
+                confidence = 0.82,
+            },
+        })
+
+        local summary = TelemetryTestUtils.buildSummary(nil, {
+            pressCount = 54,
+            scheduleCount = 50,
+            averageScheduleSlack = defaults.pressScheduleSlack * 0.35,
+            averageWaitDelta = 0.02,
+            immediateRate = 0.28,
+            successRate = 0.74,
+            pressMissCount = 16,
+            scheduleLookaheadP10 = defaults.pressScheduleSlack * 0.3,
+            averageLatency = defaults.activationLatency + 0.05,
+        })
+
+        local tuned = autoparry._testEvaluateOscillationBurstTuning({
+            decision = {
+                predictedImpact = 0.11,
+                timeUntilPress = 0.11,
+                scheduleSlack = defaults.pressScheduleSlack * 0.7,
+                confidence = 0.9,
+            },
+            summary = summary,
+        })
+
+        expect(tuned.gap < baseline.gap):toEqual(true)
+        expect(tuned.window > baseline.window):toEqual(true)
+        expect(tuned.statsSlackDebt):toBeTruthy()
+        expect(tuned.statsBurstFatigue):toBeGreaterThanOrEqual(0)
+        expect(tuned.statsImmediatePressure):toBeGreaterThanOrEqual(0)
+
+        autoparry.destroy()
+    end)
+
+    t.test("oscillation spam eases when adaptive relief builds", function(expect)
+        local autoparry = loadAutoparry()
+        local defaults = autoparry.getConfig()
+
+        local baseline = autoparry._testEvaluateOscillationBurstTuning({
+            decision = {
+                predictedImpact = 0.17,
+                timeUntilPress = 0.17,
+                scheduleSlack = defaults.pressScheduleSlack,
+                confidence = 0.76,
+            },
+        })
+
+        local summary = TelemetryTestUtils.buildSummary(nil, {
+            pressCount = 60,
+            scheduleCount = 60,
+            averageScheduleSlack = defaults.pressScheduleSlack * 1.6,
+            averageWaitDelta = -0.02,
+            immediateRate = 0.08,
+            successRate = 0.99,
+            averageReactionTime = math.max(defaults.pressReactionBias * 0.7, 0.003),
+            scheduleLookaheadP10 = defaults.pressScheduleSlack * 1.5,
+            scheduleLookaheadMin = defaults.oscillationSpamMinGap * 1.4,
+        })
+
+        local tuned = autoparry._testEvaluateOscillationBurstTuning({
+            decision = {
+                predictedImpact = 0.2,
+                timeUntilPress = 0.2,
+                scheduleSlack = defaults.pressScheduleSlack * 1.45,
+                confidence = 0.7,
+            },
+            summary = summary,
+        })
+
+        expect(tuned.gap):toBeGreaterThanOrEqual(baseline.gap)
+        expect(tuned.window):toBeGreaterThanOrEqual(baseline.window)
+        expect(tuned.statsSlackRelief):toBeTruthy()
+        expect(tuned.statsImmediateRelief):toBeGreaterThanOrEqual(0)
+        expect(tuned.statsBurstFatigue == nil or tuned.statsBurstFatigue <= (tuned.statsSlackRelief or 0) + 3):toEqual(true)
 
         autoparry.destroy()
     end)
