@@ -1,0 +1,456 @@
+{
+  "payload": {
+    "diagnostics": {
+      "insights": {
+        "focus": 0.91,
+        "stability": 0.77
+      },
+      "recommendations": [
+        {
+          "deltas": {
+            "pressReactionBias": 0.002,
+            "pressScheduleSlack": -0.001
+          },
+          "source": "unit-test"
+        }
+      ],
+      "summary": {
+        "achievedLeadMean": 0.035,
+        "adaptiveBias": 0.01,
+        "averageActivationLatency": 0.14,
+        "averageLatency": 0.14,
+        "averageWaitDelta": 0.016,
+        "cancellationCount": 0,
+        "immediateCount": 1,
+        "immediateRate": 0.5,
+        "latencyCount": 3,
+        "leadDeltaMean": -0.012,
+        "pressCount": 6,
+        "scheduleCount": 5,
+        "scheduleLifetimeMean": 0.042,
+        "topCancellationCount": 0
+      }
+    },
+    "events": [
+      {
+        "reason": "baseline",
+        "rules": {
+          "highlight": true
+        },
+        "sequence": 40,
+        "target": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 92
+          },
+          "velocity": {
+            "x": 0,
+            "y": 0,
+            "z": -160
+          }
+        },
+        "time": 1.04,
+        "type": "schedule"
+      },
+      {
+        "decision": {
+          "manifold": 0.46,
+          "simulation": {
+            "orientation": {
+              "cframe": [
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1,
+                0,
+                0,
+                0,
+                1
+              ]
+            },
+            "peakIntrusion": 0.31,
+            "urgency": 0.64
+          },
+          "threatIntensity": 0.72,
+          "threatTempo": 34
+        },
+        "decisionToPressTime": 0.018,
+        "kinematics": {
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 78
+          },
+          "velocity": {
+            "x": 0,
+            "y": 0,
+            "z": -162
+          }
+        },
+        "reactionTime": 0.124,
+        "sequence": 41,
+        "time": 1.168,
+        "type": "press"
+      }
+    ],
+    "generatedAt": 123.456,
+    "metadata": {
+      "runId": "telemetry-exporter-spec",
+      "version": 2
+    },
+    "parryLog": [
+      {
+        "ball": {
+          "name": "BaselineThreat",
+          "position": {
+            "x": 0,
+            "y": 0,
+            "z": 78
+          },
+          "velocity": {
+            "x": 0,
+            "y": 0,
+            "z": -162
+          }
+        },
+        "timestamp": 1.168
+      },
+      {
+        "ball": "LegacyBallId",
+        "timestamp": 1.312
+      }
+    ],
+    "smartTuning": {
+      "applied": {
+        "confidencePadding": 0.19,
+        "reactionBias": 0.019,
+        "scheduleSlack": 0.013
+      },
+      "base": {
+        "confidencePadding": 0.2,
+        "reactionBias": 0.02,
+        "scheduleSlack": 0.015
+      },
+      "enabled": true,
+      "mu": 0.03,
+      "sigma": 0.4,
+      "target": {
+        "confidencePadding": 0.18,
+        "reactionBias": 0.018,
+        "scheduleSlack": 0.012
+      }
+    },
+    "telemetry": {
+      "activationLatency": 0.08,
+      "adaptiveState": {
+        "lastUpdate": 0,
+        "reactionBias": 0.01
+      },
+      "history": [
+        {
+          "reason": "baseline",
+          "rules": {
+            "highlight": true
+          },
+          "sequence": 40,
+          "target": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 92
+            },
+            "velocity": {
+              "x": 0,
+              "y": 0,
+              "z": -160
+            }
+          },
+          "time": 1.04,
+          "type": "schedule"
+        },
+        {
+          "decision": {
+            "manifold": 0.46,
+            "simulation": {
+              "orientation": {
+                "cframe": [
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  1,
+                  0,
+                  0,
+                  0,
+                  1
+                ]
+              },
+              "peakIntrusion": 0.31,
+              "urgency": 0.64
+            },
+            "threatIntensity": 0.72,
+            "threatTempo": 34
+          },
+          "decisionToPressTime": 0.018,
+          "kinematics": {
+            "position": {
+              "x": 0,
+              "y": 0,
+              "z": 78
+            },
+            "velocity": {
+              "x": 0,
+              "y": 0,
+              "z": -162
+            }
+          },
+          "reactionTime": 0.124,
+          "sequence": 41,
+          "time": 1.168,
+          "type": "press"
+        }
+      ],
+      "lastEvent": {
+        "reactionTime": 0.124,
+        "sequence": 41,
+        "time": 1.168,
+        "type": "press"
+      },
+      "remoteLatencyActive": true,
+      "sequence": 42,
+      "smartTuning": {
+        "applied": {
+          "confidencePadding": 0.19,
+          "reactionBias": 0.019,
+          "scheduleSlack": 0.013
+        },
+        "base": {
+          "confidencePadding": 0.2,
+          "reactionBias": 0.02,
+          "scheduleSlack": 0.015
+        },
+        "enabled": true,
+        "mu": 0.03,
+        "sigma": 0.4,
+        "target": {
+          "confidencePadding": 0.18,
+          "reactionBias": 0.018,
+          "scheduleSlack": 0.012
+        }
+      },
+      "stats": {
+        "adaptiveState": {
+          "lastUpdate": 0,
+          "reactionBias": 0.01
+        },
+        "cancellations": {
+          "reasonCounts": {},
+          "stale": 0,
+          "total": 0
+        },
+        "counters": {
+          "latency": 3,
+          "press": 6,
+          "schedule": 5
+        },
+        "latency": {
+          "accepted": {
+            "count": 4,
+            "mean": 0.14
+          },
+          "activation": {
+            "count": 4,
+            "mean": 0.14
+          },
+          "counters": {
+            "accepted": 4,
+            "localSamples": 2,
+            "rejected": 0,
+            "remoteSamples": 2
+          },
+          "localAccepted": {
+            "count": 2,
+            "mean": 0.13
+          },
+          "remoteAccepted": {
+            "count": 2,
+            "mean": 0.15
+          }
+        },
+        "press": {
+          "activationLatency": {
+            "count": 8,
+            "mean": 0.12
+          },
+          "actualWait": {
+            "count": 8,
+            "mean": 0.032
+          },
+          "adaptiveBias": {
+            "count": 8,
+            "mean": 0.01
+          },
+          "forcedCount": 0,
+          "immediateCount": 1,
+          "scheduledCount": 8,
+          "smart": {},
+          "unscheduledCount": 0,
+          "waitDelta": {
+            "count": 8,
+            "mean": 0.016
+          }
+        },
+        "timeline": {
+          "achievedLead": {
+            "count": 8,
+            "mean": 0.035
+          },
+          "leadDelta": {
+            "count": 8,
+            "mean": -0.012
+          },
+          "scheduleLifetime": {
+            "count": 8,
+            "mean": 0.042
+          }
+        }
+      }
+    },
+    "version": 1
+  },
+  "trace": {
+    "agents": [
+      "player"
+    ],
+    "metadata": {
+      "frequency": 240
+    },
+    "projectiles": [
+      "BaselineThreat"
+    ],
+    "rules": [
+      "highlight-gate",
+      "cooldown-guard"
+    ],
+    "steps": [
+      [
+        0,
+        [
+          [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            0,
+            0,
+            100,
+            0,
+            0,
+            -160,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            true
+          ],
+          [
+            2,
+            false
+          ]
+        ]
+      ],
+      [
+        0.008333333333333333,
+        [
+          [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            0,
+            0,
+            98.66600036621094,
+            0,
+            0,
+            -160,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            false
+          ],
+          [
+            2,
+            true
+          ]
+        ]
+      ],
+      [
+        0.45,
+        [
+          [
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ]
+        ],
+        [
+          [
+            1,
+            0,
+            0,
+            28,
+            0,
+            0,
+            -165,
+            1
+          ]
+        ],
+        [
+          [
+            1,
+            false
+          ],
+          [
+            2,
+            true
+          ]
+        ]
+      ]
+    ],
+    "version": 1
+  },
+  "tolerances": {}
+}

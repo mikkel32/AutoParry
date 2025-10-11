@@ -800,9 +800,21 @@ def parse_env_overrides(items: Optional[Sequence[str]]) -> Dict[str, str]:
 def clear_artifacts() -> None:
     if not ARTIFACTS_DIR.exists():
         return
+    baseline_dir = ARTIFACTS_DIR / "engine" / "baselines"
     for path in ARTIFACTS_DIR.iterdir():
         try:
+            if path == baseline_dir:
+                continue
             if path.is_dir():
+                if path == ARTIFACTS_DIR / "engine" and baseline_dir.exists():
+                    for child in path.iterdir():
+                        if child == baseline_dir:
+                            continue
+                        if child.is_dir():
+                            shutil.rmtree(child)
+                        else:
+                            child.unlink()
+                    continue
                 shutil.rmtree(path)
             else:
                 path.unlink()
