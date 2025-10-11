@@ -91,6 +91,9 @@
           },
           "IntelSpec": {
             "$path": "../engine/intel.spec.lua"
+          },
+          "TelemetryExporterSpec": {
+            "$path": "../engine/telemetry_exporter.spec.lua"
           }
         }
       }

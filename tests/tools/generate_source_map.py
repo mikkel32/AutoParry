@@ -23,6 +23,12 @@ def iter_source_entries(root: Path) -> Iterable[Tuple[str, Path]]:
     for relative, path_str in ROOT_RELATIVE_PATHS:
         yield relative, root / path_str
 
+    baselines_root = root / "tests" / "artifacts" / "engine" / "baselines"
+    if baselines_root.exists():
+        for path in sorted(baselines_root.rglob("*.json")):
+            relative = path.relative_to(root).as_posix()
+            yield relative, path
+
 
 def compute_digest(contents: str) -> str:
     return hashlib.sha1(contents.encode("utf-8")).hexdigest()
