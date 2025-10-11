@@ -256,6 +256,11 @@ local Constants = {
     VR_SIGN_EPSILON = 1e-3,
     OSCILLATION_HISTORY_SECONDS = 0.6,
     TARGETING_GRACE_SECONDS = 0.2,
+    TARGETING_SAFE_DROP_GRACE = 0.035,
+    TARGETING_SAFE_RETARGET_DELAY = 0.02,
+    TARGETING_SAFE_MAX_SECONDS = 0,
+    TARGETING_SAFE_HISTORY_LIMIT = 20,
+    TARGETING_SAFE_OBSERVATION_LIMIT = 40,
     SIMULATION_MIN_STEPS = 12,
     SIMULATION_MAX_STEPS = 72,
     SIMULATION_RESOLUTION = 1 / 180,
@@ -512,6 +517,9 @@ local Context = {
         targetingHighlightGraceActive = false,
         targetingHighlightPulseQueue = nil :: { number }?,
         targetingHighlightDropQueue = nil :: { number }?,
+        targetingSafeState = { active = false },
+        targetingLastPulse = 0,
+        targetingLastDrop = 0,
         targetingSpamSuspendedUntil = 0,
         transientRetryActive = false,
         transientRetryCount = 0,
@@ -10666,6 +10674,506 @@ function Helpers.getPlayerRadialVelocity(unit: Vector3?)
     return unit:Dot(velocity)
 end
 
+function Helpers.getTargetingSafeState()
+    local runtime = Context.runtime
+    local safeState = runtime and runtime.targetingSafeState or nil
+    if typeof(safeState) ~= "table" then
+        safeState = {
+            active = false,
+            startedAt = 0,
+            lastPulseAt = -math.huge,
+            lastDropAt = -math.huge,
+            requireDrop = false,
+            dropObserved = false,
+            ballId = nil,
+            lastEvaluation = 0,
+            clearedAt = 0,
+            reason = nil,
+            history = {},
+            observations = {},
+            lastObservation = nil,
+        }
+        if runtime then
+            runtime.targetingSafeState = safeState
+        end
+    end
+
+    if typeof(safeState.history) ~= "table" then
+        safeState.history = {}
+    end
+
+    if typeof(safeState.observations) ~= "table" then
+        safeState.observations = {}
+    end
+
+    if safeState.lastObservation ~= nil and typeof(safeState.lastObservation) ~= "table" then
+        safeState.lastObservation = nil
+    end
+
+    return safeState
+end
+
+function Helpers.appendTargetingSafeHistory(safeState, entry)
+    if typeof(safeState) ~= "table" or typeof(entry) ~= "table" then
+        return
+    end
+
+    local history = safeState.history
+    if typeof(history) ~= "table" then
+        history = {}
+        safeState.history = history
+    end
+
+    history[#history + 1] = Helpers.cloneTable(entry)
+
+    local limit = Constants.TARGETING_SAFE_HISTORY_LIMIT
+    if Helpers.isFiniteNumber(limit) and limit > 0 then
+        while #history > limit do
+            table.remove(history, 1)
+        end
+    end
+end
+
+function Helpers.recordTargetingSafeObservation(safeState, observation)
+    if typeof(safeState) ~= "table" or typeof(observation) ~= "table" then
+        return nil
+    end
+
+    local clone = Helpers.cloneTable(observation)
+    if clone.at == nil then
+        clone.at = os.clock()
+    end
+
+    local observations = safeState.observations
+    if typeof(observations) ~= "table" then
+        observations = {}
+        safeState.observations = observations
+    end
+
+    observations[#observations + 1] = clone
+
+    local limit = Constants.TARGETING_SAFE_OBSERVATION_LIMIT or Constants.TARGETING_SAFE_HISTORY_LIMIT
+    if Helpers.isFiniteNumber(limit) and limit > 0 then
+        while #observations > limit do
+            table.remove(observations, 1)
+        end
+    end
+
+    safeState.lastObservation = clone
+    return clone
+end
+
+function Helpers.emitTargetingSafeTelemetry(safeState, stage, overrides)
+    if typeof(safeState) ~= "table" then
+        return
+    end
+
+    local payload = {
+        stage = stage,
+        active = safeState.active,
+        reason = safeState.reason,
+        ballId = safeState.ballId,
+        startedAt = safeState.startedAt,
+        lastPulseAt = safeState.lastPulseAt,
+        lastDropAt = safeState.lastDropAt,
+        requireDrop = safeState.requireDrop,
+        dropObserved = safeState.dropObserved,
+        lastObservation = safeState.lastObservation and Helpers.cloneTable(safeState.lastObservation) or nil,
+        observations = safeState.observations and Helpers.cloneTable(safeState.observations) or nil,
+    }
+
+    if typeof(overrides) == "table" then
+        for key, value in pairs(overrides) do
+            payload[key] = value
+        end
+    end
+
+    emitTelemetryEvent("targeting-safe-state", payload)
+end
+
+function Helpers.snapshotTargetingSafeState()
+    local safeState = Helpers.getTargetingSafeState()
+    local snapshot = Helpers.cloneTable(safeState)
+
+    if snapshot.observations then
+        snapshot.observations = Helpers.cloneTable(snapshot.observations)
+    end
+
+    if snapshot.history then
+        snapshot.history = Helpers.cloneTable(snapshot.history)
+    end
+
+    if snapshot.lastObservation then
+        snapshot.lastObservation = Helpers.cloneTable(snapshot.lastObservation)
+    end
+
+    return snapshot
+end
+
+function Helpers.clearTargetingSafeState(reason: string?, now: number?)
+    local safeState = Helpers.getTargetingSafeState()
+    if not safeState.active then
+        if reason ~= nil then
+            safeState.reason = reason
+        end
+        return safeState
+    end
+
+    now = now or os.clock()
+
+    local previousBallId = safeState.ballId
+    local previousRequireDrop = safeState.requireDrop
+    local previousDropObserved = safeState.dropObserved
+    local previousStartedAt = safeState.startedAt
+    local previousLastPulse = safeState.lastPulseAt
+    local previousLastDrop = safeState.lastDropAt
+
+    local resolvedReason = reason or "cleared"
+    local clearedObservation = Helpers.recordTargetingSafeObservation(safeState, {
+        event = "cleared",
+        at = now,
+        reason = resolvedReason,
+        ballId = previousBallId,
+        dropObserved = previousDropObserved,
+        requireDrop = previousRequireDrop,
+    })
+
+    local historyEntry = {
+        state = "cleared",
+        at = now,
+        reason = resolvedReason,
+        ballId = previousBallId,
+        dropObserved = previousDropObserved,
+        requireDrop = previousRequireDrop,
+        startedAt = previousStartedAt,
+        lastPulseAt = previousLastPulse,
+        lastDropAt = previousLastDrop,
+        observations = safeState.observations and Helpers.cloneTable(safeState.observations) or nil,
+    }
+
+    Helpers.appendTargetingSafeHistory(safeState, historyEntry)
+    Helpers.emitTargetingSafeTelemetry(safeState, "cleared", {
+        reason = resolvedReason,
+        historyEntry = Helpers.cloneTable(historyEntry),
+        observation = clearedObservation and Helpers.cloneTable(clearedObservation) or nil,
+    })
+
+    safeState.active = false
+    safeState.clearedAt = now
+    safeState.reason = resolvedReason
+    safeState.requireDrop = false
+    safeState.dropObserved = false
+    safeState.ballId = nil
+    safeState.observations = {}
+    safeState.lastObservation = nil
+    if not Helpers.isFiniteNumber(safeState.lastPulseAt) then
+        safeState.lastPulseAt = -math.huge
+    end
+    if not Helpers.isFiniteNumber(safeState.lastDropAt) then
+        safeState.lastDropAt = -math.huge
+    end
+
+    return safeState
+end
+
+function Helpers.activateTargetingSafeState(ballId: string?, telemetry, now: number?)
+    now = now or os.clock()
+    local runtime = Context.runtime
+    local safeState = Helpers.getTargetingSafeState()
+
+    local lastPulse = runtime and runtime.targetingLastPulse or nil
+    local lastDrop = runtime and runtime.targetingLastDrop or nil
+
+    if telemetry then
+        if Helpers.isFiniteNumber(telemetry.lastTargetingPulse) then
+            lastPulse = telemetry.lastTargetingPulse
+        end
+        if Helpers.isFiniteNumber(telemetry.lastTargetingDrop) then
+            lastDrop = telemetry.lastTargetingDrop
+        end
+    end
+
+    safeState.active = true
+    safeState.startedAt = now
+    safeState.lastEvaluation = now
+    safeState.ballId = ballId
+    safeState.clearedAt = nil
+    safeState.reason = "awaiting-drop"
+    safeState.dropObserved = false
+    safeState.requireDrop = true
+    safeState.observations = {}
+    safeState.lastObservation = nil
+
+    if runtime and runtime.targetingHighlightPresent ~= true then
+        safeState.requireDrop = false
+    elseif telemetry and telemetry.targetingActive ~= true then
+        safeState.requireDrop = false
+    end
+
+    local dropGrace = Constants.TARGETING_SAFE_DROP_GRACE or 0
+    if Helpers.isFiniteNumber(lastDrop) then
+        safeState.lastDropAt = lastDrop
+        if dropGrace > 0 and lastDrop >= now - dropGrace then
+            safeState.requireDrop = false
+            safeState.dropObserved = true
+        end
+    else
+        safeState.lastDropAt = -math.huge
+    end
+
+    local dropQueue = runtime and runtime.targetingHighlightDropQueue
+    if typeof(dropQueue) == "table" and #dropQueue > 0 then
+        local latestDrop = dropQueue[#dropQueue]
+        if Helpers.isFiniteNumber(latestDrop) then
+            if latestDrop > (safeState.lastDropAt or -math.huge) then
+                safeState.lastDropAt = latestDrop
+            end
+            if dropGrace > 0 and latestDrop >= now - dropGrace then
+                safeState.requireDrop = false
+                safeState.dropObserved = true
+            end
+        end
+    end
+
+    if Helpers.isFiniteNumber(lastPulse) then
+        safeState.lastPulseAt = lastPulse
+    else
+        safeState.lastPulseAt = -math.huge
+    end
+
+    if not safeState.requireDrop then
+        if not safeState.dropObserved and Helpers.isFiniteNumber(safeState.lastDropAt) then
+            if dropGrace > 0 and safeState.lastDropAt >= now - dropGrace then
+                safeState.dropObserved = true
+            end
+        end
+        safeState.reason = "awaiting-retarget"
+    end
+
+    Helpers.appendTargetingSafeHistory(safeState, {
+        state = "activated",
+        at = now,
+        ballId = ballId,
+        requireDrop = safeState.requireDrop,
+        dropObserved = safeState.dropObserved,
+        lastPulseAt = safeState.lastPulseAt,
+        lastDropAt = safeState.lastDropAt,
+    })
+
+    local activationEntry = Helpers.recordTargetingSafeObservation(safeState, {
+        event = "activated",
+        at = now,
+        ballId = ballId,
+        requireDrop = safeState.requireDrop,
+        dropObserved = safeState.dropObserved,
+        highlightPresent = runtime and runtime.targetingHighlightPresent == true or telemetry and telemetry.targetingActive == true or false,
+        lastPulseAt = safeState.lastPulseAt,
+        lastDropAt = safeState.lastDropAt,
+    })
+
+    Helpers.emitTargetingSafeTelemetry(safeState, "activated", {
+        entry = activationEntry and Helpers.cloneTable(activationEntry) or nil,
+    })
+
+    if safeState.dropObserved and Helpers.isFiniteNumber(safeState.lastDropAt) then
+        local dropEntry = Helpers.recordTargetingSafeObservation(safeState, {
+            event = "drop",
+            at = safeState.lastDropAt,
+            source = "activation",
+            requireDrop = safeState.requireDrop,
+        })
+        Helpers.emitTargetingSafeTelemetry(safeState, "drop-observed", {
+            observedAt = safeState.lastDropAt,
+            entry = dropEntry and Helpers.cloneTable(dropEntry) or nil,
+        })
+    end
+
+    return safeState
+end
+
+function Helpers.applyTargetingSafeState(decision, telemetry, now: number?, ballId: string?)
+    local safeState = Helpers.getTargetingSafeState()
+    if not safeState.active then
+        return false, safeState
+    end
+
+    now = now or os.clock()
+
+    if safeState.ballId ~= nil and ballId ~= nil and safeState.ballId ~= ballId then
+        local observation = Helpers.recordTargetingSafeObservation(safeState, {
+            event = "ball-changed",
+            at = now,
+            previousBallId = safeState.ballId,
+            newBallId = ballId,
+        })
+        Helpers.emitTargetingSafeTelemetry(safeState, "ball-changed", {
+            previousBallId = safeState.ballId,
+            newBallId = ballId,
+            observation = observation and Helpers.cloneTable(observation) or nil,
+        })
+        Helpers.clearTargetingSafeState("ball-changed", now)
+        return false, safeState
+    end
+
+    local runtime = Context.runtime
+    local dropGrace = Constants.TARGETING_SAFE_DROP_GRACE or 0
+    local retargetDelay = Constants.TARGETING_SAFE_RETARGET_DELAY or 0
+
+    local dropTime = telemetry and telemetry.lastTargetingDrop or nil
+    if not Helpers.isFiniteNumber(dropTime) and runtime then
+        dropTime = runtime.targetingLastDrop
+    end
+
+    if Helpers.isFiniteNumber(dropTime) then
+        local previousDropAt = safeState.lastDropAt or -math.huge
+        local source
+        if telemetry and Helpers.isFiniteNumber(telemetry.lastTargetingDrop) and telemetry.lastTargetingDrop == dropTime then
+            source = "telemetry"
+        elseif runtime and Helpers.isFiniteNumber(runtime.targetingLastDrop) and runtime.targetingLastDrop == dropTime then
+            source = "runtime"
+        end
+        if dropTime >= safeState.startedAt - dropGrace then
+            local isNewObservation = not safeState.dropObserved or math.abs(dropTime - previousDropAt) > Constants.EPSILON
+            safeState.dropObserved = true
+            safeState.requireDrop = false
+            safeState.lastDropAt = dropTime
+            safeState.reason = "awaiting-retarget"
+            if isNewObservation then
+                local entry = Helpers.recordTargetingSafeObservation(safeState, {
+                    event = "drop",
+                    at = dropTime,
+                    source = source,
+                    requireDrop = safeState.requireDrop,
+                })
+                Helpers.emitTargetingSafeTelemetry(safeState, "drop-observed", {
+                    observedAt = dropTime,
+                    entry = entry and Helpers.cloneTable(entry) or nil,
+                })
+            end
+        elseif dropTime > previousDropAt then
+            safeState.lastDropAt = dropTime
+            local entry = Helpers.recordTargetingSafeObservation(safeState, {
+                event = "drop-update",
+                at = dropTime,
+                source = source,
+            })
+            Helpers.emitTargetingSafeTelemetry(safeState, "drop-update", {
+                observedAt = dropTime,
+                entry = entry and Helpers.cloneTable(entry) or nil,
+            })
+        end
+    end
+
+    local pulseTime = telemetry and telemetry.lastTargetingPulse or nil
+    if not Helpers.isFiniteNumber(pulseTime) and runtime then
+        pulseTime = runtime.targetingLastPulse
+    end
+
+    if Helpers.isFiniteNumber(pulseTime) then
+        local previousPulse = safeState.lastPulseAt or -math.huge
+        if pulseTime > previousPulse then
+            safeState.lastPulseAt = pulseTime
+            local dropAnchor = safeState.lastDropAt or safeState.startedAt
+            local pulseEntry = Helpers.recordTargetingSafeObservation(safeState, {
+                event = "pulse",
+                at = pulseTime,
+                dropAnchor = dropAnchor,
+                dropObserved = safeState.dropObserved,
+                requireDrop = safeState.requireDrop,
+            })
+            if not safeState.requireDrop or safeState.dropObserved then
+                if retargetDelay <= 0 or pulseTime >= dropAnchor + retargetDelay then
+                    Helpers.emitTargetingSafeTelemetry(safeState, "retargeted", {
+                        pulseTime = pulseTime,
+                        dropAnchor = dropAnchor,
+                        entry = pulseEntry and Helpers.cloneTable(pulseEntry) or nil,
+                    })
+                    Helpers.clearTargetingSafeState("retargeted", now)
+                    return false, safeState
+                end
+            elseif retargetDelay > 0 and pulseTime >= safeState.startedAt + retargetDelay * 2 then
+                Helpers.emitTargetingSafeTelemetry(safeState, "retarget-pulse", {
+                    pulseTime = pulseTime,
+                    entry = pulseEntry and Helpers.cloneTable(pulseEntry) or nil,
+                })
+                Helpers.clearTargetingSafeState("retarget-pulse", now)
+                return false, safeState
+            end
+        end
+    end
+
+    local detectionAt = telemetry and telemetry.targetDetectedAt or nil
+    if Helpers.isFiniteNumber(detectionAt) then
+        if detectionAt > safeState.startedAt and (safeState.dropObserved or not safeState.requireDrop) then
+            if retargetDelay <= 0 or detectionAt >= safeState.startedAt + retargetDelay then
+                local detectionEntry = Helpers.recordTargetingSafeObservation(safeState, {
+                    event = "detection",
+                    at = detectionAt,
+                    dropObserved = safeState.dropObserved,
+                    requireDrop = safeState.requireDrop,
+                })
+                Helpers.emitTargetingSafeTelemetry(safeState, "retarget-detection", {
+                    detectionTime = detectionAt,
+                    entry = detectionEntry and Helpers.cloneTable(detectionEntry) or nil,
+                })
+                Helpers.clearTargetingSafeState("retarget-detection", now)
+                return false, safeState
+            end
+        end
+    end
+
+    local maxSafe = Constants.TARGETING_SAFE_MAX_SECONDS
+    if Helpers.isFiniteNumber(maxSafe) and maxSafe > 0 then
+        if now - safeState.startedAt >= maxSafe then
+            local timeoutEntry = Helpers.recordTargetingSafeObservation(safeState, {
+                event = "timeout",
+                at = now,
+                maxSafe = maxSafe,
+            })
+            Helpers.emitTargetingSafeTelemetry(safeState, "safe-timeout", {
+                timeout = maxSafe,
+                entry = timeoutEntry and Helpers.cloneTable(timeoutEntry) or nil,
+            })
+            Helpers.clearTargetingSafeState("safe-timeout", now)
+            return false, safeState
+        end
+    end
+
+    safeState.lastEvaluation = now
+    if safeState.dropObserved then
+        safeState.reason = "awaiting-retarget"
+    else
+        safeState.reason = "awaiting-drop"
+    end
+
+    if decision then
+        decision.targetingMe = false
+        decision.shouldPress = false
+        decision.shouldSchedule = false
+        decision.shouldDelay = false
+        decision.shouldHold = false
+        decision.safeSuppressed = true
+        decision.safeSuppressedReason = safeState.reason
+    end
+
+    if telemetry then
+        telemetry.safeGuardActive = true
+        telemetry.safeGuardStartedAt = safeState.startedAt
+        telemetry.safeGuardDropObserved = safeState.dropObserved
+        telemetry.safeGuardBallId = safeState.ballId
+        telemetry.safeGuardReason = safeState.reason
+        telemetry.safeGuardRequireDrop = safeState.requireDrop
+        telemetry.safeGuardLastPulse = safeState.lastPulseAt
+        telemetry.safeGuardLastDrop = safeState.lastDropAt
+        telemetry.safeGuardLastEvaluation = safeState.lastEvaluation
+        telemetry.safeGuardObservations = safeState.observations and Helpers.cloneTable(safeState.observations) or nil
+        telemetry.safeGuardLastObservation = safeState.lastObservation and Helpers.cloneTable(safeState.lastObservation) or nil
+        telemetry.safeGuardHistory = safeState.history and Helpers.cloneTable(safeState.history) or nil
+    end
+
+    return true, safeState
+end
+
 function Helpers.isTargetingMe(now)
     if not Context.player.Character then
         Context.runtime.targetingGraceUntil = 0
@@ -10703,6 +11211,7 @@ function Helpers.isTargetingMe(now)
         end
         runtime.targetingHighlightGraceActive = false
         runtime.targetingGraceUntil = now + Constants.TARGETING_GRACE_SECONDS
+        runtime.targetingLastPulse = now
         return true
     end
 
@@ -10714,6 +11223,7 @@ function Helpers.isTargetingMe(now)
             runtime.targetingHighlightDropQueue = dropQueue
         end
         dropQueue[#dropQueue + 1] = now
+        runtime.targetingLastDrop = now
     end
 
     if runtime.targetingGraceUntil > now then
@@ -10722,6 +11232,7 @@ function Helpers.isTargetingMe(now)
     end
 
     runtime.targetingHighlightGraceActive = false
+    runtime.targetingLastDrop = math.max(runtime.targetingLastDrop or 0, now)
     return false
 end
 
@@ -11607,6 +12118,8 @@ function Helpers.pressParry(ball: BasePart?, ballId: string?, force: boolean?, d
         end
     end
 
+    Helpers.activateTargetingSafeState(ballId, telemetry, now)
+
     TelemetryAnalytics.recordPress(pressEvent, scheduledSnapshot)
     local clonedPressEvent = Helpers.cloneTelemetryEvent(pressEvent)
     if typeof(clonedPressEvent) == "table" then
@@ -11660,6 +12173,7 @@ function Helpers.handleHumanoidDied()
     Helpers.safeCall(Helpers.safeClearBallVisuals)
     Helpers.safeCall(Helpers.enterRespawnWaitState)
     Helpers.safeCall(Helpers.updateCharacter, nil)
+    Helpers.clearTargetingSafeState("humanoid-died")
     Helpers.callImmortalController("handleHumanoidDied")
 end
 
@@ -11668,6 +12182,7 @@ function Helpers.updateCharacter(character)
     Context.player.RootPart = nil
     Context.player.Humanoid = nil
     Context.runtime.targetingGraceUntil = 0
+    Helpers.clearTargetingSafeState("character-update")
 
     if Context.connections.humanoidDied then
         Context.connections.humanoidDied:Disconnect()
@@ -13867,6 +14382,7 @@ function Helpers.renderLoop()
         Context.hooks.updateStatusLabel({ "Auto-Parry F", "Status: OFF" })
         Helpers.safeClearBallVisuals()
         Helpers.updateToggleButton()
+        Helpers.clearTargetingSafeState("disabled")
         Helpers.resetSpamBurst("disabled")
         return
     end
@@ -13948,6 +14464,24 @@ function Helpers.renderLoop()
         end
     end
 
+    local safeSuppressed, safeState = Helpers.applyTargetingSafeState(decision, telemetry, now, ballId)
+    if safeSuppressed then
+        Helpers.clearScheduledPress(ballId, "safe-guard")
+    elseif telemetry then
+        telemetry.safeGuardActive = nil
+        telemetry.safeGuardReason = nil
+        telemetry.safeGuardStartedAt = nil
+        telemetry.safeGuardDropObserved = nil
+        telemetry.safeGuardBallId = nil
+        telemetry.safeGuardRequireDrop = nil
+        telemetry.safeGuardLastPulse = nil
+        telemetry.safeGuardLastDrop = nil
+        telemetry.safeGuardLastEvaluation = nil
+        telemetry.safeGuardObservations = nil
+        telemetry.safeGuardLastObservation = nil
+        telemetry.safeGuardHistory = nil
+    end
+
     local fired = false
     local released = false
 
@@ -13955,29 +14489,31 @@ function Helpers.renderLoop()
     local spamFallback = false
     if telemetry then
         Helpers.updateTargetingAggressionMemory(telemetry, decision, kinematics, config, now)
-        oscillationTriggered = Helpers.evaluateOscillation(telemetry, now)
-        if oscillationTriggered and Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
-            if Helpers.shouldForceOscillationPress(decision, telemetry, now, config) then
-                spamFallback = Helpers.pressParry(ball, ballId, true, decision)
-                if spamFallback then
-                    telemetry.lastOscillationApplied = now
-                    Helpers.startSpamBurst(
-                        ballId,
-                        now,
-                        decision,
-                        telemetry,
-                        kinematics,
-                        nil,
-                        nil,
-                        decision and decision.selectionTuning
-                    )
+        if not safeSuppressed then
+            oscillationTriggered = Helpers.evaluateOscillation(telemetry, now)
+            if oscillationTriggered and Context.runtime.parryHeld and Context.runtime.parryHeldBallId == ballId then
+                if Helpers.shouldForceOscillationPress(decision, telemetry, now, config) then
+                    spamFallback = Helpers.pressParry(ball, ballId, true, decision)
+                    if spamFallback then
+                        telemetry.lastOscillationApplied = now
+                        Helpers.startSpamBurst(
+                            ballId,
+                            now,
+                            decision,
+                            telemetry,
+                            kinematics,
+                            nil,
+                            nil,
+                            decision and decision.selectionTuning
+                        )
+                    end
                 end
             end
         end
     end
 
     local targetingBurst
-    if telemetry then
+    if telemetry and not safeSuppressed then
         targetingBurst = Helpers.evaluateTargetingSpam(decision, telemetry, now, config, kinematics, ballId)
         if targetingBurst and targetingBurst.startBurst then
             local forced = false
@@ -14003,129 +14539,132 @@ function Helpers.renderLoop()
         end
     end
 
-    local spamBurstPress = Helpers.processSpamBurst(ball, ballId, now, decision, telemetry, kinematics)
-    if spamFallback or spamBurstPress then
-        fired = true
-        spamFallback = spamFallback or spamBurstPress
-    end
-
-    local existingSchedule = nil
-    if Context.scheduledPressState.ballId == ballId then
-        existingSchedule = Context.scheduledPressState
-        Context.scheduledPressState.lead = decision.scheduleLead
-        Context.scheduledPressState.slack = decision.scheduleSlack
-        local smartContext = decision.smartTelemetry or Context.scheduledPressState.smartTuning
-        if smartContext == nil and smartTuningState.enabled then
-            smartContext = Helpers.snapshotSmartTuningState()
+    local spamBurstPress = false
+    if not safeSuppressed then
+        spamBurstPress = Helpers.processSpamBurst(ball, ballId, now, decision, telemetry, kinematics)
+        if spamFallback or spamBurstPress then
+            fired = true
+            spamFallback = spamFallback or spamBurstPress
         end
-        if smartContext then
-            Context.scheduledPressState.smartTuning = smartContext
-        end
-    end
 
-    local smartReason = nil
-
-    if decision.shouldPress then
-        if decision.shouldSchedule then
-            smartReason = string.format(
-                "impact %.3f > lead %.3f (press in %.3f)",
-                decision.predictedImpact,
-                decision.scheduleLead,
-                math.max(decision.timeUntilPress, 0)
-            )
-            local scheduleContext = {
-                distance = kinematics.distance,
-                timeToImpact = decision.timeToImpact,
-                timeUntilPress = decision.timeUntilPress,
-                speed = kinematics.velocityMagnitude,
-                pressRadius = decision.pressRadius,
-                holdRadius = decision.holdRadius,
-                confidencePress = decision.confidencePress,
-                targeting = decision.targetingMe,
-                detectionReady = decision.detectionReady,
-                detectionAge = decision.detectionAge,
-                adaptiveBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or nil,
-                lookaheadGoal = decision.lookaheadGoal,
-                proximityManifold = decision.proximityManifold,
-                proximityLogistic = decision.proximityLogistic,
-                proximityEnvelope = decision.proximityEnvelope,
-                proximityUrgency = decision.proximitySimulationUrgency,
-                proximityEnergy = decision.proximitySimulationEnergy,
-                proximityDistanceSuppression = decision.proximityDistanceSuppression,
-                proximityVelocity = decision.proximityVelocityImprint,
-                proximitySimulation = Helpers.cloneTelemetryEvent(decision.proximitySimulation),
-                threatScore = decision.threatScore,
-                threatStatus = decision.threatStatus,
-                threatIntensity = decision.threatIntensity,
-                threatTempo = decision.threatTempo,
-                pingCompensation = decision.pingCompensation,
-                pingCompensationMinLead = decision.pingCompensationMinLead,
-                pingCompensationSlack = decision.pingCompensationSlack,
-                pingCompensationJitter = decision.pingCompensationJitter,
-                pingCompensationStress = decision.pingCompensationStress,
-                pingSeconds = decision.pingEffective,
-                pingFiltered = decision.pingFiltered,
-                pingRaw = decision.pingRaw,
-            }
+        local existingSchedule = nil
+        if Context.scheduledPressState.ballId == ballId then
+            existingSchedule = Context.scheduledPressState
+            Context.scheduledPressState.lead = decision.scheduleLead
+            Context.scheduledPressState.slack = decision.scheduleSlack
             local smartContext = decision.smartTelemetry or Context.scheduledPressState.smartTuning
             if smartContext == nil and smartTuningState.enabled then
                 smartContext = Helpers.snapshotSmartTuningState()
             end
             if smartContext then
-                scheduleContext.smartTuning = smartContext
-            end
-            Helpers.updateScheduledPress(
-                ballId,
-                decision.predictedImpact,
-                decision.scheduleLead,
-                decision.scheduleSlack,
-                smartReason,
-                now,
-                scheduleContext
-            )
-            existingSchedule = Context.scheduledPressState
-        elseif existingSchedule and not decision.shouldDelay then
-            Helpers.clearScheduledPress(ballId, "ready-to-press")
-            existingSchedule = nil
-        elseif existingSchedule and decision.shouldDelay and not decision.withinLookahead then
-            Helpers.clearScheduledPress(ballId, "outside-lookahead")
-            existingSchedule = nil
-        end
-
-        local activeSlack = (existingSchedule and existingSchedule.slack) or decision.scheduleSlack
-        local allowImmediate = decision.confidencePress
-        if not allowImmediate and not decision.shouldDelay then
-            local predictivePress = Helpers.isFiniteNumber(decision.predictedImpact) and decision.predictedImpact < math.huge
-            if predictivePress or decision.proximityPress then
-                allowImmediate = true
+                Context.scheduledPressState.smartTuning = smartContext
             end
         end
 
-        local readyToPress = allowImmediate
-        if not readyToPress and Helpers.isFiniteNumber(decision.predictedImpact) then
-            if decision.predictedImpact <= decision.scheduleLead + activeSlack then
-                readyToPress = true
-            end
-        end
+        local smartReason = nil
 
-        if not readyToPress and existingSchedule then
-            local pressAt = existingSchedule.pressAt or 0
-            if decision.detectionReady and now >= pressAt - activeSlack then
-                readyToPress = true
-            end
-        end
-
-        if readyToPress then
-            local pressed = Helpers.pressParry(ball, ballId, nil, decision)
-            fired = pressed or fired
-            if pressed then
+        if decision.shouldPress then
+            if decision.shouldSchedule then
+                smartReason = string.format(
+                    "impact %.3f > lead %.3f (press in %.3f)",
+                    decision.predictedImpact,
+                    decision.scheduleLead,
+                    math.max(decision.timeUntilPress, 0)
+                )
+                local scheduleContext = {
+                    distance = kinematics.distance,
+                    timeToImpact = decision.timeToImpact,
+                    timeUntilPress = decision.timeUntilPress,
+                    speed = kinematics.velocityMagnitude,
+                    pressRadius = decision.pressRadius,
+                    holdRadius = decision.holdRadius,
+                    confidencePress = decision.confidencePress,
+                    targeting = decision.targetingMe,
+                    detectionReady = decision.detectionReady,
+                    detectionAge = decision.detectionAge,
+                    adaptiveBias = TelemetryAnalytics.adaptiveState and TelemetryAnalytics.adaptiveState.reactionBias or nil,
+                    lookaheadGoal = decision.lookaheadGoal,
+                    proximityManifold = decision.proximityManifold,
+                    proximityLogistic = decision.proximityLogistic,
+                    proximityEnvelope = decision.proximityEnvelope,
+                    proximityUrgency = decision.proximitySimulationUrgency,
+                    proximityEnergy = decision.proximitySimulationEnergy,
+                    proximityDistanceSuppression = decision.proximityDistanceSuppression,
+                    proximityVelocity = decision.proximityVelocityImprint,
+                    proximitySimulation = Helpers.cloneTelemetryEvent(decision.proximitySimulation),
+                    threatScore = decision.threatScore,
+                    threatStatus = decision.threatStatus,
+                    threatIntensity = decision.threatIntensity,
+                    threatTempo = decision.threatTempo,
+                    pingCompensation = decision.pingCompensation,
+                    pingCompensationMinLead = decision.pingCompensationMinLead,
+                    pingCompensationSlack = decision.pingCompensationSlack,
+                    pingCompensationJitter = decision.pingCompensationJitter,
+                    pingCompensationStress = decision.pingCompensationStress,
+                    pingSeconds = decision.pingEffective,
+                    pingFiltered = decision.pingFiltered,
+                    pingRaw = decision.pingRaw,
+                }
+                local smartContext = decision.smartTelemetry or Context.scheduledPressState.smartTuning
+                if smartContext == nil and smartTuningState.enabled then
+                    smartContext = Helpers.snapshotSmartTuningState()
+                end
+                if smartContext then
+                    scheduleContext.smartTuning = smartContext
+                end
+                Helpers.updateScheduledPress(
+                    ballId,
+                    decision.predictedImpact,
+                    decision.scheduleLead,
+                    decision.scheduleSlack,
+                    smartReason,
+                    now,
+                    scheduleContext
+                )
+                existingSchedule = Context.scheduledPressState
+            elseif existingSchedule and not decision.shouldDelay then
+                Helpers.clearScheduledPress(ballId, "ready-to-press")
+                existingSchedule = nil
+            elseif existingSchedule and decision.shouldDelay and not decision.withinLookahead then
+                Helpers.clearScheduledPress(ballId, "outside-lookahead")
                 existingSchedule = nil
             end
-        end
-    else
-        if existingSchedule then
-            Helpers.clearScheduledPress(ballId, "conditions-changed")
-            existingSchedule = nil
+
+            local activeSlack = (existingSchedule and existingSchedule.slack) or decision.scheduleSlack
+            local allowImmediate = decision.confidencePress
+            if not allowImmediate and not decision.shouldDelay then
+                local predictivePress = Helpers.isFiniteNumber(decision.predictedImpact) and decision.predictedImpact < math.huge
+                if predictivePress or decision.proximityPress then
+                    allowImmediate = true
+                end
+            end
+
+            local readyToPress = allowImmediate
+            if not readyToPress and Helpers.isFiniteNumber(decision.predictedImpact) then
+                if decision.predictedImpact <= decision.scheduleLead + activeSlack then
+                    readyToPress = true
+                end
+            end
+
+            if not readyToPress and existingSchedule then
+                local pressAt = existingSchedule.pressAt or 0
+                if decision.detectionReady and now >= pressAt - activeSlack then
+                    readyToPress = true
+                end
+            end
+
+            if readyToPress then
+                local pressed = Helpers.pressParry(ball, ballId, nil, decision)
+                fired = pressed or fired
+                if pressed then
+                    existingSchedule = nil
+                end
+            end
+        else
+            if existingSchedule then
+                Helpers.clearScheduledPress(ballId, "conditions-changed")
+                existingSchedule = nil
+            end
         end
     end
 
@@ -14276,6 +14815,36 @@ function Helpers.renderLoop()
         string.format("ParryHeld: %s", tostring(Context.runtime.parryHeld)),
         string.format("Immortal: %s", tostring(state.immortalEnabled)),
     }
+
+    do
+        local activeSafe = safeState
+        if not activeSafe then
+            activeSafe = Helpers.getTargetingSafeState()
+        end
+        local safeLine
+        if decision.safeSuppressed then
+            local sinceText = "n/a"
+            if activeSafe and Helpers.isFiniteNumber(activeSafe.startedAt) then
+                sinceText = string.format("%.3f", math.max(now - activeSafe.startedAt, 0))
+            end
+            local dropStatus = "waiting-drop"
+            if activeSafe and activeSafe.dropObserved then
+                dropStatus = "awaiting-retarget"
+            end
+            local reasonText = decision.safeSuppressedReason or dropStatus
+            safeLine = string.format("SafeGuard: active | since %s | state %s", sinceText, reasonText)
+        elseif activeSafe and activeSafe.active then
+            local sinceText = "n/a"
+            if Helpers.isFiniteNumber(activeSafe.startedAt) then
+                sinceText = string.format("%.3f", math.max(now - activeSafe.startedAt, 0))
+            end
+            local dropStatus = activeSafe.dropObserved and "awaiting-retarget" or "waiting-drop"
+            safeLine = string.format("SafeGuard: armed | since %s | %s", sinceText, dropStatus)
+        else
+            safeLine = "SafeGuard: idle"
+        end
+        table.insert(debugLines, safeLine)
+    end
 
     local reactionLatencyText, decisionLatencyText, commitLatencyText =
         TelemetryAnalytics.computeLatencyReadouts(telemetry, now)
@@ -14739,6 +15308,17 @@ function AutoParry.resetConfig()
     return AutoParry.getConfig()
 end
 
+function AutoParry.getTargetingSafeState()
+    Helpers.ensureInitialization()
+    return Helpers.snapshotTargetingSafeState()
+end
+
+function AutoParry.clearTargetingSafeState(reason: string?)
+    Helpers.ensureInitialization()
+    local cleared = Helpers.clearTargetingSafeState(reason or "manual-clear")
+    return Helpers.snapshotTargetingSafeState()
+end
+
 function AutoParry.getLastParryTime()
     return state.lastParry
 end
@@ -14883,6 +15463,7 @@ function AutoParry.getTelemetrySnapshot()
         remoteLatencyActive = state.remoteEstimatorActive,
         lastEvent = telemetryStore.lastEvent and Helpers.cloneTelemetryEvent(telemetryStore.lastEvent) or nil,
         smartTuning = Helpers.snapshotSmartTuningState(),
+        targetingSafe = Helpers.snapshotTargetingSafeState(),
         stats = stats,
         adaptiveState = stats and stats.adaptiveState or telemetryStore.adaptiveState,
         summary = telemetryStore.summary and Helpers.cloneTable(telemetryStore.summary) or nil,
