@@ -138,6 +138,8 @@ return function(t)
         expect(((stats.press or {}).reactionTime or {}).count or 0):toBeGreaterThanOrEqual(1)
         expect(((stats.press or {}).decisionTime or {}).count or 0):toBeGreaterThanOrEqual(1)
         expect(((stats.press or {}).decisionToPressTime or {}).count or 0):toBeGreaterThanOrEqual(1)
+        expect(type(stats.performance) == "table"):toBeTruthy()
+        expect(((stats.performance or {}).ping or {}).count or 0):toBeGreaterThanOrEqual(1)
 
         local scheduleEvent = findEvent(events, "schedule")
         expect(scheduleEvent ~= nil):toBeTruthy()

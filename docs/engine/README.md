@@ -28,6 +28,23 @@ The harness automatically rebuilds the scenario modules and regenerates the test
 
 All suites rely on the compiled scenario modules and the generated Rojo place. Use `--skip-build` if you are iterating on the Lua launchers only and already have fresh artifacts.
 
+## Autoparry telemetry snapshots
+
+Every scenario run now exposes an `autoparry` payload alongside the existing
+physics telemetry. The runner calls the public AutoParry inspection APIs after
+each plan completes and stores the sanitised results under:
+
+- `scenario.autoparry` – full snapshot containing the current config, smart
+  press state, smart tuning payloads, telemetry history, diagnostics report,
+  adaptive state, and auto-tuning status.
+- `scenario.metrics.autoparry` – condensed overview with severity, key metrics,
+  sample counts, counters, adaptive bias, and any outstanding recommendations
+  or adjustments.
+
+These fields make the exported `engine_*` artifacts self-contained: you can
+inspect precise telemetry history, replay adjustments, or diff smart tuning
+decisions without needing to re-run the harness.
+
 ## Scenario compilation
 
 Scenario manifests live in `tests/scenarios/`. They are compiled to Luau modules via `tests/tools/compile_scenarios.lua`. The harness will invoke this compiler automatically, but you can run it manually:

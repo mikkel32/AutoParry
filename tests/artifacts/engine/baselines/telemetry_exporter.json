@@ -18,7 +18,28 @@
         "achievedLeadMean": 0.035,
         "adaptiveBias": 0.01,
         "averageActivationLatency": 0.14,
+        "averageFrameRate": 120,
+        "averageFrameStress": 0.3,
+        "averageFrameTime": 0.008333333333333333,
+        "averageHeartbeatTime": 0.008333333333333333,
         "averageLatency": 0.14,
+        "averageLatencyStress": 0.5,
+        "averageNetworkIn": 150,
+        "averageNetworkOut": 140,
+        "averageNetworkStress": 0.2,
+        "averagePerformanceStress": 0.6,
+        "averagePhysicsStep": 0.004166666666666667,
+        "averagePhysicsStress": 0.1,
+        "averagePing": 0.042,
+        "averagePingJitter": 0.004,
+        "averageScheduleLead": 0.052,
+        "averageSchedulePingCompensation": 0.018,
+        "averageSchedulePingEffective": 0.052,
+        "averageSchedulePingJitter": 0.003,
+        "averageSchedulePingMinLead": 0.012,
+        "averageSchedulePingSlack": 0.009,
+        "averageSchedulePingStress": 0.42,
+        "averageScheduleSlack": 0.014,
         "averageWaitDelta": 0.016,
         "cancellationCount": 0,
         "immediateCount": 1,
@@ -285,6 +306,60 @@
             "mean": 0.15
           }
         },
+        "performance": {
+          "frameRate": {
+            "count": 12,
+            "mean": 120
+          },
+          "frameTime": {
+            "count": 12,
+            "mean": 0.008333333333333333
+          },
+          "heartbeatTime": {
+            "count": 12,
+            "mean": 0.008333333333333333
+          },
+          "networkIn": {
+            "count": 12,
+            "mean": 150
+          },
+          "networkOut": {
+            "count": 12,
+            "mean": 140
+          },
+          "physicsStep": {
+            "count": 12,
+            "mean": 0.004166666666666667
+          },
+          "ping": {
+            "count": 12,
+            "mean": 0.042
+          },
+          "pingJitter": {
+            "count": 12,
+            "mean": 0.004
+          },
+          "stressFrame": {
+            "count": 12,
+            "mean": 0.3
+          },
+          "stressLatency": {
+            "count": 12,
+            "mean": 0.5
+          },
+          "stressNetwork": {
+            "count": 12,
+            "mean": 0.2
+          },
+          "stressPhysics": {
+            "count": 12,
+            "mean": 0.1
+          },
+          "stressTotal": {
+            "count": 12,
+            "mean": 0.6
+          }
+        },
         "press": {
           "activationLatency": {
             "count": 8,
@@ -308,6 +383,40 @@
             "mean": 0.016
           }
         },
+        "schedule": {
+          "lead": {
+            "count": 8,
+            "mean": 0.052
+          },
+          "pingCompensation": {
+            "count": 8,
+            "mean": 0.018
+          },
+          "pingCompensationJitter": {
+            "count": 8,
+            "mean": 0.003
+          },
+          "pingCompensationMinLead": {
+            "count": 8,
+            "mean": 0.012
+          },
+          "pingCompensationSlack": {
+            "count": 8,
+            "mean": 0.009
+          },
+          "pingCompensationStress": {
+            "count": 8,
+            "mean": 0.42
+          },
+          "pingEffective": {
+            "count": 8,
+            "mean": 0.052
+          },
+          "slack": {
+            "count": 8,
+            "mean": 0.014
+          }
+        },
         "timeline": {
           "achievedLead": {
             "count": 8,
@@ -326,6 +435,7 @@
     },
     "version": 1
   },
+  "tolerances": {},
   "trace": {
     "agents": [
       "player"
@@ -451,6 +561,5 @@
       ]
     ],
     "version": 1
-  },
-  "tolerances": {}
+  }
 }

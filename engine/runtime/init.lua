@@ -924,6 +924,36 @@ function Runtime.extractInternals(api)
     return internals
 end
 
+local function safeWaitForChild(container, childName, timeout)
+    if container == nil then
+        return nil
+    end
+
+    local waitForChild = container.WaitForChild
+    if typeof(waitForChild) == "function" then
+        local ok, child = pcall(waitForChild, container, childName, timeout)
+        if ok then
+            return child
+        end
+        warn("[runtime] WaitForChild", childName, "failed", child)
+    end
+
+    local findFirstChild = container.FindFirstChild
+    if typeof(findFirstChild) == "function" then
+        local ok, child = pcall(findFirstChild, container, childName)
+        if ok then
+            return child
+        end
+        warn("[runtime] FindFirstChild", childName, "failed", child)
+    end
+
+    if typeof(container) == "table" then
+        return container[childName]
+    end
+
+    return nil
+end
+
 local function findTestHarness(instance)
     local current = instance
     while current do
@@ -938,17 +968,38 @@ end
 local TestHarness = findTestHarness(script)
 local SourceMap
 if TestHarness then
-    local ok, module = pcall(function()
-        return TestHarness:WaitForChild("AutoParrySourceMap")
-    end)
-    if ok and module then
-        SourceMap = require(module)
+    local function resolveSourceMap(module)
+        if module == nil then
+            return nil
+        end
+
+        local ok, map = pcall(require, module)
+        if ok then
+            return map
+        end
+
+        warn("[runtime] failed to require AutoParrySourceMap", map)
+        return nil
+    end
+
+    SourceMap = resolveSourceMap(safeWaitForChild(TestHarness, "AutoParrySourceMap"))
+
+    if not SourceMap then
+        SourceMap = resolveSourceMap(TestHarness.AutoParrySourceMap)
     end
 end
 
 Runtime.SourceMap = SourceMap
 
-local Bootstrap = require(script:WaitForChild("bootstrap"))
+local bootstrapModule = safeWaitForChild(script, "bootstrap")
+if not bootstrapModule then
+    bootstrapModule = safeWaitForChild(script and script.Parent, "bootstrap")
+end
+if not bootstrapModule then
+    error("runtime bootstrap module missing", 0)
+end
+
+local Bootstrap = require(bootstrapModule)
 Runtime.bootstrap = Bootstrap
 
 function Runtime.loadAutoParry(options)

@@ -888,6 +888,7 @@ function ModuleScript.new(name: string, path: string)
     self._source = nil
     self._value = nil
     self._loaded = false
+    self._children = {}
     return self
 end
 
@@ -897,6 +898,39 @@ end
 
 function ModuleScript:IsA(className)
     return className == "ModuleScript"
+end
+
+function ModuleScript:Add(child)
+    self._children[child.Name] = child
+    if child._mockSetParent then
+        child:_mockSetParent(self)
+    else
+        child.Parent = self
+    end
+    return child
+end
+
+function ModuleScript:FindFirstChild(childName)
+    return self._children[childName]
+end
+
+function ModuleScript:WaitForChild(childName)
+    local child = self._children[childName]
+    if not child then
+        error(string.format("%s is missing child %s", self.Name, tostring(childName)), 0)
+    end
+    return child
+end
+
+function ModuleScript:GetChildren()
+    local list = {}
+    for _, child in pairs(self._children) do
+        table.insert(list, child)
+    end
+    table.sort(list, function(a, b)
+        return a.Name < b.Name
+    end)
+    return list
 end
 
 function ModuleScript:_loadSource()
@@ -998,6 +1032,9 @@ local rulesModule = ModuleScript.new("rules", joinPath(rootDir, "engine/intel/ru
 local optimiserModule = ModuleScript.new("optimiser", joinPath(rootDir, "engine/intel/optimiser.lua"))
 local telemetryFolder = createFolder("telemetry")
 local telemetryExporterModule = ModuleScript.new("exporter", joinPath(rootDir, "engine/telemetry/exporter.lua"))
+local physicsModule = ModuleScript.new("physics", joinPath(rootDir, "engine/physics/init.lua"))
+local physicsWorldModule = ModuleScript.new("world", joinPath(rootDir, "engine/physics/world.lua"))
+local physicsTrajectoryModule = ModuleScript.new("trajectory", joinPath(rootDir, "engine/physics/trajectory.lua"))
 intelFolder:Add(rulesModule)
 intelFolder:Add(optimiserModule)
 telemetryFolder:Add(telemetryExporterModule)
@@ -1005,6 +1042,9 @@ runtimeFolder:Add(runtimeModule)
 runtimeFolder:Add(bootstrapModule)
 runtimeFolder:Add(intelFolder)
 runtimeFolder:Add(telemetryFolder)
+physicsModule:Add(physicsWorldModule)
+physicsModule:Add(physicsTrajectoryModule)
+runtimeFolder:Add(physicsModule)
 
 local TestHarness = createFolder("TestHarness")
 local SpecsFolder = createFolder("Specs")

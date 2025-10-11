@@ -216,26 +216,114 @@ local function captureSnapshots(context: any, warnings: {string})
     local autoparry = context.autoparry
     local snapshots = {}
 
-    local function capture(name: string)
+    local function capture(name: string, alias: string?)
         local member = autoparry and autoparry[name]
         if typeof(member) ~= "function" then
-            return nil
+            return nil, nil
         end
+
         local ok, value = pcall(member)
         if ok then
-            snapshots[name] = sanitiseTelemetrySnapshot(value)
-            return value
+            local sanitised = sanitiseTelemetrySnapshot(value)
+            snapshots[name] = sanitised
+            if alias and alias ~= name then
+                snapshots[alias] = sanitised
+            end
+            return value, sanitised
         else
             table.insert(warnings, string.format("%s failed: %s", name, tostring(value)))
-            return nil
+            return nil, nil
         end
     end
 
-    capture("getConfig")
-    capture("getSmartPressState")
-    capture("getSmartTuningSnapshot")
-    capture("getTelemetryStats")
-    capture("getDiagnosticsReport")
+    capture("getConfig", "config")
+    capture("getSmartPressState", "smartPressState")
+    capture("getSmartTuningSnapshot", "smartTuningSnapshot")
+    capture("getTelemetryStats", "telemetryStats")
+    capture("getDiagnosticsReport", "diagnosticsReport")
+    capture("getTelemetryHistory", "telemetryHistory")
+    local _, telemetrySnapshot = capture("getTelemetrySnapshot", "telemetrySnapshot")
+    local _, telemetryInsights = capture("getTelemetryInsights", "telemetryInsights")
+    local _, autoTuningState = capture("getAutoTuningState", "autoTuningState")
+
+    local function selectSnapshot(...)
+        local count = select("#", ...)
+        for index = 1, count do
+            local key = select(index, ...)
+            if key and snapshots[key] ~= nil then
+                return snapshots[key]
+            end
+        end
+        return nil
+    end
+
+    local function assignIfPresent(target, key, value)
+        if value ~= nil then
+            target[key] = value
+        end
+    end
+
+    local function assignIfMissing(target, key, value)
+        if value ~= nil and target[key] == nil then
+            target[key] = value
+        end
+    end
+
+    local autoparrySnapshot = {}
+
+    assignIfPresent(autoparrySnapshot, "config", selectSnapshot("config", "getConfig"))
+    assignIfPresent(autoparrySnapshot, "smartPressState", selectSnapshot("smartPressState", "getSmartPressState"))
+    assignIfPresent(autoparrySnapshot, "smartTuning", selectSnapshot("smartTuningSnapshot", "getSmartTuningSnapshot"))
+
+    local telemetryStats = selectSnapshot("telemetryStats", "getTelemetryStats")
+    assignIfPresent(autoparrySnapshot, "telemetryStats", telemetryStats)
+    if typeof(telemetryStats) == "table" then
+        assignIfPresent(autoparrySnapshot, "counters", telemetryStats.counters)
+        assignIfPresent(autoparrySnapshot, "adaptiveState", telemetryStats.adaptiveState)
+    end
+
+    local diagnostics = selectSnapshot("diagnosticsReport", "getDiagnosticsReport")
+    assignIfPresent(autoparrySnapshot, "diagnostics", diagnostics)
+    if typeof(diagnostics) == "table" then
+        assignIfPresent(autoparrySnapshot, "summary", diagnostics.summary)
+        assignIfMissing(autoparrySnapshot, "counters", diagnostics.counters)
+        assignIfMissing(autoparrySnapshot, "adaptiveState", diagnostics.adaptiveState)
+    end
+
+    assignIfPresent(autoparrySnapshot, "telemetrySnapshot", telemetrySnapshot)
+    if typeof(telemetrySnapshot) == "table" then
+        assignIfPresent(autoparrySnapshot, "sequence", telemetrySnapshot.sequence)
+        assignIfPresent(autoparrySnapshot, "activationLatency", telemetrySnapshot.activationLatency)
+        assignIfPresent(autoparrySnapshot, "remoteLatencyActive", telemetrySnapshot.remoteLatencyActive)
+        assignIfMissing(autoparrySnapshot, "adaptiveState", telemetrySnapshot.adaptiveState)
+        assignIfPresent(autoparrySnapshot, "adaptiveProfile", telemetrySnapshot.adaptiveProfile)
+        assignIfPresent(autoparrySnapshot, "lastEvent", telemetrySnapshot.lastEvent)
+        if telemetrySnapshot.history ~= nil then
+            assignIfMissing(autoparrySnapshot, "history", telemetrySnapshot.history)
+        end
+    end
+
+    local telemetryHistory = selectSnapshot("telemetryHistory", "getTelemetryHistory")
+    assignIfPresent(autoparrySnapshot, "history", telemetryHistory)
+
+    assignIfPresent(autoparrySnapshot, "telemetryInsights", telemetryInsights)
+    if typeof(telemetryInsights) == "table" then
+        assignIfPresent(autoparrySnapshot, "metrics", telemetryInsights.metrics)
+        assignIfPresent(autoparrySnapshot, "samples", telemetryInsights.samples)
+        assignIfPresent(autoparrySnapshot, "statuses", telemetryInsights.statuses)
+        assignIfPresent(autoparrySnapshot, "severity", telemetryInsights.severity)
+        assignIfPresent(autoparrySnapshot, "recommendations", telemetryInsights.recommendations)
+        assignIfPresent(autoparrySnapshot, "adjustments", telemetryInsights.adjustments)
+        assignIfPresent(autoparrySnapshot, "smartTuningEnabled", telemetryInsights.smartTuningEnabled)
+        assignIfPresent(autoparrySnapshot, "insightConfig", telemetryInsights.config)
+        assignIfPresent(autoparrySnapshot, "autoTuning", telemetryInsights.autoTuning)
+    end
+
+    assignIfPresent(autoparrySnapshot, "autoTuningState", autoTuningState)
+
+    if next(autoparrySnapshot) ~= nil then
+        snapshots.autoparry = sanitiseTelemetrySnapshot(autoparrySnapshot)
+    end
 
     return snapshots
 end
@@ -675,6 +763,66 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
 
     local snapshots = captureSnapshots(context, warnings)
 
+    local autoparrySnapshot = snapshots.autoparry
+    local autoparryExport
+    if typeof(autoparrySnapshot) == "table" then
+        autoparryExport = sanitiseTelemetrySnapshot(autoparrySnapshot)
+        local autoparryMetrics = {}
+
+        if typeof(autoparrySnapshot.summary) == "table" then
+            autoparryMetrics.summary = autoparrySnapshot.summary
+        end
+
+        if typeof(autoparrySnapshot.counters) == "table" then
+            autoparryMetrics.counters = autoparrySnapshot.counters
+        end
+
+        if type(autoparrySnapshot.activationLatency) == "number" then
+            autoparryMetrics.activationLatency = autoparrySnapshot.activationLatency
+        end
+
+        if autoparrySnapshot.adaptiveState ~= nil then
+            autoparryMetrics.adaptiveState = autoparrySnapshot.adaptiveState
+        end
+
+        if typeof(autoparrySnapshot.metrics) == "table" then
+            autoparryMetrics.metrics = autoparrySnapshot.metrics
+        end
+
+        if typeof(autoparrySnapshot.samples) == "table" then
+            autoparryMetrics.samples = autoparrySnapshot.samples
+        end
+
+        if typeof(autoparrySnapshot.statuses) == "table" then
+            autoparryMetrics.statuses = autoparrySnapshot.statuses
+        end
+
+        if autoparrySnapshot.severity ~= nil then
+            autoparryMetrics.severity = autoparrySnapshot.severity
+        end
+
+        if typeof(autoparrySnapshot.recommendations) == "table" then
+            autoparryMetrics.recommendations = autoparrySnapshot.recommendations
+        end
+
+        if typeof(autoparrySnapshot.adjustments) == "table" then
+            autoparryMetrics.adjustments = autoparrySnapshot.adjustments
+        end
+
+        if autoparrySnapshot.adaptiveProfile ~= nil then
+            autoparryMetrics.adaptiveProfile = autoparrySnapshot.adaptiveProfile
+        end
+
+        local autoTuningMetrics = autoparrySnapshot.autoTuning or autoparrySnapshot.autoTuningState
+        if autoTuningMetrics ~= nil then
+            autoparryMetrics.autoTuning = autoTuningMetrics
+        end
+
+        if next(autoparryMetrics) ~= nil then
+            metrics.autoparry = sanitiseTelemetrySnapshot(autoparryMetrics)
+        end
+    end
+
     local duration = scheduler:clock()
 
     local performance
@@ -701,6 +849,7 @@ function Runner.runScenario(planEntry: {module: ModuleScript, plan: {[string]: a
         projectiles = projectiles,
         warnings = warnings,
         snapshots = snapshots,
+        autoparry = autoparryExport,
         module = planEntry.module.Name,
         performance = performance,
     }
