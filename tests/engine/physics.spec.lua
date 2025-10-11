@@ -135,4 +135,63 @@ return function(t)
         expect(sample.position.Z < 40):toEqual(true)
         expect(sample.velocity.X ~= 0 or sample.velocity.Y ~= 0):toEqual(true)
     end)
+
+    t.test("advanced trajectory produces lateral 3d arc without downward drift", function(expect)
+        local arc = Fixtures.arc
+        local world = createWorld({ config = Fixtures.defaults })
+
+        world:addProjectile({
+            name = "ArcProbe",
+            position = arc.startPosition,
+            velocity = arc.velocity,
+            trajectory = {
+                duration = arc.duration,
+                lateral = arc.lateral,
+                apexHeight = arc.apexHeight,
+                floorHeight = arc.floorHeight,
+                allowDescent = false,
+            },
+        })
+
+        local highest = -math.huge
+        local lowest = math.huge
+        local samples = {}
+        local totalSteps = math.ceil(arc.duration / Fixtures.step) + 6
+
+        for _ = 1, totalSteps do
+            world:step(Fixtures.step)
+            local sample = world:getProjectileSamples()[1]
+            samples[#samples + 1] = sample
+            highest = math.max(highest, sample.position.Y)
+            lowest = math.min(lowest, sample.position.Y)
+        end
+
+        expect(highest > arc.startPosition.Y):toEqual(true)
+        expect(lowest >= arc.startPosition.Y - 1e-4):toEqual(true)
+
+        local finalSample = samples[#samples]
+        expect(finalSample.position.Z < arc.startPosition.Z):toEqual(true)
+        expect(math.abs(finalSample.position.X - arc.startPosition.X) > 1e-3):toEqual(true)
+
+        local prediction = world:predictTrajectory({
+            position = arc.startPosition,
+            velocity = arc.velocity,
+            lateral = arc.lateral,
+            duration = arc.duration,
+            apexHeight = arc.apexHeight,
+            floorHeight = arc.floorHeight,
+            allowDescent = false,
+            samples = #samples,
+        })
+
+        expect(prediction.duration):toBeCloseTo(arc.duration, 1e-3)
+        expect(#prediction.points):toEqual(#samples)
+
+        for index, point in ipairs(prediction.points) do
+            local telemetrySample = samples[index]
+            expect(point.position.Y >= arc.startPosition.Y - 1e-4):toEqual(true)
+            local delta = (point.position - telemetrySample.position).Magnitude
+            expect(delta < 5):toEqual(true)
+        end
+    end)
 end

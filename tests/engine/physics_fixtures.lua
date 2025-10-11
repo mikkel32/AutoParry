@@ -5,6 +5,9 @@ local defaults = {
     activationLatency = 0.12,
     oscillationDistanceDelta = 0.35,
     oscillationFrequency = 3,
+    flightFloorHeight = 0,
+    flightSkyThreshold = 20,
+    defaultTrajectory = false,
 }
 
 local straightSteps = {
@@ -76,5 +79,13 @@ return {
     },
     contact = {
         steps = contactSteps,
+    },
+    arc = {
+        startPosition = Vector3.new(0, 6, 60),
+        velocity = Vector3.new(0, 0, -90),
+        lateral = Vector3.new(8, 0, 0),
+        duration = 0.9,
+        apexHeight = 14,
+        floorHeight = 2,
     },
 }

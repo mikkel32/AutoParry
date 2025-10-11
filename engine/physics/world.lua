@@ -4,6 +4,8 @@
 local DEFAULT_FIXED_STEP = 1 / 240
 local ZERO = Vector3.new()
 
+local Trajectory = require(script.Parent:WaitForChild("trajectory"))
+
 local function isFiniteNumber(value)
     return typeof(value) == "number" and value == value and math.abs(value) ~= math.huge
 end
@@ -283,7 +285,64 @@ function Projectile.new(world, options)
         telemetry = {},
         contactLatency = 0,
         contactArmed = false,
+        trajectory = nil,
+        pendingVelocity = nil,
     }
+
+    local defaultTrajectory = world.config and world.config.defaultTrajectory
+    local trajectoryOptions = options.trajectory
+
+    if trajectoryOptions == nil and defaultTrajectory ~= nil then
+        if defaultTrajectory == true then
+            trajectoryOptions = {}
+        elseif defaultTrajectory == false then
+            trajectoryOptions = nil
+        elseif typeof(defaultTrajectory) == "table" then
+            local cloned = {}
+            for key, value in pairs(defaultTrajectory) do
+                cloned[key] = value
+            end
+            trajectoryOptions = cloned
+        end
+    elseif typeof(trajectoryOptions) == "table" then
+        local cloned = {}
+        for key, value in pairs(trajectoryOptions) do
+            cloned[key] = value
+        end
+        trajectoryOptions = cloned
+    end
+
+    if typeof(trajectoryOptions) == "table" then
+        trajectoryOptions.position = instance.Position
+        trajectoryOptions.velocity = instance.AssemblyLinearVelocity
+        if trajectoryOptions.forward == nil and typeof(options.forward) == "Vector3" then
+            trajectoryOptions.forward = options.forward
+        end
+        if trajectoryOptions.range == nil and typeof(options.range) == "number" then
+            trajectoryOptions.range = options.range
+        end
+        if trajectoryOptions.duration == nil and typeof(options.duration) == "number" then
+            trajectoryOptions.duration = options.duration
+        end
+        if trajectoryOptions.lateral == nil and typeof(options.lateral) == "Vector3" then
+            trajectoryOptions.lateral = options.lateral
+        end
+        if trajectoryOptions.floorHeight == nil and world.config then
+            trajectoryOptions.floorHeight = world.config.flightFloorHeight
+        end
+        if trajectoryOptions.allowDescent == nil and world.config then
+            local threshold = world.config.flightSkyThreshold or (world.config.flightFloorHeight or 0)
+            trajectoryOptions.allowDescent = instance.Position.Y > threshold
+        end
+        entity.trajectory = Trajectory.new(trajectoryOptions)
+    elseif trajectoryOptions == true then
+        entity.trajectory = Trajectory.new({
+            position = instance.Position,
+            velocity = instance.AssemblyLinearVelocity,
+            floorHeight = world.config and world.config.flightFloorHeight or instance.Position.Y,
+            allowDescent = false,
+        })
+    end
 
     return setmetatable(entity, Projectile)
 end
@@ -385,23 +444,52 @@ function Projectile:step(dt)
         return
     end
 
-    local velocity = instance.AssemblyLinearVelocity or ZERO
+    if not self.trajectory and self.pendingVelocity then
+        if typeof(instance.SetVelocity) == "function" then
+            instance:SetVelocity(self.pendingVelocity)
+        else
+            instance.AssemblyLinearVelocity = self.pendingVelocity
+        end
+        self.pendingVelocity = nil
+    end
+
+    local velocity = instance.AssemblyLinearVelocity
     if typeof(velocity) ~= "Vector3" then
         velocity = ZERO
     end
 
-    if typeof(instance._advance) == "function" then
-        instance:_advance(dt)
-    else
-        local newVelocity = self:_applyCurvature(dt)
-        if newVelocity ~= velocity then
-            velocity = newVelocity
+    local usedTrajectory = false
+
+    if self.trajectory then
+        local continue, trajectoryVelocity = self.trajectory:step(instance, dt)
+        usedTrajectory = true
+        if typeof(trajectoryVelocity) == "Vector3" then
+            velocity = trajectoryVelocity
+        else
+            velocity = instance.AssemblyLinearVelocity or ZERO
         end
 
-        self:_applyOscillation(dt)
-        velocity = instance.AssemblyLinearVelocity or velocity
-        local newPosition = instance.Position + velocity * dt
-        instance:SetPosition(newPosition)
+        if not continue then
+            self.pendingVelocity = velocity
+            self.trajectory = nil
+        end
+    end
+
+    if not usedTrajectory then
+        if typeof(instance._advance) == "function" then
+            instance:_advance(dt)
+            velocity = instance.AssemblyLinearVelocity or ZERO
+        else
+            local newVelocity = self:_applyCurvature(dt)
+            if typeof(newVelocity) == "Vector3" then
+                velocity = newVelocity
+            end
+
+            self:_applyOscillation(dt)
+            velocity = instance.AssemblyLinearVelocity or velocity
+            local newPosition = instance.Position + velocity * dt
+            instance:SetPosition(newPosition)
+        end
     end
 
     self.telemetry[#self.telemetry + 1] = {
@@ -451,6 +539,11 @@ function World.new(options)
     config.oscillationFrequency = config.oscillationFrequency or 3
     config.oscillationDistanceDelta = config.oscillationDistanceDelta or 0.35
     config.oscillationSpamCooldown = config.oscillationSpamCooldown or 0.15
+    config.flightFloorHeight = config.flightFloorHeight or 0
+    config.flightSkyThreshold = config.flightSkyThreshold or (config.flightFloorHeight + 18)
+    if typeof(config.defaultTrajectory) == "table" then
+        config.defaultTrajectory = copyDictionary(config.defaultTrajectory)
+    end
 
     local world = {
         now = options.now or 0,
@@ -709,6 +802,39 @@ function World:getAgentSamples()
         end
     end
     return samples
+end
+
+function World:predictTrajectory(options)
+    local blueprint = {}
+    if typeof(options) == "table" then
+        for key, value in pairs(options) do
+            blueprint[key] = value
+        end
+    end
+
+    blueprint.position = coerceVector3(blueprint.position, ZERO)
+    blueprint.velocity = coerceVector3(blueprint.velocity, ZERO)
+
+    if blueprint.floorHeight == nil then
+        blueprint.floorHeight = self.config.flightFloorHeight
+    end
+
+    if blueprint.allowDescent == nil then
+        local threshold = self.config.flightSkyThreshold or (self.config.flightFloorHeight or 0)
+        blueprint.allowDescent = blueprint.position.Y > threshold
+    end
+
+    local sampleCount = blueprint.samples
+    if typeof(sampleCount) ~= "number" or sampleCount < 2 then
+        sampleCount = 16
+    end
+    blueprint.samples = nil
+
+    local trajectory = Trajectory.new(blueprint)
+    return {
+        duration = trajectory.duration,
+        points = trajectory:samples(sampleCount),
+    }
 end
 
 local function serializeVector(vector)
